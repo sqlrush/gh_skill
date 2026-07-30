@@ -1,0 +1,29 @@
+---
+name: gaussdb-sqlfetch
+version: 2.0.0
+description: "把 OpenGauss/GaussDB 的 unique_sql_id 解析为完整 SQL 文本，并标注需替换的归一化占位符。"
+allowed-tools: ["exec", "read"]
+compatibility: opencode
+metadata:
+  runtime: python3
+  emoji: "🔎"
+  family: sql-optimization
+---
+
+# SQL Fetch（OpenGauss/GaussDB）
+
+1. **预检。** 运行 `python3 {baseDir}/scripts/sqlfetch.py -h`。若报缺少依赖，`python3 -m pip install pg8000 cryptography PyYAML` 后停下让用户处理。
+2. **选择连接。** 连接名沿用 `../common/config.yaml` 的 `name` 字段（文件只含元数据无密码）。仅在有多个时才问用哪一个。
+3. 运行：
+
+   ```bash
+   python3 {baseDir}/scripts/sqlfetch.py -c <conn> <unique_sql_id>
+   ```
+
+4. 若输出提示存在占位符（Normalized），说明这是归一化 SQL，向用户索要真实值并展示替换后的 SQL。
+5. **若输出带 🛑「SQL 被 openGauss 截断」**：说明这条 SQL 太长、超过 `track_activity_query_size`，库里留存的就是半截文本（数据库侧 `track_activity_query_size` 的留存限制）。**不要**拿它去 explain/调优——向用户索要完整 SQL，后续 explain/sqltune 都用 `--sql-stdin` 传完整文本。
+6. 下一步建议：走 explain 工作流快速看计划，或走 sqltune 工作流做深度调优。
+
+## 安全红线
+
+- **只通过本技能脚本取数**：`{baseDir}/scripts/sqlfetch.py` 走只读会话、密码从环境变量PGPASSWORD中获取，**你自己不要**直接写 Python/psql/gsql 连库、不要读取或解密 `../common/credentials/`。脚本未覆盖的能力，如实说明「当前无此能力」并停止。

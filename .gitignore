@@ -1,0 +1,7 @@
+common/__pycache__/
+**/__pycache__/
+*.pyc
+.venv/
+
+# 本地开发时 kbimport 的知识库落点(客户规范不入库)
+/kb/

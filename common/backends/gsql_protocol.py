@@ -1,0 +1,114 @@
+"""gsql 协议层（纯函数，无 I/O）：参数注入、语句判别、结果与错误解析。"""
+from __future__ import annotations
+
+import json
+import re
+from decimal import Decimal
+from typing import Any, Sequence
+
+from .base import DBError
+
+
+def _inline_or_var(val: Any, idx: int, vars_: dict) -> str:
+    """决定第 idx 个参数的注入形式，必要时写入 vars_。"""
+    if val is None:
+        return "NULL"
+    if isinstance(val, bool):  # 必须在 int 之前（bool 是 int 子类）
+        return "TRUE" if val else "FALSE"
+    if isinstance(val, (int, float, Decimal)):
+        name = f"p{idx}"
+        vars_[name] = str(val)
+        return f":{name}"          # 裸值（数值上下文安全，值我方可控）
+    if isinstance(val, str):
+        name = f"p{idx}"
+        vars_[name] = val
+        return f":'{name}'"        # gsql 自行安全转义为带引号字面量
+    raise DBError(f"unsupported gsql param type {type(val).__name__}")
+
+
+def rewrite_params(sql: str, params: Sequence[Any]) -> tuple[str, dict]:
+    """把 %s 占位符改写为 gsql 变量引用，返回 (新SQL, 变量映射)。"""
+    params = list(params or ())
+    out: list[str] = []
+    vars_: dict = {}
+    idx = 0
+    i, n = 0, len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch == "%":
+            nxt = sql[i + 1] if i + 1 < n else ""
+            if nxt == "%":
+                out.append("%"); i += 2; continue
+            if nxt == "s":
+                if idx >= len(params):
+                    raise DBError("more %s placeholders than params")
+                out.append(_inline_or_var(params[idx], idx, vars_))
+                idx += 1; i += 2; continue
+            out.append("%"); i += 1; continue
+        out.append(ch); i += 1
+    if idx != len(params):
+        raise DBError(
+            f"placeholder/param count mismatch: {idx} placeholders, {len(params)} params"
+        )
+    return "".join(out), vars_
+
+
+_LEADING_NOISE = re.compile(r"^\s*(--[^\n]*\n|/\*.*?\*/\s*)*", re.DOTALL)
+_WRAPPABLE = frozenset({"SELECT", "WITH", "VALUES", "TABLE"})
+
+
+def is_wrappable_select(sql: str) -> bool:
+    """去掉前导空白/注释后，首关键字是否为可被 json_agg 包裹的查询。
+
+    首关键字不在 _WRAPPABLE 集合内（如 EXPLAIN、SHOW、INSERT、SET 等）时走
+    文本旁路（parse_text_result），返回逐行单元素 tuple 列表 [(line,), ...]。
+    注意：EXPLAIN (FORMAT JSON) 走文本旁路时，JSON 文档会被按行切成多个 tuple，
+    调用方须自行 "".join(r[0] for r in rows) + json.loads(...) 重组
+    （参见 skills/gaussdb-sqltune/scripts/cost.py 的处理方式）。新探针若用
+    EXPLAIN(FORMAT JSON) 必须同样处理，而非假设返回单个已解码对象。
+    """
+    s = _LEADING_NOISE.sub("", sql, count=1).lstrip()
+    if not s:
+        return False
+    first = s.split(None, 1)[0].upper()
+    return first in _WRAPPABLE
+
+
+def wrap_select_json(sql: str) -> str:
+    """把 SELECT 包成单值 JSON：列序/类型/NULL 全保真。"""
+    inner = sql.strip().rstrip(";").strip()
+    return f"SELECT json_agg(row_to_json(_t)) FROM ({inner}) _t"
+
+
+_ERR_RE = re.compile(r"ERROR:\s+(?:([0-9A-Z]{5}):\s+)?(.*)")
+
+
+def parse_json_result(stdout: str) -> tuple[list[str], list[tuple]]:
+    """解析 json_agg 输出为 (cols, rows)；空集 → ([], [])。"""
+    text = stdout.strip()
+    if not text:
+        return [], []
+    data = json.loads(text, parse_float=Decimal)
+    if not data:                       # None 或空数组
+        return [], []
+    cols = list(data[0].keys())        # row_to_json 保列序，dict 保插入序
+    rows = [tuple(rec.get(c) for c in cols) for rec in data]
+    return cols, rows
+
+
+def parse_text_result(stdout: str) -> tuple[list[str], list[tuple]]:
+    """解析 -At 文本输出：每非尾空行 → 单元素 tuple（SHOW/EXPLAIN 用）。"""
+    text = stdout[:-1] if stdout.endswith("\n") else stdout
+    if text == "":
+        return [], []
+    return [], [(line,) for line in text.split("\n")]
+
+
+def parse_gsql_error(stderr: str) -> str:
+    """尽量还原 'ERROR: <msg> (SQLSTATE <code>)'，否则回退原文。"""
+    for line in stderr.splitlines():
+        m = _ERR_RE.search(line)
+        if m:
+            code, msg = m.group(1), m.group(2).strip()
+            return f"ERROR: {msg} (SQLSTATE {code})" if code else f"ERROR: {msg}"
+    return stderr.strip() or "gsql failed with no error output"

@@ -1,0 +1,4 @@
+# opencode_skill runtime dependencies (pure-Python, no compile required).
+pg8000>=1.30        # PostgreSQL-wire driver; connects to openGauss & GaussDB
+cryptography>=41    # AES-256-GCM credential decryption (gdaa-compatible)
+PyYAML>=6           # ~/.gdaa/config.yaml parsing

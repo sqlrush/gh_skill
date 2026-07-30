@@ -1,0 +1,93 @@
+"""DB-free unit tests for the gaussdb-slowsql/gaussdb-topsql/gaussdb-sqlfetch/gaussdb-explain skills."""
+import importlib.util
+import pathlib
+import sys
+
+_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def _load(skill: str, mod: str):
+    path = _ROOT / "skills" / skill / "scripts" / f"{mod}.py"
+    # Ensure the skill's scripts dir is importable for its sibling `render`.
+    sys.path.insert(0, str(path.parent))
+    sys.path.insert(0, str(_ROOT))
+    spec = importlib.util.spec_from_file_location(f"{skill}_{mod}", path)
+    m = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = m  # dataclasses resolve annotations via sys.modules
+    spec.loader.exec_module(m)
+    return m
+
+
+sqlfetch = _load("gaussdb-sqlfetch", "gaussdb-sqlfetch")
+explain = _load("gaussdb-explain", "gaussdb-explain")
+slowsql = _load("gaussdb-slowsql", "gaussdb-slowsql")
+topsql = _load("gaussdb-topsql", "gaussdb-topsql")
+
+
+def test_sqlfetch_count_placeholders():
+    assert sqlfetch.count_placeholders("a = ? and b = $1 and c = :name") == 3
+    assert sqlfetch.count_placeholders("x::int") == 0
+
+
+def test_sqlfetch_truncation_detection():
+    # Complete statements -> not truncated.
+    assert sqlfetch.looks_truncated("SELECT 1")[0] is False
+    assert sqlfetch.looks_truncated("SELECT a FROM t WHERE x IN (1,2,3)")[0] is False
+    # openGauss-cut tails -> truncated.
+    assert sqlfetch.looks_truncated("SELECT a FROM t WHERE p IN (\n  SELECT")[0] is True  # unbalanced paren
+    assert sqlfetch.looks_truncated("SELECT a, b,")[0] is True                            # trailing comma
+    assert sqlfetch.looks_truncated("SELECT a FROM t WHERE x =")[0] is False              # '=' not in tail set
+    assert sqlfetch.looks_truncated("SELECT a FROM t ORDER BY")[0] is True                # dangling keyword
+    # A paren inside a string literal must not trip the balance check.
+    assert sqlfetch.looks_truncated("SELECT '(' AS x FROM t")[0] is False
+
+
+def test_explain_scan_plan_seqscan_sort():
+    plan = ("Sort  (cost=1..2 rows=1)\n"
+            "  ->  Seq Scan on t  (cost=0..1 rows=1)")
+    kinds = {f.kind for f in explain.scan_plan(plan)}
+    assert "seq_scan" in kinds and "sort" in kinds
+
+
+def test_explain_is_dml():
+    assert explain.is_dml("DELETE FROM t")
+    assert not explain.is_dml("SELECT 1")
+
+
+def test_slowsql_stmt_table_empty():
+    out = slowsql.stmt_table("Slow SQL", [])
+    assert "No matching statements" in out
+
+
+def test_slowsql_stmt_table_rows():
+    rows = [slowsql.StmtRow("123", "select 1", 5, 12.5, 0.06, 0.01, 5)]
+    out = slowsql.stmt_table("Slow SQL", rows)
+    assert "| SQL_ID |" in out
+    assert "123" in out and "12.50" in out
+
+
+def test_topsql_sort_keys_and_reject():
+    assert topsql.SORT_KEYS == ["time", "avg", "calls", "reads", "rows"]
+    # Bad key must raise before touching the DB.
+    try:
+        topsql.top_sql(None, "bogus", 10)
+    except ValueError as e:
+        assert "must be one of" in str(e)
+    else:
+        raise AssertionError("expected ValueError for bad --by")
+
+
+if __name__ == "__main__":
+    import traceback
+    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
+    failed = 0
+    for fn in fns:
+        try:
+            fn()
+            print(f"  ok  {fn.__name__}")
+        except Exception:
+            failed += 1
+            print(f"FAIL  {fn.__name__}")
+            traceback.print_exc()
+    print(f"\n{len(fns) - failed}/{len(fns)} passed")
+    sys.exit(1 if failed else 0)

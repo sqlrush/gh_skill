@@ -1,0 +1,45 @@
+---
+name: gaussdb-topproc
+version: 2.0.0
+description: "在 OpenGauss/GaussDB 上按总耗时/自身耗时/调用数排名最耗资源的存储过程（pg_stat_user_functions），定位慢过程后转 procinfo/proctune。"
+allowed-tools: ["exec", "read"]
+compatibility: opencode
+metadata:
+  runtime: python3
+  emoji: "🏭"
+  family: stored-procedure
+---
+
+# Top Procedures（OpenGauss/GaussDB 慢存储过程发现）
+
+按资源消耗找出最慢/最重的存储过程或函数。**只通过本技能脚本取数。**
+
+## 工作流
+
+1. **预检。** 运行 `python3 {baseDir}/scripts/topproc.py -h`。若报缺少依赖，`python3 -m pip install pg8000 cryptography PyYAML` 后停下让用户处理。
+2. **选择连接。** 连接名沿用 `../common/config.yaml` 的 `name` 字段。仅在有多个时才问用哪一个。
+3. **排名。**
+
+   ```bash
+   python3 {baseDir}/scripts/topproc.py -c <conn> --by time --limit 20
+   ```
+
+   数据源是 `pg_stat_user_functions`（函数级累计统计）。`--by` 可选：`time`（总耗时）、`self`（自身耗时，剔除被调用子函数）、`calls`（调用次数）。
+
+4. **统计为空时如实说明（不要旁路）。** 若输出是「无函数级统计」提示，说明该实例 `track_functions=none`，函数级统计关闭。**不要自己直连数据库或解密凭据去查**——按提示告诉用户两条正路：
+   - 让 DBA `SET track_functions='pl'`（或 `'all'`）后，调用一次目标过程，再重跑本脚本；
+   - 或用 `/gaussdb-topsql` 看顶层调用语句，以及（`track_stmt_stat_level` 捕获到的）过程内部慢语句。
+
+5. **呈现与转交。** 给出排名表（过程、calls、total_ms、self_ms），引用真实数字。对最耗资源的过程，引导下一步：
+   - 只读诊断 → `/gaussdb-procinfo <schema.proc>`（结构热点，不改写）；
+   - 经验证优化 → `/gaussdb-proctune <schema.proc>`（采证据 + hypopg 验证 + 出报告）。
+
+## 规则
+
+- 每个结论引用脚本输出里的真实数字，不编造。
+- 统计不可用时如实说明并停止，绝不用其它手段绕过取数。
+- 绝不在对话中回显密码或 DSN。
+
+## 安全红线
+
+- **只通过本技能脚本取数**：`{baseDir}/scripts/topproc.py` 走只读会话、密码从环境变量PGPASSWORD中获取，密码要匿名显示， **你自己不要**直接写 Python/psql/gsql 连库、不要读取或解密 `../common/credentials/`。脚本未覆盖的能力，如实说明「当前无此能力」并停止。

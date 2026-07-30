@@ -1,0 +1,125 @@
+"""Resolve a unique_sql_id to SQL text (port of internal/probe/sqlfetch.go).
+
+statement_history first (literal values), dbe_perf.statement as the normalized
+fallback. The id is parsed as an integer and inlined (safe: int-validated).
+
+openGauss caps the SQL text it retains in its stat views (track_activity_query_size,
+default 1024 bytes). Long statements come back TRUNCATED — there is no way to
+recover the missing tail from the database. looks_truncated() detects this so
+callers degrade gracefully (ask for full text via --sql-stdin) instead of
+EXPLAIN-ing a half statement and emitting a cryptic syntax error.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+
+_PLACEHOLDER_RE = re.compile(r"\?|\$\d+|(?:^|[^:])(:[a-zA-Z_]\w*)")
+
+
+import pathlib
+import sys
+
+_HERE = pathlib.Path(__file__).resolve()
+
+for parent in _HERE.parents:
+    if (parent / "common" / "sql.py").exists():
+        sys.path.insert(0, str(parent))
+        break
+
+from common.sql import skill_sqlreview_003,skill_sqlreview_004
+
+
+# Tokens that cannot legitimately end a complete statement — if the stored text
+# stops here, openGauss cut it off mid-statement.
+_INCOMPLETE_TAIL = frozenset({
+    "select", "from", "where", "and", "or", "in", "not", "join", "on", "by",
+    "group", "order", "having", "union", "as", "exists", "between", "like",
+    "limit", "offset", "case", "when", "then", "else",
+})
+
+
+@dataclass(frozen=True)
+class FetchResult:
+    sql_id: str
+    sql: str
+    schema: str
+    source: str  # statement_history | statement
+    normalized: bool
+    placeholders: int
+    truncated: bool = False
+    truncated_reason: str = ""
+
+
+def count_placeholders(sql_text: str) -> int:
+    n = 0
+    for m in _PLACEHOLDER_RE.finditer(sql_text):
+        if m.group(1) or m.group(0).startswith("?") or m.group(0).startswith("$"):
+            n += 1
+    return n
+
+
+def looks_truncated(sql: str) -> tuple[bool, str]:
+    """Detect SQL cut off by openGauss's stored-text cap. DB-free heuristics."""
+    s = sql.strip()
+    if not s:
+        return False, ""
+    # 1) Parenthesis balance, ignoring single-quoted string contents.
+    depth, i, n = 0, 0, len(s)
+    while i < n:
+        c = s[i]
+        if c == "'":
+            i += 1
+            while i < n:
+                if s[i] == "'":
+                    if i + 1 < n and s[i + 1] == "'":
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        i += 1
+    if depth > 0:
+        return True, f"{depth} 个未闭合的左括号"
+    # 2) Ends mid-statement (trailing comma/open-paren or a dangling keyword).
+    tail = s.rstrip(";").rstrip()
+    if tail.endswith(("(", ",")):
+        return True, f"结尾停在 '{tail[-1]}'"
+    words = tail.split()
+    if words and words[-1].lower() in _INCOMPLETE_TAIL:
+        return True, f"结尾停在残词 '{words[-1]}'"
+    return False, ""
+
+
+def sql_fetch(db, raw_id: str) -> FetchResult:
+    try:
+        sid = int(raw_id.strip())
+    except ValueError as exc:
+        raise ValueError(
+            f"sql id {raw_id!r}: must be a (possibly negative) integer") from exc
+
+    hist = skill_sqlreview_003.format(sid=sid)
+    _, rows = db.query(hist)
+    if rows:
+        schema, query = rows[0][0], rows[0][1]
+        source = "statement_history"
+    else:
+        stmt = skill_sqlreview_004.format(sid=sid)
+        _, srows = db.query(stmt)
+        if not srows:
+            raise ValueError(
+                f"sql id {raw_id} not found in dbe_perf.statement_history or "
+                f"dbe_perf.statement (check enable_stmt_track / track_stmt_parameter)")
+        schema, query = "", srows[0][0]
+        source = "statement"
+
+    n = count_placeholders(query)
+    truncated, reason = looks_truncated(query)
+    return FetchResult(sql_id=raw_id, sql=query, schema=schema or "",
+                       source=source, normalized=n > 0, placeholders=n,
+                       truncated=truncated, truncated_reason=reason)
