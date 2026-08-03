@@ -250,7 +250,7 @@ params:
 
 ```yaml
 # tools/grmp_mock/instances.yaml
-<CUSTOMER_TEST_IP>: og        # 客户示例中的 IP，本机映射到 og5
+<客户数据IP>: og        # 客户示例中的 dataIp（真实值不入库），本机映射到 og5
 ```
 
 ### 4.5 中间件客户端 `common/grmp_client.py`
@@ -436,7 +436,7 @@ POST {base}/icbc/paas/aiops/grmp/diagnostic/agent/common-operations/invoke
 | 只读 | 执行器沿用 `read_only=True`，非只读脚本需在 YAML 显式声明并走单独审批 |
 | 监听范围 | 只绑 `127.0.0.1`，不对外暴露 |
 | 错误信息 | 数据库错误经脱敏后回传，不泄露连接串与主机名 |
-| 客户测试环境值 | `<CUSTOMER_TEST_IP>` 等仅作本机映射键使用，不出现在对外材料 |
+| 客户测试环境值 | dataIp、主机名、工号等仅作本机映射键使用，写在不入库的本地配置里，不进版本库、不出现在对外材料 |
 
 ### 关于「不用绑定变量」的专项说明
 
