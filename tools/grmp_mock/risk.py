@@ -15,11 +15,15 @@ from __future__ import annotations
 
 import dataclasses
 import re
-from typing import List, Tuple
+from typing import Any, List, Sequence, Tuple
 
 CODE_IDENT_POSITION = "IDENT_POSITION"
 CODE_MULTI_VALUE = "MULTI_VALUE"
 CODE_NON_READONLY = "NON_READONLY"
+CODE_STRING_PARAM = "STRING_PARAM"
+
+# 五种类型里只有 String 没有格式约束，类型校验对它等于不存在
+_UNCONSTRAINED_TYPES = frozenset({"STRING"})
 
 
 @dataclasses.dataclass(frozen=True)
@@ -73,9 +77,36 @@ def _names_in(text: str) -> List[str]:
     return [m.group(1) for m in _PLACEHOLDER_RE.finditer(text)]
 
 
-def assess(sql: str) -> Tuple[Risk, ...]:
-    """返回该 SQL 的风险标注。无风险时返回空元组。"""
+def assess(sql: str, params: Sequence[Any] = ()) -> Tuple[Risk, ...]:
+    """返回该脚本的风险标注。无风险时返回空元组。
+
+    params 是参数声明（有 .key/.type 的对象）。不传时只做语句形态检查。
+    """
     risks: List[Risk] = []
+
+    # String 参数在文本替换下就是注入向量。实测：
+    #   where usename = '{{username}}'  传入  x' or '1'='1
+    #   渲染成  where usename = 'x' or '1'='1'  → 返回全表
+    # 这不是实现缺陷，是文本替换的固有结果 —— 客户中间件若同样用
+    # String.replace 实现，客户环境存在同一个洞。所以标注而不拦截：
+    # 拦了就拒掉一条客户能跑的脚本，而这个洞本来就该由客户知晓并决策。
+    unconstrained = sorted(
+        {
+            p.key
+            for p in params
+            if str(getattr(p, "type", "")).upper() in _UNCONSTRAINED_TYPES
+        }
+    )
+    if unconstrained:
+        risks.append(
+            Risk(
+                CODE_STRING_PARAM,
+                "参数 %s 为 String 类型：五种类型里只有它没有格式约束，"
+                "类型校验挡不住注入载荷。取值须来自受控枚举或上游已校验的来源；"
+                "此风险在客户环境同样存在（若其中间件也是文本替换）"
+                % ", ".join(unconstrained),
+            )
+        )
 
     if _leading_keyword(sql) not in _READ_ONLY_STARTERS:
         risks.append(

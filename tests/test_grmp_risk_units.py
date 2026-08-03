@@ -16,6 +16,8 @@ sys.path.insert(0, str(_ROOT))
 
 import pytest  # noqa: E402
 
+from common.grmp import placeholder as ph  # noqa: E402
+
 from tools.grmp_mock import risk  # noqa: E402
 
 
@@ -125,6 +127,43 @@ def test_risk_carries_actionable_detail():
 
 def test_clean_script_has_no_risks():
     assert risk.assess("select 1 where a > {{n}}") == ()
+
+
+# ===========================================================================
+# STRING_PARAM：String 参数在文本替换下就是注入向量
+# ===========================================================================
+
+def _defs(*pairs):
+    return [ph.ParamDef(key=k, type=t) for k, t in pairs]
+
+
+def test_string_typed_param_is_flagged():
+    """实测：给 where usename = '{{username}}' 传 x' or '1'='1
+    会渲染成 where usename = 'x' or '1'='1'，返回全表。
+
+    这不是实现 bug，是文本替换的固有注入面 —— 客户中间件若同样用
+    String.replace 实现，客户环境存在同一个洞。所以要标注，不要静默。
+    String 类型没有格式约束，类型校验对它无效。
+    """
+    risks = risk.assess(
+        "select 1 where usename = '{{username}}'",
+        _defs(("username", "String")),
+    )
+    codes = [r.code for r in risks]
+    assert "STRING_PARAM" in codes
+    assert "username" in [r for r in risks if r.code == "STRING_PARAM"][0].detail
+
+
+@pytest.mark.parametrize("typ", ["INTEGER", "Boolean", "DateTime", "Timestamp"])
+def test_constrained_types_are_not_flagged(typ):
+    """其余四种类型都有格式约束，校验能挡住注入载荷，不该误报。"""
+    risks = risk.assess("select 1 where a = {{x}}", _defs(("x", typ)))
+    assert "STRING_PARAM" not in [r.code for r in risks]
+
+
+def test_assess_without_param_defs_still_works():
+    """只有 SQL、没有参数声明时（如仅做语句形态检查）不应报错。"""
+    assert isinstance(risk.assess("select 1 where a > {{n}}"), tuple)
 
 
 def test_multiple_risks_are_all_reported():

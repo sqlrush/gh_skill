@@ -65,7 +65,7 @@ def report_risks(records: Sequence[sc.ScriptRecord]) -> List[str]:
     """风险标注 —— 只报告，不拦截。客户环境能跑通的脚本，本地不能拒绝。"""
     lines: List[str] = []
     for rec in records:
-        for item in risk.assess(rec.script_content):
+        for item in risk.assess(rec.script_content, rec.params):
             lines.append("  [%s] %s：%s" % (item.code, rec.script_name, item.detail))
     return lines
 
