@@ -27,6 +27,9 @@ def test_load_fills_default_driver(tmp_path, monkeypatch):
         "  - name: a\n    type: opengauss\n    host: h\n"
         "    port: 5432\n    database: d\n    user: u\n"
     )
+    # GSDB_HOME 优先级高于 GDAA_HOME，不清掉就会读到真实的 ~/.gdaa/config.yaml，
+    # 断言变成对本机配置的偶然依赖（本机按文档就是带 GSDB_HOME 运行的）
+    monkeypatch.delenv("GSDB_HOME", raising=False)
     monkeypatch.setenv("GDAA_HOME", str(tmp_path))
     conns = load()
     assert conns[0].driver == "gsql"
@@ -38,6 +41,7 @@ def test_load_reads_explicit_driver(tmp_path, monkeypatch):
         "  - name: a\n    type: opengauss\n    host: h\n"
         "    port: 5432\n    database: d\n    user: u\n    driver: pg8000\n"
     )
+    monkeypatch.delenv("GSDB_HOME", raising=False)
     monkeypatch.setenv("GDAA_HOME", str(tmp_path))
     conns = load()
     assert conns[0].driver == "pg8000"
