@@ -33,9 +33,8 @@ for parent in _HERE.parents:
         sys.path.insert(0, str(parent))
         break
 
-from common.sql import skill_slowsql_001
-
 import common  # noqa: E402
+from common import access  # noqa: E402
 import render  # noqa: E402
 
 SLOWSQL_MAX_ROWS = 10
@@ -50,11 +49,42 @@ class StmtRow:
     rows: int
 
 
-def slow_sql(db, threshold_ms: int, limit: int, begin_time: str, export: bool) -> list[StmtRow]:
+# 脚本 scripts/registry/slowsql/slow_sql.yaml 的 SELECT 列序。
+# 下游按 r[0]..r[6] 取值，两者必须对齐。
+SLOW_SQL_COLUMNS = (
+    "unique_sql_id", "query", "calls", "avg_ms", "total_sec", "cpu_sec", "rows",
+)
 
-    q = skill_slowsql_001.format(threshold_ms=int(threshold_ms), limit=int(limit), begin_time=str(begin_time))
+SLOW_SQL_SCRIPT = "slowsql.slow_sql"
 
-    _, rows = db.query(q)
+
+def fetch_rows(runner, threshold_ms: int, limit: int, begin_time: str) -> list[tuple]:
+    """经统一入口取数，摊成位置元组。
+
+    按**逻辑名**调用而不是脚本 ID：ID 是环境相关数据，硬编码后换环境
+    仍然存在但指向另一条脚本，表现为执行成功、结果无关、不报错。
+
+    两条路径（中间件 / 直连）返回的都是全字符串化的行字典，所以这里
+    直接用 r[col] 而不是 r.get(col)：脚本 SELECT 列变了而这里没跟上时
+    要当场 KeyError，用 get 兜底会让缺失列静默变成 None，报错点被推迟到
+    格式化环节，排查方向被带偏。
+    """
+    return [
+        tuple(row[col] for col in SLOW_SQL_COLUMNS)
+        for row in runner.run(
+            SLOW_SQL_SCRIPT,
+            {
+                "threshold_ms": int(threshold_ms),
+                "limit": int(limit),
+                "begin_time": str(begin_time),
+            },
+        )
+    ]
+
+
+def slow_sql(runner, threshold_ms: int, limit: int, begin_time: str, export: bool) -> list[StmtRow]:
+
+    rows = fetch_rows(runner, threshold_ms, limit, begin_time)
 
     # === 新增逻辑：rows > 20 时保存为 CSV 文件 ===
     if len(rows) > SLOWSQL_MAX_ROWS or export:
@@ -104,26 +134,27 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--begin_time", type=str, default=begin_time_str, help="execution begin time")
     ap.add_argument("--export", type=bool, default=False, help="export results to csv")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    # 仅直连路径生效：GRMP 协议没有超时字段，走中间件时超时由服务端决定
     ap.add_argument("--timeout", type=int, default=30)
     args = ap.parse_args(argv)
     try:
-        db = common.Database.connect(args.conn)
-    except (common.ConfigError, common.CredentialError, common.DBError) as exc:
+        runner = access.for_conn(args.conn)
+    except (common.ConfigError, common.CredentialError, access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     try:
-        db.set_statement_timeout(args.timeout)
-        rows = slow_sql(db, args.threshold, args.limit, args.begin_time, args.export)
+        rows = slow_sql(runner, args.threshold, args.limit, args.begin_time, args.export)
         if args.format == "json":
             print(json.dumps([r.__dict__ for r in rows], ensure_ascii=False, indent=2))
         else:
             print(stmt_table("Slow SQL", rows), end="")
         return 0
-    except (ValueError, common.DBError) as exc:
+    except (ValueError, KeyError, common.DBError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    finally:
-        db.close()
+    except Exception as exc:      # 渲染/协议层的失败也要清楚地报出来
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

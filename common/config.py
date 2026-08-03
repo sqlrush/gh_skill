@@ -15,7 +15,9 @@ _VALID_SSLMODES = frozenset(
 
 _VALID_TYPES = frozenset({"opengauss", "gaussdb"})
 
-_VALID_DRIVERS = frozenset({"gsql", "pg8000"})
+# grmp：不直连数据库，改走 GRMP 兼容中间件的两个 HTTP 接口。
+# 此时 host/port 指向中间件端点，data_ip 是中间件用来路由到目标实例的键。
+_VALID_DRIVERS = frozenset({"gsql", "pg8000", "grmp"})
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,8 @@ class Connection:
     user: str
     sslmode: str = ""
     driver: str = "gsql"
+    # 仅 driver=grmp 时使用：中间件按它路由到目标高斯实例
+    data_ip: str = ""
 
     def with_sslmode(self, sslmode: str) -> "Connection":
         """Return a new Connection with sslmode replaced (no mutation)."""
@@ -64,7 +68,13 @@ def validate(conn: Connection) -> None:
         )
     if conn.driver not in _VALID_DRIVERS:
         raise ConfigError(
-            f"driver {conn.driver!r}: must be gsql or pg8000"
+            f"driver {conn.driver!r}: must be one of "
+            f"{'/'.join(sorted(_VALID_DRIVERS))}"
+        )
+    if conn.driver == "grmp" and not conn.data_ip:
+        raise ConfigError(
+            f"connection {conn.name!r}: driver grmp requires data_ip "
+            f"(中间件按它路由到目标实例，缺了会在第一次调用时才失败)"
         )
 
 
@@ -123,6 +133,7 @@ def load() -> list[Connection]:
             user=item.get("user", ""),
             sslmode=item.get("sslmode", "") or "",
             driver=item.get("driver", "gsql") or "gsql",
+            data_ip=item.get("data_ip", "") or "",
         )
         validate(conn)
         conns.append(conn)
