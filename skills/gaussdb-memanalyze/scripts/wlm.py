@@ -12,6 +12,10 @@ this skill exists to prevent.
 from __future__ import annotations
 
 import common
+from common import access  # noqa: E402
+# 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
+# 类型还原一律走这里，不用裸 int()/float()/bool()。
+from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
 import probe
 from model import (
     DIM_OPERATOR, DIM_SQL, Capability, Catalog, DimResult, Finding, Severity,
@@ -58,7 +62,7 @@ def _order_by(vi, preferred: str) -> str:
 # --------------------------------------------------------------------------
 # L4 — SQL level
 # --------------------------------------------------------------------------
-def collect_sql(db, cat: Catalog, cap: Capability, th: Thresholds, top: int,
+def collect_sql(runner, cat: Catalog, cap: Capability, th: Thresholds, top: int,
                 historical: bool = False) -> DimResult:
     if historical and not cap.history_available:
         return degraded(DIM_SQL, cap.reasons.get("history", "历史数据不可用"))
@@ -69,11 +73,10 @@ def collect_sql(db, cat: Catalog, cap: Capability, th: Thresholds, top: int,
     if not vi.available:
         return degraded(DIM_SQL, vi.reason)
 
-    q = (f"SELECT {probe.columns_expr(vi, _SQL_COLS)} FROM {vi.name}"
-         f"{_order_by(vi, 'max_peak_memory')} LIMIT {int(top)}")
     try:
-        _, rows = db.query(q)
-    except common.DBError as exc:
+        rows = runner.run("memanalyze.wlm_sql_hist" if historical
+                          else "memanalyze.wlm_sql", {"limit": int(top)})
+    except access.QueryError as exc:
         from util import summarize_err
         return degraded(DIM_SQL, summarize_err(exc))
 
@@ -82,11 +85,13 @@ def collect_sql(db, cat: Catalog, cap: Capability, th: Thresholds, top: int,
                            "下盘", "warning", "SQL"])
 
     for r in rows:
-        qid = str(r[0] or "")
-        query = str(r[1] or "")
-        duration = i64(r[3])
-        est_mb, peak_mb, spill_mb = f(r[4]), f(r[5]), f(r[6])
-        warning = str(r[7] or "")
+        qid = str(r["queryid"] or "")
+        query = str(r["query"] or "")
+        duration = i64(r["duration"])
+        est_mb, peak_mb, spill_mb = (f(r["estimate_memory"]),
+                                     f(r["used_memory"]),
+                                     f(r["max_peak_memory"]))
+        warning = str(r["spill_info"] or "")
 
         d.rows.append([qid, str(duration), human_mb(est_mb), human_mb(peak_mb),
                        human_mb(spill_mb), trunc(warning, 30), trunc(query, 60)])
@@ -128,7 +133,7 @@ def collect_sql(db, cat: Catalog, cap: Capability, th: Thresholds, top: int,
 # --------------------------------------------------------------------------
 # L5 — operator level
 # --------------------------------------------------------------------------
-def collect_operator(db, cat: Catalog, cap: Capability, th: Thresholds, top: int,
+def collect_operator(runner, cat: Catalog, cap: Capability, th: Thresholds, top: int,
                      historical: bool = False) -> DimResult:
     if historical and not cap.history_available:
         return degraded(DIM_OPERATOR, cap.reasons.get("history", "历史数据不可用"))
@@ -139,11 +144,10 @@ def collect_operator(db, cat: Catalog, cap: Capability, th: Thresholds, top: int
     if not vi.available:
         return degraded(DIM_OPERATOR, vi.reason)
 
-    q = (f"SELECT {probe.columns_expr(vi, _OP_COLS)} FROM {vi.name}"
-         f"{_order_by(vi, 'max_peak_memory')} LIMIT {int(top)}")
     try:
-        _, rows = db.query(q)
-    except common.DBError as exc:
+        rows = runner.run("memanalyze.wlm_operator_hist" if historical
+                          else "memanalyze.wlm_operator", {"limit": int(top)})
+    except access.QueryError as exc:
         from util import summarize_err
         return degraded(DIM_OPERATOR, summarize_err(exc))
 
@@ -152,11 +156,13 @@ def collect_operator(db, cat: Catalog, cap: Capability, th: Thresholds, top: int
                            "实际行", "峰值内存", "下盘", "倾斜%"])
 
     for r in rows:
-        qid, node_id, node_name = str(r[0] or ""), str(r[1] or ""), str(r[2] or "")
-        duration = i64(r[3])
-        est_rows, act_rows = f(r[4]), f(r[5])
-        peak_mb, spill_mb = f(r[6]), f(r[7])
-        skew = f(r[8])
+        qid, node_id, node_name = (str(r["queryid"] or ""),
+                                   str(r["plan_node_id"] or ""),
+                                   str(r["plan_node_name"] or ""))
+        duration = i64(r["duration"])
+        est_rows, act_rows = f(r["estimate_memory"]), f(r["memory_used"])
+        peak_mb, spill_mb = f(r["max_peak_memory"]), f(r["average_peak_memory"])
+        skew = f(r["spill_size"])
         where = f"query_id {qid} 的算子 #{node_id} {node_name}"
 
         d.rows.append([qid, node_id, trunc(node_name, 28), str(duration),

@@ -8,6 +8,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import common
+from common import access  # noqa: E402
+# 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
+# 类型还原一律走这里，不用裸 int()/float()/bool()。
+from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
 import probe
 from model import (
     DIM_CONFIG, DIM_CONTEXT, DIM_INSTANCE, DIM_SESSION,
@@ -25,23 +29,23 @@ _MB = 1024.0 * 1024.0
 _INSTANCE_COLS = ("memorytype", "memorymbytes")
 
 
-def instance_memory(db, cat: Catalog) -> dict:
+def instance_memory(runner, cat: Catalog) -> dict:
     """memorytype -> MB. Raises DBError; watch mode calls this directly, so it
     can sample cheaply without rebuilding the whole DimResult each round."""
     vi = cat.get("instance")
-    q = f"SELECT {probe.columns_expr(vi, _INSTANCE_COLS)} FROM {vi.name}"
-    _, rows = db.query(q)
-    return {str(r[0]).strip().lower(): f(r[1]) for r in rows if r and r[0]}
+    rows = runner.run("memanalyze.instance")
+    return {str(r["memorytype"]).strip().lower(): f(r["memorymbytes"])
+            for r in rows if r.get("memorytype")}
 
 
-def collect_instance(db, cat: Catalog, th: Thresholds, _top: int) -> DimResult:
+def collect_instance(runner, cat: Catalog, th: Thresholds, _top: int) -> DimResult:
     vi = cat.get("instance")
     if not vi.available:
         return degraded(DIM_INSTANCE, vi.reason)
 
     try:
-        mem = instance_memory(db, cat)
-    except common.DBError as exc:
+        mem = instance_memory(runner, cat)
+    except access.QueryError as exc:
         return degraded(DIM_INSTANCE, summarize_err(exc))
 
     d = DimResult(dimension=DIM_INSTANCE, available=True,
@@ -100,29 +104,25 @@ def collect_instance(db, cat: Catalog, th: Thresholds, _top: int) -> DimResult:
 _CTX_COLS = ("contextname", "totalsize", "freesize", "usedsize")
 
 
-def collect_context(db, cat: Catalog, th: Thresholds, top: int) -> DimResult:
+def collect_context(runner, cat: Catalog, th: Thresholds, top: int) -> DimResult:
     slot = "session_ctx" if cat.has("session_ctx") else "thread_ctx"
     vi = cat.get(slot)
     if not vi.available:
         return degraded(DIM_CONTEXT, vi.reason)
 
-    cols = probe.columns_expr(vi, _CTX_COLS)
-    q = (f"SELECT contextname, sum(totalsize) AS totalsize, "
-         f"sum(freesize) AS freesize, sum(usedsize) AS usedsize "
-         f"FROM (SELECT {cols} FROM {vi.name}) t "
-         f"GROUP BY contextname ORDER BY 4 DESC NULLS LAST LIMIT {int(top)}")
     try:
-        _, rows = db.query(q)
-    except common.DBError as exc:
+        rows = runner.run("memanalyze.context", {"limit": int(top)})
+    except access.QueryError as exc:
         return degraded(DIM_CONTEXT, summarize_err(exc))
 
     d = DimResult(dimension=DIM_CONTEXT, available=True,
                   headers=["memory context", "total", "free", "used", "占比"])
-    total_used = sum(f(r[3]) for r in rows) or 1.0
+    total_used = sum(f(r["usedsize"]) for r in rows) or 1.0
 
     for r in rows:
-        name = str(r[0])
-        total_b, free_b, used_b = f(r[1]), f(r[2]), f(r[3])
+        name = str(r["contextname"])
+        total_b, free_b, used_b = (f(r["totalsize"]), f(r["freesize"]),
+                                   f(r["usedsize"]))
         share = pct(used_b, total_used)
         d.rows.append([trunc(name, 48), human_mb(total_b / _MB),
                        human_mb(free_b / _MB), human_mb(used_b / _MB),
@@ -183,14 +183,15 @@ def correlate_sessions(mem_rows, activity: dict) -> list:
     """
     out: list[SessionRow] = []
     for r in mem_rows:
-        sessid = str(r[0])
+        sessid = str(r["sessid"])
         info = activity.get(sessid)
         if info is None and "." in sessid:
             info = activity.get(sessid.rsplit(".", 1)[-1])
         info = info or {}
         out.append(SessionRow(
             sessid=sessid,
-            init_mb=f(r[1]), used_mb=f(r[2]), peak_mb=f(r[3]),
+            init_mb=f(r["init_mem"]), used_mb=f(r["used_mem"]),
+            peak_mb=f(r["peak_mem"]),
             usename=str(info.get("usename", "")),
             application_name=str(info.get("application_name", "")),
             state=str(info.get("state", "")),
@@ -199,41 +200,37 @@ def correlate_sessions(mem_rows, activity: dict) -> list:
     return out
 
 
-def _activity_map(db, cat: Catalog) -> dict:
+def _activity_map(runner, cat: Catalog) -> dict:
     """pid/sessionid -> session info. Best effort: no activity view is survivable."""
     vi = cat.get("activity")
     if not vi.available:
         return {}
     try:
-        _, rows = db.query(
-            f"SELECT {probe.columns_expr(vi, _ACT_COLS)} FROM {vi.name}")
-    except common.DBError:
+        rows = runner.run("memanalyze.activity")
+    except access.QueryError:
         return {}
 
     out: dict[str, dict] = {}
     for r in rows:
-        info = {"usename": r[2] or "", "application_name": r[3] or "",
-                "state": r[4] or "", "query": r[5] or ""}
-        for key in (r[0], r[1]):              # sessionid and pid both index it
+        info = {"usename": r["usename"] or "", "application_name": r["application_name"] or "",
+                "state": r["state"] or "", "query": r["query"] or ""}
+        for key in (r["sessionid"], r["pid"]):   # sessionid and pid both index it
             if key is not None:
                 out[str(i64(key))] = info
     return out
 
 
-def collect_session(db, cat: Catalog, th: Thresholds, top: int) -> DimResult:
+def collect_session(runner, cat: Catalog, th: Thresholds, top: int) -> DimResult:
     vi = cat.get("session_mem")
     if not vi.available:
         return degraded(DIM_SESSION, vi.reason)
 
-    order = "peak_mem" if probe.has_col(vi, "peak_mem") else "used_mem"
-    q = (f"SELECT {probe.columns_expr(vi, _SESS_COLS)} FROM {vi.name} "
-         f"ORDER BY {order} DESC NULLS LAST LIMIT {int(top)}")
     try:
-        _, rows = db.query(q)
-    except common.DBError as exc:
+        rows = runner.run("memanalyze.session", {"limit": int(top)})
+    except access.QueryError as exc:
         return degraded(DIM_SESSION, summarize_err(exc))
 
-    sessions = correlate_sessions(rows, _activity_map(db, cat))
+    sessions = correlate_sessions(rows, _activity_map(runner, cat))
 
     d = DimResult(dimension=DIM_SESSION, available=True,
                   headers=["会话", "用户", "应用", "状态", "已用", "峰值", "SQL"])

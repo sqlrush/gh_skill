@@ -32,6 +32,10 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
         break
 
 import common  # noqa: E402
+from common import access  # noqa: E402
+# 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
+# 类型还原一律走这里，不用裸 int()/float()/bool()。
+from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
 
 import capability  # noqa: E402
 import collectors  # noqa: E402
@@ -46,31 +50,31 @@ from thresholds import default_thresholds  # noqa: E402
 _HIST_NOTE = "历史模式不可用：该视图是实时视图，不保留历史数据"
 
 
-def _setup(db):
+def _setup(runner):
     """Probe views + GUCs. Returns (catalog, capability)."""
-    cat = probe.probe_views(db)
-    return cat, capability.assess(capability.read_gucs(db), cat)
+    cat = probe.probe_views(runner)
+    return cat, capability.assess(capability.read_gucs(runner), cat)
 
 
-def _instance_mem(db, cat) -> dict:
+def _instance_mem(runner, cat) -> dict:
     """L1 memory map, or {} — L6 needs max_dynamic_memory from here, not pg_settings."""
     try:
-        return collectors.instance_memory(db, cat)
+        return collectors.instance_memory(runner, cat)
     except common.DBError:
         return {}
 
 
-def run_snapshot(db, conn: str, top: int) -> MemEvidence:
+def run_snapshot(runner, conn: str, top: int) -> MemEvidence:
     th = default_thresholds()
-    cat, cap = _setup(db)
-    mem = _instance_mem(db, cat)
+    cat, cap = _setup(runner)
+    mem = _instance_mem(runner, cat)
     dims = [
-        collectors.collect_instance(db, cat, th, top),
-        collectors.collect_context(db, cat, th, top),
-        collectors.collect_session(db, cat, th, top),
-        wlm.collect_sql(db, cat, cap, th, top),
-        wlm.collect_operator(db, cat, cap, th, top),
-        collectors.collect_config(db, cap, th, top, mem=mem),
+        collectors.collect_instance(runner, cat, th, top),
+        collectors.collect_context(runner, cat, th, top),
+        collectors.collect_session(runner, cat, th, top),
+        wlm.collect_sql(runner, cat, cap, th, top),
+        wlm.collect_operator(runner, cat, cap, th, top),
+        collectors.collect_config(runner, cap, th, top, mem=mem),
     ]
     return MemEvidence(
         conn=conn, target=f"实时快照（Top {top}）", mode="snapshot",
@@ -79,16 +83,16 @@ def run_snapshot(db, conn: str, top: int) -> MemEvidence:
     )
 
 
-def run_history(db, conn: str, top: int) -> MemEvidence:
+def run_history(runner, conn: str, top: int) -> MemEvidence:
     th = default_thresholds()
-    cat, cap = _setup(db)
+    cat, cap = _setup(runner)
     dims = [
         degraded(DIM_INSTANCE, _HIST_NOTE),
         degraded(DIM_CONTEXT, _HIST_NOTE),
         degraded(DIM_SESSION, _HIST_NOTE),
-        wlm.collect_sql(db, cat, cap, th, top, historical=True),
-        wlm.collect_operator(db, cat, cap, th, top, historical=True),
-        collectors.collect_config(db, cap, th, top, mem=_instance_mem(db, cat)),
+        wlm.collect_sql(runner, cat, cap, th, top, historical=True),
+        wlm.collect_operator(runner, cat, cap, th, top, historical=True),
+        collectors.collect_config(runner, cap, th, top, mem=_instance_mem(runner, cat)),
     ]
     return MemEvidence(
         conn=conn, target=f"历史回溯（Top {top}）", mode="history",
@@ -99,9 +103,9 @@ def run_history(db, conn: str, top: int) -> MemEvidence:
     )
 
 
-def run_watch(db, conn: str, top: int, interval: int, count: int) -> MemEvidence:
+def run_watch(runner, conn: str, top: int, interval: int, count: int) -> MemEvidence:
     th = default_thresholds()
-    cat, cap = _setup(db)
+    cat, cap = _setup(runner)
 
     samples: list[float] = []
     notes: list[str] = []
@@ -109,7 +113,7 @@ def run_watch(db, conn: str, top: int, interval: int, count: int) -> MemEvidence
         if i:
             time.sleep(interval)
         try:
-            mem = collectors.instance_memory(db, cat)
+            mem = collectors.instance_memory(runner, cat)
             samples.append(mem.get("dynamic_used_memory", 0.0))
         except common.DBError as exc:
             notes.append(f"第 {i + 1} 次采样失败（已跳过）：{exc}")
@@ -118,9 +122,9 @@ def run_watch(db, conn: str, top: int, interval: int, count: int) -> MemEvidence
     tf = trend.finding(samples, th)
 
     dims = [
-        collectors.collect_instance(db, cat, th, top),
-        collectors.collect_session(db, cat, th, top),
-        collectors.collect_config(db, cap, th, top, mem=_instance_mem(db, cat)),
+        collectors.collect_instance(runner, cat, th, top),
+        collectors.collect_session(runner, cat, th, top),
+        collectors.collect_config(runner, cap, th, top, mem=_instance_mem(runner, cat)),
     ]
     findings = [f for d in dims for f in d.findings]
     if tf is not None:
@@ -186,19 +190,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 1
 
     try:
-        db = common.Database.connect(args.conn)
-    except (common.ConfigError, common.CredentialError, common.DBError) as exc:
+        runner = access.for_conn(args.conn)
+    except (common.ConfigError, common.CredentialError, access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
     try:
-        db.set_statement_timeout(args.timeout)
         if args.cmd == "history":
-            ev = run_history(db, args.conn, args.top)
+            ev = run_history(runner, args.conn, args.top)
         elif args.cmd == "watch":
-            ev = run_watch(db, args.conn, args.top, args.interval, args.count)
+            ev = run_watch(runner, args.conn, args.top, args.interval, args.count)
         else:
-            ev = run_snapshot(db, args.conn, args.top)
+            ev = run_snapshot(runner, args.conn, args.top)
 
         out = (report.render_json(ev) if args.format == "json"
                else report.render_markdown(ev))
@@ -207,8 +210,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     except common.DBError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    finally:
-        db.close()
 
 
 if __name__ == "__main__":

@@ -8,6 +8,10 @@ hypopg `provides_session` guard in sqltune.
 from __future__ import annotations
 
 import common
+from common import access  # noqa: E402
+# 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
+# 类型还原一律走这里，不用裸 int()/float()/bool()。
+from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
 from model import Capability, Catalog
 
 GUCS = (
@@ -34,13 +38,13 @@ _GUC_Q = (
 )
 
 
-def read_gucs(db) -> dict:
+def read_gucs(runner) -> dict:
     """Read the memory-relevant GUCs. Missing ones are simply absent."""
     try:
-        _, rows = db.query(_GUC_Q)
-    except common.DBError:
+        rows = runner.run("memanalyze.gucs")
+    except access.QueryError:
         return {}
-    return {str(r[0]): str(r[1]) for r in rows}
+    return {str(r["name"]): str(r["setting"]) for r in rows}
 
 
 def _on(gucs: dict, name: str, default: str = "on") -> bool:

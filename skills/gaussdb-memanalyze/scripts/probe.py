@@ -14,6 +14,10 @@ from __future__ import annotations
 from typing import Mapping
 
 import common
+from common import access  # noqa: E402
+# 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
+# 类型还原一律走这里，不用裸 int()/float()/bool()。
+from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
 from model import Catalog, ViewInfo
 
 import pathlib
@@ -26,7 +30,7 @@ for parent in _HERE.parents:
         sys.path.insert(0, str(parent))
         break
 
-from common.sql import skill_memanalyze_001,skill_memanalyze_002
+# SQL 已迁到 scripts/registry/memanalyze/ —— 两条路径共用同一份定义
 
 # Candidate views per slot, most-preferred first.
 CANDIDATES: Mapping[str, tuple] = {
@@ -54,14 +58,10 @@ _SCHEMAS = ("pg_catalog", "public", "dbe_perf")
 
 
 
-_COLS_QUALIFIED = skill_memanalyze_001
 
 _SCHEMA_LIST = ", ".join("'" + s.replace("'", "''") + "'" for s in _SCHEMAS)
 
 
-_COLS_BARE = skill_memanalyze_002.format(
-    schemas=_SCHEMA_LIST
-)
 
 #_COLS_BARE = f"""
 #SELECT a.attname::text
@@ -101,17 +101,19 @@ def has_col(vi: ViewInfo, col: str) -> bool:
     return col.lower() in {c.lower() for c in vi.columns}
 
 
-def _columns_of(db, cand: str) -> tuple:
+def _columns_of(runner, cand: str) -> tuple:
     """Real column list of one candidate, or () if it does not exist here."""
     if "." in cand:
         schema, rel = cand.split(".", 1)
-        _, rows = db.query(_COLS_QUALIFIED, (schema, rel))
+        rows = runner.run("memanalyze.cols_qualified",
+                          {"schema": schema, "relname": rel})
     else:
-        _, rows = db.query(_COLS_BARE, (cand,))
-    return tuple(str(r[0]) for r in rows)
+        rows = runner.run("memanalyze.cols_bare",
+                          {"relname": cand, "schemas": _SCHEMA_LIST})
+    return tuple(str(r["attname"]) for r in rows)
 
 
-def probe_views(db) -> Catalog:
+def probe_views(runner) -> Catalog:
     """Discover which memory views this instance offers.
 
     Raises DBError only if the catalog itself is unreadable — that means the
@@ -122,15 +124,15 @@ def probe_views(db) -> Catalog:
         for cand in CANDIDATES[slot]:
             if cand in existing:
                 continue
-            cols = _columns_of(db, cand)
+            cols = _columns_of(runner, cand)
             if cols:
                 existing[cand] = cols
     return Catalog(views={slot: select(slot, existing) for slot in SLOTS})
 
 
-def probe_views_safe(db) -> tuple:
+def probe_views_safe(runner) -> tuple:
     """probe_views, but turn a catalog failure into (empty Catalog, reason)."""
     try:
-        return probe_views(db), ""
+        return probe_views(runner), ""
     except common.DBError as exc:
         return Catalog(), str(exc)
