@@ -41,10 +41,10 @@ import render  # noqa: E402
 #
 # 所以 grmp 连接在入口处明确报错，而不是静默降级或偷偷绕过；
 # 直连连接（pg8000 / gsql）行为与迁移前完全一致。
-_ARBITRARY_SQL_ON_GRMP = (
-    "连接 {name} 的 driver 是 grmp：中间件只执行预先注册的脚本（白名单模型），"
-    "而 explain 的输入是用户临时给的任意 SQL，无法预注册。\n"
-    "本 skill 不为此注册「EXPLAIN {{{{user_sql}}}}」这类直通脚本 —— 那会让任何 SQL "
+# 「路给不了」由连接模块说（access.require_unregistered_sql），这里只补
+# 本 skill 的策略：为什么不绕过去。
+_WHY_NO_PASSTHROUGH = (
+    "本 skill 不为此注册「EXPLAIN {{user_sql}}」这类直通脚本 —— 那会让任何 SQL "
     "都能从这一条脚本进入，白名单形同虚设。是否开这个口子属于客户的安全策略决策。\n"
     "可选做法：为任意 SQL 类诊断保留一条直连通道（driver: pg8000 / gsql），"
     "或在客户环境不提供本 skill。"
@@ -54,16 +54,21 @@ _ARBITRARY_SQL_ON_GRMP = (
 def require_direct_sql_path(conn_name: str) -> None:
     """任意 SQL 只能走直连。走不了就当场报错，绝不降级成别的结果。
 
-    **刻意不用 access.session_for()**：那个口子除了 grmp，还会拒掉
+    **刻意不用 access.session_for()**：那个口子除了白名单型驱动，还会拒掉
     provides_session=False 的 gsql（每条语句起独立子进程）。而 explain
     根本不需要跨语句会话 —— 单条 EXPLAIN，DML 的 ANALYZE 也是在一次
     调用里 BEGIN/ROLLBACK 包住的，gsql 今天跑得好好的。用会话守卫会把
     一批能用的连接一并拒掉，属于借来的约束。这里只判它真正的边界：
     能不能执行未注册的 SQL。
+
+    判断本身交给连接模块 —— skill 里不该出现 driver 名字，否则客户再换
+    一种白名单型中间件，这句判断会静默放行。
     """
-    conn = common.find(conn_name)                      # ConfigError 由调用方接
-    if (conn.driver or "gsql") == "grmp":
-        raise access.AccessError(_ARBITRARY_SQL_ON_GRMP.format(name=conn_name))
+    common.find(conn_name)                             # ConfigError 由调用方接
+    try:
+        access.require_unregistered_sql(conn_name)
+    except access.UnregisteredSqlUnsupported as exc:
+        raise access.AccessError("%s\n%s" % (exc, _WHY_NO_PASSTHROUGH)) from exc
 
 
 _DML_RE = re.compile(r"(?i)^\s*(insert|update|delete|merge)\b")

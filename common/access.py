@@ -26,11 +26,28 @@ from .grmp.settings import Settings
 # 新增一种访问方式时，新 Runner 抛 QueryError 即可，skill 一行不改。
 # 详见 common/grmp/errors.py 里关于「哪些错误不归一」的说明。
 __all__ = ["for_conn", "runner_for", "session_for", "session_for_conn",
-           "QueryError", "AccessError", "SessionUnavailable"]
+           "require_unregistered_sql", "require_unregistered_sql_for_conn",
+           "QueryError", "AccessError", "SessionUnavailable",
+           "UnregisteredSqlUnsupported"]
 
 TOKEN_ENV = "GRMP_AUTH_TOKEN"
 
 DIRECT_DRIVERS = frozenset({"gsql", "pg8000"})
+
+# ---------------------------------------------------------------------------
+# 驱动的能力位
+#
+# skill 表达「我需要什么能力」，由这里回答给不给得了 —— 所以 skill 代码里
+# 不该出现任何 driver 名字。explain 曾经写死 `driver == "grmp"`：将来客户
+# 换一种白名单型中间件，那句判断会静默放行，错报到中间件那边去，
+# 排查方向整个被带偏。要加新访问方式，只在这两行里加。
+#
+# 两个能力是**两根独立的轴**，今天恰好都只有 grmp 缺，别合并：
+#   - 白名单：只执行预先注册的脚本，跑不了临时给的 SQL
+#   - 无状态：每次调用独立连接，跨语句会话不留存
+# gsql 就是「能跑任意 SQL、但没有持久会话」的现成反例。
+_WHITELIST_ONLY = frozenset({"grmp"})
+_STATELESS = frozenset({"grmp"})
 
 
 class AccessError(Exception):
@@ -43,6 +60,16 @@ class SessionUnavailable(AccessError):
     hypopg 虚拟索引验证这类流程（建虚拟索引 → 在同一会话里 EXPLAIN）
     离开会话就会**静默给出错误结论**：虚拟索引没了，EXPLAIN 看到原计划，
     于是得出「加这个索引没用」。所以宁可在入口处报错，也不能让它跑下去。
+    """
+
+
+class UnregisteredSqlUnsupported(AccessError):
+    """当前访问路径只执行预先注册的脚本，跑不了临时给的任意 SQL。
+
+    与 SessionUnavailable 是**两回事**：那个说的是「跨语句状态留不住」，
+    这个说的是「这条语句根本递不进去」。gsql 能跑任意 SQL 却没有持久会话，
+    正好说明两者不能互相代替 —— 用会话守卫来挡任意 SQL，会把一批
+    本来能用的连接一并拒掉。
     """
 
 
@@ -65,7 +92,7 @@ def session_for_conn(conn: Connection, read_only: bool = True):
     会在事务里就把它挡回。默认不放开，调用方必须显式要求。
     """
     driver = conn.driver or "gsql"
-    if driver == "grmp":
+    if driver in _STATELESS:
         raise SessionUnavailable(
             "连接 %s 的 driver 是 grmp：中间件的执行接口每次调用都是独立连接，"
             "不提供跨语句的持久会话。\n"
@@ -87,6 +114,29 @@ def session_for_conn(conn: Connection, read_only: bool = True):
 def session_for(name: str, read_only: bool = True):
     """按连接名索取带持久会话的原始连接。"""
     return session_for_conn(find(name), read_only=read_only)
+
+
+def require_unregistered_sql_for_conn(conn: Connection) -> None:
+    """索取「能执行未注册 SQL」这个能力，给不了就当场报错。
+
+    只判这一条边界，**不顺带要求持久会话** —— 单条 EXPLAIN 不需要会话，
+    拿会话守卫来挡会把 gsql 这类能用的连接一并拒掉，属于借来的约束。
+
+    报错只说清「这条路给不了」；至于本 skill 为什么不绕过去（比如注册一条
+    直通脚本），那是 skill 自己的策略，由调用方补在后面。
+    """
+    driver = conn.driver or "gsql"
+    if driver in _WHITELIST_ONLY:
+        raise UnregisteredSqlUnsupported(
+            "连接 %s 的 driver 是 %s：该访问路径只执行预先注册的脚本"
+            "（白名单模型），而本次要执行的是临时给定的任意 SQL，无法预注册。"
+            % (conn.name, driver)
+        )
+
+
+def require_unregistered_sql(name: str) -> None:
+    """按连接名索取「能执行未注册 SQL」这个能力。"""
+    require_unregistered_sql_for_conn(find(name))
 
 
 def _base_url(conn: Connection) -> str:
