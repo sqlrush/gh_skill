@@ -1,0 +1,14 @@
+# 原来是 capability.py 里由 GUCS 常量拼出来的固定 IN 列表。
+# 列表内容固定不变，直接展开写死 —— 不需要参数。
+name: memanalyze.gucs
+description: 与内存相关的 GUC 参数
+sql: |
+  SELECT name, setting
+  FROM pg_settings
+  WHERE name IN (
+    'max_process_memory', 'shared_buffers', 'work_mem', 'maintenance_work_mem',
+    'max_connections', 'enable_memory_limit', 'memory_tracking_mode',
+    'use_workload_manager', 'enable_resource_track', 'resource_track_level',
+    'resource_track_cost', 'resource_track_duration',
+    'enable_dynamic_workload', 'query_max_mem', 'query_mem')
+  ORDER BY name;

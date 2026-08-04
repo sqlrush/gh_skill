@@ -30,13 +30,14 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
         break
 
 import common  # noqa: E402
+from common import access  # noqa: E402
 
 for parent in _HERE.parents:
     if (parent / "common" / "sql.py").exists():
         sys.path.insert(0, str(parent))
         break
 
-from common.sql import skill_sqlreview_005
+# SQL 已迁到 scripts/registry/sqlreview/ —— 两条路径共用同一份定义
 
 import checks  # noqa: E402
 import lexer  # noqa: E402
@@ -46,7 +47,7 @@ import sqlfetch  # noqa: E402
 from model import ReviewResult, RuleError  # noqa: E402
 from rules import DEFAULT_RULES_PATH, load_rules  # noqa: E402
 
-_TOP_Q = skill_sqlreview_005
+TOP_SQL_SCRIPT = "sqlreview.top_sql"
 
 
 def review_text(sql: str, rules, source: str, notes=()) -> ReviewResult:
@@ -60,9 +61,9 @@ def review_text(sql: str, rules, source: str, notes=()) -> ReviewResult:
     )
 
 
-def review_objects(db, schema: str, rules) -> ReviewResult:
+def review_objects(runner, schema: str, rules) -> ReviewResult:
     """Snapshot the catalog and run every object rule over it."""
-    facts = objects.collect_facts(db, schema)
+    facts = objects.collect_facts(runner, schema)
     return ReviewResult(
         source=f"schema:{schema}",
         findings=checks.check_objects(facts, rules),
@@ -71,8 +72,8 @@ def review_objects(db, schema: str, rules) -> ReviewResult:
     )
 
 
-def _sql_from_id(db, sql_id: str) -> tuple[str, list[str]]:
-    res = sqlfetch.sql_fetch(db, sql_id)
+def _sql_from_id(runner, sql_id: str) -> tuple[str, list[str]]:
+    res = sqlfetch.sql_fetch(runner, sql_id)
     notes: list[str] = []
     if res.truncated:
         notes.append(f"SQL 文本疑似被截断（{res.truncated_reason}），审查结果可能不完整")
@@ -81,11 +82,11 @@ def _sql_from_id(db, sql_id: str) -> tuple[str, list[str]]:
     return res.sql, notes
 
 
-def _sql_from_top(db, top: int) -> tuple[str, list[str]]:
-    _, rows = db.query(_TOP_Q.format(limit=int(top)))
+def _sql_from_top(runner, top: int) -> tuple[str, list[str]]:
+    rows = runner.run(TOP_SQL_SCRIPT, {"limit": int(top)})
     if not rows:
         return "", ["dbe_perf.statement 无数据（检查 enable_stmt_track）"]
-    text = ";\n".join(str(r[1]).rstrip().rstrip(";") for r in rows) + ";"
+    text = ";\n".join(str(r["query"]).rstrip().rstrip(";") for r in rows) + ";"
     return text, [f"取自 dbe_perf.statement 的 Top {len(rows)} SQL（按总耗时）"]
 
 
@@ -145,28 +146,28 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # --- DB-backed sources -----------------------------------------------
     try:
-        db = common.Database.connect(args.conn)
-    except (common.ConfigError, common.CredentialError, common.DBError) as exc:
+        runner = access.for_conn(args.conn)
+    except (common.ConfigError, common.CredentialError, access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
     try:
-        db.set_statement_timeout(args.timeout)
         if args.schema:
-            res = review_objects(db, args.schema, rules)
+            res = review_objects(runner, args.schema, rules)
         elif args.sql_id:
-            sql, notes = _sql_from_id(db, args.sql_id)
+            sql, notes = _sql_from_id(runner, args.sql_id)
             res = review_text(sql, rules, f"sql_id:{args.sql_id}", notes)
         else:
-            sql, notes = _sql_from_top(db, args.top)
+            sql, notes = _sql_from_top(runner, args.top)
             res = review_text(sql, rules, f"top:{args.top}", notes)
         _emit(res, args.format)
         return 0
-    except (ValueError, RuleError, common.DBError) as exc:
+    except (ValueError, KeyError, RuleError, access.QueryError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    finally:
-        db.close()
+    except Exception as exc:          # 渲染/协议层的失败也要清楚报出来
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 def _emit(res: ReviewResult, fmt: str) -> None:

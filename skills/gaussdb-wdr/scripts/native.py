@@ -21,11 +21,10 @@ for parent in _HERE.parents:
         break
 
 # SQL 已迁到 scripts/registry/wdr/ —— 两条路径共用同一份定义
-from common.grmp.client import GrmpError  # noqa: E402
-from common.grmp.runner import RunError  # noqa: E402
+# 取数失败只认这一个类型。换一种数据库访问方式时，改的是访问模块，
+# 不是这里 —— 详见 common/grmp/errors.py。
+from common import access  # noqa: E402
 
-# 降级要能接住两条路径的失败：直连抛 DBError，中间件抛 GrmpError
-_QUERY_ERRORS = (common.DBError, GrmpError, RunError)
 
 
 def sql_literal(s: str) -> str:
@@ -45,7 +44,7 @@ def load_window(runner, opt: Options) -> Window:
         rows = runner.run("wdr.wdr_enabled")
         enabled = rows[0]["enable_wdr_snapshot"] if rows else ""
         w.wdr_enabled = str(enabled or "").strip().lower() == "on"
-    except _QUERY_ERRORS:
+    except access.QueryError:
         pass
 
     w.node = opt.node
@@ -53,13 +52,13 @@ def load_window(runner, opt: Options) -> Window:
         try:
             rows = runner.run("wdr.node_name")
             w.node = str(rows[0]["pgxc_node_name"] if rows else "").strip()
-        except _QUERY_ERRORS:
+        except access.QueryError:
             pass
 
     try:
         rows = runner.run("wdr.window",
                           {"begin": int(opt.begin), "end": int(opt.end)})
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         raise common.DBError(
             f"加载快照窗口失败（snap {opt.begin}/{opt.end} 是否存在？run: wdr snaps）：{exc}")
     if not rows:
@@ -79,7 +78,7 @@ def generate_native(runner, opt: Options, w: Window) -> NativeInfo:
         rows = runner.run("wdr.native_report", {
             "begin": int(opt.begin), "end": int(opt.end),
             "scope": sql_literal(w.scope), "node": sql_literal(w.node)})
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         return NativeInfo(generated=False,
                           note="generate_wdr_report 不可用或失败：" + summarize_err(exc))
     body = "".join((str(r["report_line"]) + "\n")

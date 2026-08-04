@@ -1,0 +1,20 @@
+# SQL 取自 common/sql.py 的 skill_sqltune_004。
+#
+# **改动：COALESCE(unit,'') 加了别名 unit。** 原列名是 coalesce —— 不重名，
+# 但作为 JSON 键毫无意义，取值代码要写 r["coalesce"]。
+#
+# 正文与 procinfo.key_gucs 逐字相同（common/sql.py 里 skill_sqltune_004 与
+# skill_procinfo_002 本来就是两份相同的常量）。**刻意不复用同一个逻辑名**：
+# 逻辑名按 skill 分域，客户侧审批与作废也按域走；共用一条的话，procinfo
+# 哪天要加一个 GUC，sqltune 的证据包会跟着变而没人知道。
+name: sqltune.key_gucs
+description: 与执行计划相关的关键 GUC 参数（证据包 ## Key Parameters）
+sql: |
+  SELECT name, setting, COALESCE(unit, '') AS unit
+  FROM pg_settings
+  WHERE name IN (
+    'work_mem', 'maintenance_work_mem', 'shared_buffers',
+    'effective_cache_size', 'random_page_cost', 'seq_page_cost',
+    'max_parallel_workers_per_gather', 'from_collapse_limit',
+    'join_collapse_limit', 'geqo_threshold', 'default_statistics_target')
+  ORDER BY name;

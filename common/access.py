@@ -17,9 +17,16 @@ from typing import Any, Optional
 
 from .config import Connection, find
 from .grmp.client import GrmpClient, GrmpRunner
+from .grmp.errors import QueryError
 from .grmp.registry import Registry
 from .grmp.runner import DirectRunner
 from .grmp.settings import Settings
+
+# 取数失败的**唯一**对外异常类型。skill 的降级逻辑只 catch 它 ——
+# 新增一种访问方式时，新 Runner 抛 QueryError 即可，skill 一行不改。
+# 详见 common/grmp/errors.py 里关于「哪些错误不归一」的说明。
+__all__ = ["for_conn", "runner_for", "session_for", "session_for_conn",
+           "QueryError", "AccessError", "SessionUnavailable"]
 
 TOKEN_ENV = "GRMP_AUTH_TOKEN"
 
@@ -39,19 +46,23 @@ class SessionUnavailable(AccessError):
     """
 
 
-def _open_database(conn: Connection):
+def _open_database(conn: Connection, read_only: bool = True):
     """打开原始连接。抽成函数是为了测试能替换掉它。"""
     from .db import Database
 
-    return Database.connect(conn.name, read_only=True)
+    return Database.connect(conn.name, read_only=read_only)
 
 
-def session_for_conn(conn: Connection):
+def session_for_conn(conn: Connection, read_only: bool = True):
     """索取一条**带持久会话**的原始连接，拿不到就报错。
 
     与 runner_for() 是两条不同的口子：runner 面向「执行一条已注册脚本」，
     这里面向「一串必须落在同一会话里的语句」。后者是白名单模型撑不住的
     场景，所以要显式索取、显式失败。
+
+    read_only 默认 True，与 runner 一侧一致。放开它只有一个已知理由：
+    EXPLAIN ANALYZE 一条 DML —— 语句要真执行（外面包回滚事务），只读会话
+    会在事务里就把它挡回。默认不放开，调用方必须显式要求。
     """
     driver = conn.driver or "gsql"
     if driver == "grmp":
@@ -62,7 +73,7 @@ def session_for_conn(conn: Connection):
             "本来就跑不了 —— 需要为这类诊断单独保留一条直连通道，"
             "或在客户环境不提供该能力。" % conn.name
         )
-    db = _open_database(conn)
+    db = _open_database(conn, read_only=read_only)
     if not getattr(db, "provides_session", False):
         db.close()
         raise SessionUnavailable(
@@ -73,9 +84,9 @@ def session_for_conn(conn: Connection):
     return db
 
 
-def session_for(name: str):
+def session_for(name: str, read_only: bool = True):
     """按连接名索取带持久会话的原始连接。"""
-    return session_for_conn(find(name))
+    return session_for_conn(find(name), read_only=read_only)
 
 
 def _base_url(conn: Connection) -> str:

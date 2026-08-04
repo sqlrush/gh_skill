@@ -42,32 +42,41 @@ def _load(mod: str):
 
 
 @pytest.fixture(scope="module")
-def db():
+def runner():
+    """统一入口的 runner，不是原始连接：走中间件还是直连由 CONN 的 driver 决定。
+
+    把 SQLREVIEW_LIVE_CONN 指到一条 driver: grmp 的连接，同一批用例就
+    变成中间件路径的验收 —— 这正是统一入口存在的意义。
+
+    跳过的判据只有「连接没配」一条（与 test_dual_path_live.py 一致）。
+    连上了但脚本跑不通要**失败**，不能跳过 —— 这个文件存在的理由就是
+    catch 那种「降级成功、索引层其实全瞎了」的情况。
+    """
     sys.path.insert(0, str(_ROOT))
     import common
+    from common import access
     try:
-        conn = common.Database.connect(CONN)
-    except Exception as exc:                      # no config / no server / no creds
-        pytest.skip(f"no live connection {CONN!r}: {exc}")
-    yield conn
-    conn.close()
+        common.find(CONN)
+    except common.ConfigError as exc:
+        pytest.skip(f"connection {CONN!r} not configured: {exc}")
+    return access.for_conn(CONN)
 
 
 @pytest.mark.live
-def test_catalog_queries_parse_on_a_real_server(db):
+def test_catalog_queries_parse_on_a_real_server(runner):
     """Every object query must actually run — a degraded layer is a blind layer."""
     objects = _load("objects")
-    facts = objects.collect_facts(db, "pg_catalog")   # always exists, always populated
+    facts = objects.collect_facts(runner, "pg_catalog")  # always exists, always populated
     assert facts.notes == (), f"catalog collection degraded: {facts.notes}"
     assert facts.tables, "no tables collected from pg_catalog"
     assert facts.indexes, "no indexes collected — the index query silently went blind"
 
 
 @pytest.mark.live
-def test_index_columns_are_resolved_in_order(db):
+def test_index_columns_are_resolved_in_order(runner):
     """indkey -> column names must survive the openGauss dialect, in order."""
     objects = _load("objects")
-    facts = objects.collect_facts(db, "pg_catalog")
+    facts = objects.collect_facts(runner, "pg_catalog")
     multi = [i for i in facts.indexes if len(i.columns) > 1]
     assert multi, "no multi-column index resolved — column extraction is broken"
     for idx in facts.indexes:

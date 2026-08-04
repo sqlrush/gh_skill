@@ -18,6 +18,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Mapping, Optional
 
+from .errors import QueryError
 from .params import to_param_value
 
 PATH_PREFIX = "/icbc/paas/aiops/grmp/diagnostic/agent"
@@ -28,8 +29,12 @@ DEFAULT_TIMEOUT = 120
 LIST_PAGE_SIZE = 1000  # 协议上限；脚本数不多，一次拉完
 
 
-class GrmpError(Exception):
-    """中间件返回的业务错误，或响应结构不符合协议。"""
+class GrmpError(QueryError):
+    """中间件返回的业务错误，或响应结构不符合协议。
+
+    继承 QueryError，使 skill 只需 catch 一个类型 ——
+    换一种访问方式时，skill 的降级逻辑不用动。
+    """
 
 
 class GrmpClient:

@@ -22,10 +22,10 @@ for parent in _HERE.parents:
         break
 
 # SQL 已迁到 scripts/registry/wdr/ —— 两条路径共用同一份定义
-from common.grmp.client import GrmpError  # noqa: E402
-from common.grmp.runner import RunError  # noqa: E402
+# 取数失败只认这一个类型。换一种数据库访问方式时，改的是访问模块，
+# 不是这里 —— 详见 common/grmp/errors.py。
+from common import access  # noqa: E402
 
-_QUERY_ERRORS = (common.DBError, GrmpError, RunError)
 
 def snaps(runner, limit: int) -> str:
     if limit <= 0:
@@ -33,7 +33,7 @@ def snaps(runner, limit: int) -> str:
     try:
         rows = runner.run("wdr.wdr_enabled")
         enabled = rows[0]["enable_wdr_snapshot"] if rows else ""
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         raise common.DBError(f"读取 enable_wdr_snapshot 失败：{exc}")
     if str(enabled or "").strip().lower() != "on":
         raise common.DBError(
@@ -43,7 +43,7 @@ def snaps(runner, limit: int) -> str:
 
     try:
         rows = runner.run("wdr.snapshots", {"limit": int(limit)})
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         raise common.DBError(f"查询 snapshot.snapshot 失败：{exc}")
 
     snaps_list = [(int(r["snapshot_id"]), r["start_ts"], r["end_ts"],

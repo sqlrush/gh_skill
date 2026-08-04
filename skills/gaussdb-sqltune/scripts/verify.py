@@ -28,9 +28,30 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
         break
 
 import common  # noqa: E402
+from common import access  # noqa: E402
 from cost import explain_cost, quote_columns, quote_ident, quote_sql_literal  # noqa: E402
 from evidence import is_dml  # noqa: E402
 from sqlfetch import count_placeholders  # noqa: E402
+
+# **本脚本一条 SQL 都迁不到 scripts/registry/。** 它做的三件事都以用户临时
+# 给的 SQL 为输入：
+#
+#   EXPLAIN --original / --rewrite   任意 SQL，每次都不同，注册不进白名单
+#   md5 行哈希等价性校验              把用户 SQL 包进子查询，同上
+#   hypopg 组合验证                   还额外要求跨语句的持久会话
+#
+# 所以它整体走 access.session_for()：一条原始会话，拿不到就在入口失败。
+# 不注册「EXPLAIN {{user_sql}}」这类直通脚本 —— 那等于给白名单开一个通用
+# 入口，任何 SQL 都能从这一条进去。是否开这个口子属于客户的安全策略决策。
+_SESSION_REQUIRED = (
+    "verify 的输入是用户给的任意 SQL（--original / --rewrite），"
+    "要对它们做 EXPLAIN、行哈希比对、hypopg 组合验证 —— "
+    "三件事都无法表达成预注册脚本，其中 hypopg 还要求跨语句的持久会话。\n"
+    "**该能力在白名单模型下不可用。**\n"
+    "可选做法：为这类诊断保留一条直连通道（driver: pg8000），"
+    "或在客户环境不提供改写验证能力 —— 但那样就不能再向用户呈现"
+    "任何「已验证」的改写结论，未经验证的建议一律归入「未验证想法」。"
+)
 
 MIN_SPEEDUP = 1.3
 _EQUIV_TIMEOUT_MS = 30000
@@ -297,8 +318,13 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     combined = args.auto_index or bool(args.index)
     try:
-        db = common.Database.connect(args.conn)
-    except (common.ConfigError, common.CredentialError, common.DBError) as exc:
+        # 只读会话，与迁移前的 Database.connect(name) 默认值一致
+        db = access.session_for(args.conn)
+    except access.SessionUnavailable as exc:
+        print(f"error: {exc}\n{_SESSION_REQUIRED}", file=sys.stderr)
+        return 2
+    except (common.ConfigError, common.CredentialError, common.DBError,
+            access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     try:

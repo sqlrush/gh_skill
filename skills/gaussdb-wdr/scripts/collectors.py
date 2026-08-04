@@ -28,13 +28,10 @@ for parent in _HERE.parents:
         break
 
 # SQL 已迁到 scripts/registry/wdr/ —— 两条路径共用同一份定义
-from common.grmp.client import GrmpError  # noqa: E402
-from common.grmp.runner import RunError  # noqa: E402
+# 取数失败只认这一个类型。换一种数据库访问方式时，改的是访问模块，
+# 不是这里 —— 详见 common/grmp/errors.py。
+from common import access  # noqa: E402
 
-# 降级逻辑要能接住两条路径的失败：直连抛 DBError，中间件抛 GrmpError。
-# 只 catch DBError 的话，走中间件时某个维度取不到会从降级变成崩栈。
-# ColumnError / ParamError 刻意不在此列 —— 那是脚本定义缺陷，必须响亮失败。
-_QUERY_ERRORS = (common.DBError, GrmpError, RunError)
 
 
 def _i(x) -> int:
@@ -47,12 +44,12 @@ def collect_loadprofile(runner, opt: Options) -> DimResult:
     b, e = int(opt.begin), int(opt.end)
     try:
         rows = runner.run("wdr.load_profile", {"b": b, "e": e})
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         return degraded(DIM_LOADPROFILE, summarize_err(exc))
     db_time_us, cpu_time_us = _i(rows[0]["db_time_us"]), _i(rows[0]["cpu_time_us"])
     try:
         rows = runner.run("wdr.db_summary", {"b": b, "e": e})
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         return degraded(DIM_LOADPROFILE, summarize_err(exc))
     commits, blks_read, blks_hit = (_i(rows[0]["xact_commit"]),
                                 _i(rows[0]["blks_read"]),
@@ -75,7 +72,7 @@ def collect_dbstat(runner, opt: Options) -> DimResult:
     b, e = int(opt.begin), int(opt.end)
     try:
         rows = runner.run("wdr.db_stat", {"b": b, "e": e})
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         return degraded(DIM_DBSTAT, summarize_err(exc))
     commits, rollbacks, deadlocks, temp_bytes, blks_hit, blks_read = (
         _i(rows[0][k]) for k in ("xact_commit", "xact_rollback", "deadlocks",
@@ -134,7 +131,7 @@ def collect_topsql(runner, opt: Options) -> DimResult:
     b, e, top = int(opt.begin), int(opt.end), int(opt.top)
     try:
         rows = runner.run("wdr.top_sql", {"b": b, "e": e, "top": top})
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         return degraded(DIM_TOPSQL, summarize_err(exc))
 
     # each list item: dict-like tuple (id, query, calls, elapsed, cpu, spill, phys)
@@ -199,7 +196,7 @@ def collect_waits(runner, opt: Options) -> DimResult:
     b, e, top = int(opt.begin), int(opt.end), int(opt.top)
     try:
         rows = runner.run("wdr.waits", {"b": b, "e": e, "top": top})
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         return degraded(DIM_WAITS, summarize_err(exc))
     items = [(str(r["wait_class"]), _i(r["waits"]), _i(r["wait_us"])) for r in rows]
     total = sum(it[2] for it in items)
@@ -232,7 +229,7 @@ def collect_checkpoint(runner, opt: Options) -> DimResult:
     b, e = int(opt.begin), int(opt.end)
     try:
         rows = runner.run("wdr.checkpoint", {"b": b, "e": e})
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         return degraded(DIM_CHECKPOINT, summarize_err(exc))
     timed, req = _i(rows[0]["checkpoints_timed"]), _i(rows[0]["checkpoints_req"])
     total = timed + req
@@ -261,7 +258,7 @@ def collect_cache(runner, opt: Options) -> DimResult:
     b, e, top = int(opt.begin), int(opt.end), int(opt.top)
     try:
         rows = runner.run("wdr.cache", {"b": b, "e": e, "top": top})
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         return degraded(DIM_CACHE, summarize_err(exc))
     d = DimResult(dimension=DIM_CACHE, available=True, headers=["对象", "物理读(块)", "逻辑读(块)"])
     for r in rows:
@@ -280,7 +277,7 @@ def collect_fileio(runner, opt: Options) -> DimResult:
     b, e, top = int(opt.begin), int(opt.end), int(opt.top)
     try:
         rows = runner.run("wdr.file_io", {"b": b, "e": e, "top": top})
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         return degraded(DIM_FILEIO, summarize_err(exc))
     d = DimResult(dimension=DIM_FILEIO, available=True, headers=["文件", "物理读", "物理写"])
     for r in rows:

@@ -26,7 +26,45 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
         break
 
 import common  # noqa: E402
+from common import access  # noqa: E402
 import render  # noqa: E402
+
+# 本 skill 唯一的查询点就是「对用户给的任意 SQL 做 EXPLAIN」。
+# 它**没有可迁到 scripts/registry/ 的部分**：白名单模型按逻辑脚本名放行
+# 预注册的 SQL，而这里的 SQL 每次都不同，注册不进去。
+#
+# 唯一能让它走中间件的写法是注册一条 `EXPLAIN {{user_sql}}` 的直通脚本
+# （实测可行，见 docs/test/2026-08-03-gh_skill-经中间件访问测试报告.md 发现 4）。
+# 本实现**不这么做**：那等于在白名单上开一个通用入口，任何 SQL 都能从这条
+# 脚本进去，白名单的意义被架空。要不要开这个口子是客户的安全策略决策，
+# 不是技术决策，不该由交付方替客户定。
+#
+# 所以 grmp 连接在入口处明确报错，而不是静默降级或偷偷绕过；
+# 直连连接（pg8000 / gsql）行为与迁移前完全一致。
+_ARBITRARY_SQL_ON_GRMP = (
+    "连接 {name} 的 driver 是 grmp：中间件只执行预先注册的脚本（白名单模型），"
+    "而 explain 的输入是用户临时给的任意 SQL，无法预注册。\n"
+    "本 skill 不为此注册「EXPLAIN {{{{user_sql}}}}」这类直通脚本 —— 那会让任何 SQL "
+    "都能从这一条脚本进入，白名单形同虚设。是否开这个口子属于客户的安全策略决策。\n"
+    "可选做法：为任意 SQL 类诊断保留一条直连通道（driver: pg8000 / gsql），"
+    "或在客户环境不提供本 skill。"
+)
+
+
+def require_direct_sql_path(conn_name: str) -> None:
+    """任意 SQL 只能走直连。走不了就当场报错，绝不降级成别的结果。
+
+    **刻意不用 access.session_for()**：那个口子除了 grmp，还会拒掉
+    provides_session=False 的 gsql（每条语句起独立子进程）。而 explain
+    根本不需要跨语句会话 —— 单条 EXPLAIN，DML 的 ANALYZE 也是在一次
+    调用里 BEGIN/ROLLBACK 包住的，gsql 今天跑得好好的。用会话守卫会把
+    一批能用的连接一并拒掉，属于借来的约束。这里只判它真正的边界：
+    能不能执行未注册的 SQL。
+    """
+    conn = common.find(conn_name)                      # ConfigError 由调用方接
+    if (conn.driver or "gsql") == "grmp":
+        raise access.AccessError(_ARBITRARY_SQL_ON_GRMP.format(name=conn_name))
+
 
 _DML_RE = re.compile(r"(?i)^\s*(insert|update|delete|merge)\b")
 _CTE_RE = re.compile(r"(?i)^\s*with\b")
@@ -113,8 +151,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         ap.error("empty SQL on stdin")
 
     try:
+        # 先判路：grmp 走不了任意 SQL，要在建连之前就说清楚原因，
+        # 否则错误会表现成「中间件报脚本不存在」，排查方向被带偏。
+        require_direct_sql_path(args.conn)
         db = common.Database.connect(args.conn, read_only=not args.analyze)
-    except (common.ConfigError, common.CredentialError, common.DBError) as exc:
+    except (common.ConfigError, common.CredentialError, common.DBError,
+            access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     try:

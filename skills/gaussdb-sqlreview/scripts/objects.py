@@ -19,53 +19,67 @@ for parent in _HERE.parents:
         sys.path.insert(0, str(parent))
         break
 
-from common.sql import skill_sqlreview_001,skill_sqlreview_002
+# SQL 已迁到 scripts/registry/sqlreview/ —— 两条路径共用同一份定义
+# 取数失败只认这一个类型。换一种数据库访问方式时，改的是访问模块，
+# 不是这里 —— 详见 common/grmp/errors.py。
+from common import access  # noqa: E402
 
-_TABLES_Q = skill_sqlreview_001
 
-# indkey is an int2vector. openGauss is based on PostgreSQL 9.2, which has no
-# WITH ORDINALITY (9.4+) — expanding the vector with generate_series keeps the
-# column order without it. Expression index columns (attnum 0) drop out.
-_INDEXES_Q = skill_sqlreview_002
+TABLES_SCRIPT = "sqlreview.tables"
+INDEXES_SCRIPT = "sqlreview.indexes"
 
+# 布尔列的真值形态。协议把所有列值都渲染成字符串，而布尔的渲染形式接口文档
+# 自相矛盾（§3.1 给 true/false，§3.2 给 t/f），所以两套都认。
+# 直接 bool(值) 是不行的：bool("f") 是 True —— 每张表都会被判成「有主键」，
+# 不报错，只是结论反了。
+_TRUE_TEXTS = frozenset({"t", "true", "y", "yes", "1"})
+
+
+def _as_bool(val) -> bool:
+    return str(val).strip().lower() in _TRUE_TEXTS
 
 
 def _as_tuple(val) -> tuple[str, ...]:
-    """Array columns come back as list (pg8000) or JSON array (gsql)."""
+    """列名/约束名数组。脚本里已用 array_to_string 投影成逗号分隔文本。
+
+    数组的字符串化形式协议没有定义（见 registry/sqlreview/tables.yaml），
+    所以在 SQL 里就转成文本，这里只按逗号切。空串表示空数组。
+    """
     if not val:
         return ()
-    if isinstance(val, str):                 # defensive: '{a,b}' text form
-        return tuple(v for v in val.strip("{}").split(",") if v)
-    return tuple(str(v) for v in val)
+    return tuple(v for v in str(val).split(",") if v)
 
 
-def _collect_tables(db, schema: str) -> tuple[tuple[TableFact, ...], list[str]]:
+def _collect_tables(runner, schema: str) -> tuple[tuple[TableFact, ...], list[str]]:
     try:
-        _, rows = db.query(_TABLES_Q, (schema,))
-    except common.DBError as exc:
+        rows = runner.run(TABLES_SCRIPT, {"schema": schema})
+    except access.QueryError as exc:
         return (), [f"表信息采集失败（已降级）：{exc}"]
     return tuple(
-        TableFact(schema=str(r[0]), table=str(r[1]), has_pk=bool(r[2]),
-                  fks=_as_tuple(r[3]), columns=_as_tuple(r[4]))
+        TableFact(schema=str(r["schema"]), table=str(r["table"]),
+                  has_pk=_as_bool(r["has_pk"]),
+                  fks=_as_tuple(r["fks"]), columns=_as_tuple(r["columns"]))
         for r in rows
     ), []
 
 
-def _collect_indexes(db, schema: str) -> tuple[tuple[IndexFact, ...], list[str]]:
+def _collect_indexes(runner, schema: str) -> tuple[tuple[IndexFact, ...], list[str]]:
     try:
-        _, rows = db.query(_INDEXES_Q, (schema,))
-    except common.DBError as exc:
+        rows = runner.run(INDEXES_SCRIPT, {"schema": schema})
+    except access.QueryError as exc:
         return (), [f"索引信息采集失败（已降级）：{exc}"]
     return tuple(
-        IndexFact(schema=str(r[0]), table=str(r[1]), name=str(r[2]),
-                  columns=_as_tuple(r[3]), is_unique=bool(r[4]),
-                  is_primary=bool(r[5]), scans=int(r[6] or 0))
+        IndexFact(schema=str(r["schema"]), table=str(r["table"]), name=str(r["name"]),
+                  columns=_as_tuple(r["columns"]),
+                  is_unique=_as_bool(r["is_unique"]),
+                  is_primary=_as_bool(r["is_primary"]),
+                  scans=int(r["scans"] or 0))
         for r in rows
     ), []
 
 
-def collect_facts(db, schema: str) -> ObjectFacts:
+def collect_facts(runner, schema: str) -> ObjectFacts:
     """Snapshot one schema's tables and indexes. Never raises on query failure."""
-    tables, t_notes = _collect_tables(db, schema)
-    indexes, i_notes = _collect_indexes(db, schema)
+    tables, t_notes = _collect_tables(runner, schema)
+    indexes, i_notes = _collect_indexes(runner, schema)
     return ObjectFacts(tables=tables, indexes=indexes, notes=tuple(t_notes + i_notes))

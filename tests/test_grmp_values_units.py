@@ -1,0 +1,94 @@
+"""结果值的类型还原。
+
+协议把所有列值渲染成字符串，于是 Python 的真值判断在这里是陷阱：
+
+    bool("f")     -> True
+    bool("false") -> True
+    bool("0")     -> True
+
+布尔列取回来是 'f'，bool() 一律得 True —— 「这张表有主键吗」永远答有，
+「实例在恢复态吗」永远答是。**结论正好相反，而且不报错。**
+
+而且布尔的渲染形式还不止一种：接口文档 §3.1 给 true/false、§3.2 给 t/f，
+同一中间件同一张系统表两种写法（规范说明 §7.2 判断中间件不做归一化，
+表现随内核版本/驱动而变）。所以解析必须两套都接。
+"""
+import sys
+import pathlib
+
+_ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_ROOT))
+
+import pytest  # noqa: E402
+
+from common.grmp.values import as_bool, as_int, as_float  # noqa: E402
+
+
+# ===========================================================================
+# 布尔
+# ===========================================================================
+
+@pytest.mark.parametrize("raw", ["t", "true", "TRUE", "True", "y", "yes", "1", "on"])
+def test_truthy_forms(raw):
+    assert as_bool(raw) is True
+
+
+@pytest.mark.parametrize("raw", ["f", "false", "FALSE", "False", "n", "no", "0", "off"])
+def test_falsy_forms(raw):
+    """这些用 bool() 判全是 True —— 本函数存在的全部理由。"""
+    assert as_bool(raw) is False
+    assert bool(raw) is True, "如果这条挂了，说明 Python 改了真值语义"
+
+
+def test_empty_and_none_are_false():
+    """NULL 渲染成空串（规范说明 §7.3 的推断），按假处理。"""
+    assert as_bool("") is False
+    assert as_bool(None) is False
+
+
+def test_real_booleans_pass_through():
+    """直连路径若拿到真布尔值也要正确 —— 两条路径共用同一个解析。"""
+    assert as_bool(True) is True
+    assert as_bool(False) is False
+
+
+def test_unknown_form_is_rejected_rather_than_guessed():
+    """认不出来的写法必须报错。
+
+    静默当成 False 会让「未知」伪装成「否」—— 正是这个函数要防的那类错。
+    """
+    with pytest.raises(ValueError):
+        as_bool("maybe")
+
+
+# ===========================================================================
+# 数值
+# ===========================================================================
+
+def test_int_parses_string_form():
+    assert as_int("42") == 42
+    assert as_int("-1") == -1
+
+
+def test_int_treats_empty_as_default():
+    """NULL 渲染成空串，取默认值而不是抛异常 —— 统计类字段常有 NULL。"""
+    assert as_int("") == 0
+    assert as_int(None) == 0
+    assert as_int("", default=-1) == -1
+
+
+def test_float_parses_string_form():
+    assert as_float("25.34") == pytest.approx(25.34)
+
+
+def test_float_treats_empty_as_default():
+    assert as_float("") == 0.0
+    assert as_float(None, default=1.5) == pytest.approx(1.5)
+
+
+def test_numeric_garbage_is_rejected():
+    """非数字不能静默变成 0 —— 那会把「取数出错」伪装成「值就是 0」。"""
+    with pytest.raises(ValueError):
+        as_int("abc")
+    with pytest.raises(ValueError):
+        as_float("abc")

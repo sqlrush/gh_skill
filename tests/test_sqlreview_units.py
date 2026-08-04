@@ -396,35 +396,63 @@ def test_object_index_not_redundant_when_prefix_differs():
 # --------------------------------------------------------------------------
 # objects (I/O layer, FakeDB)
 # --------------------------------------------------------------------------
-class _FakeDB:
-    """Returns canned rows per query fragment; raises for those listed in `fail`."""
+class _FakeRunner:
+    """按脚本逻辑名返回预置行；`fail` 里列到的脚本抛 QueryError。
+
+    行是**全字符串的列名字典** —— 与统一入口两条真实路径同形。这一点是刻意的：
+    若在这里喂原生 bool/list，objects.py 里那两个「字符串化」的坑就测不到。
+    """
 
     def __init__(self, fail=()):
         self.fail = fail
+        self.calls = []
 
-    def query(self, sql, params=None):
-        import common
-        for frag in self.fail:
-            if frag in sql:
-                raise common.DBError(f"permission denied for {frag}")
-        if "pg_constraint" in sql:  # tables + pk + fk
-            return [], [("public", "orders", True, ["fk_orders_user"], ["id", "uid"])]
-        if "pg_index" in sql:  # indexes
-            return [], [("public", "orders", "idx_orders_status", ["status"], False, False, 0)]
-        return [], []
+    def run(self, script_name, values=None):
+        from common import access
+        self.calls.append((script_name, values))
+        if script_name in self.fail:
+            raise access.QueryError(f"permission denied for {script_name}")
+        if script_name == objects.TABLES_SCRIPT:
+            return [{"schema": "public", "table": "orders", "has_pk": "t",
+                     "fks": "fk_orders_user", "columns": "id,uid"}]
+        if script_name == objects.INDEXES_SCRIPT:
+            return [{"schema": "public", "table": "orders",
+                     "name": "idx_orders_status", "columns": "status",
+                     "is_unique": "f", "is_primary": "f", "scans": "0"}]
+        return []
 
 
 def test_collect_facts_builds_immutable_facts():
-    facts = objects.collect_facts(_FakeDB(), "public")
+    facts = objects.collect_facts(_FakeRunner(), "public")
     assert facts.tables[0].table == "orders"
     assert facts.tables[0].has_pk is True
     assert facts.tables[0].fks == ("fk_orders_user",)
+    assert facts.tables[0].columns == ("id", "uid")
     assert facts.indexes[0].name == "idx_orders_status"
     assert facts.indexes[0].columns == ("status",)
 
 
+def test_collect_facts_calls_the_registered_logical_names():
+    """按逻辑名调用，不硬编码脚本 ID —— ID 是环境相关数据。"""
+    runner = _FakeRunner()
+    objects.collect_facts(runner, "public")
+    assert [c[0] for c in runner.calls] == ["sqlreview.tables", "sqlreview.indexes"]
+    assert all(c[1] == {"schema": "public"} for c in runner.calls)
+
+
+def test_boolean_columns_are_parsed_not_truth_tested():
+    """协议把布尔渲染成 't'/'f'，而 bool("f") 是 True。
+
+    直接 bool() 的话每张表都会被判成「有主键」、每个索引都成 UNIQUE ——
+    不报错，只是结论反了。这条用例守的就是这个。
+    """
+    facts = objects.collect_facts(_FakeRunner(), "public")
+    assert facts.indexes[0].is_unique is False
+    assert facts.indexes[0].is_primary is False
+
+
 def test_collect_facts_degrades_on_query_failure():
-    facts = objects.collect_facts(_FakeDB(fail=("pg_index",)), "public")
+    facts = objects.collect_facts(_FakeRunner(fail=(objects.INDEXES_SCRIPT,)), "public")
     assert facts.tables  # table dimension still collected
     assert facts.indexes == ()
     assert any("permission denied" in n for n in facts.notes)

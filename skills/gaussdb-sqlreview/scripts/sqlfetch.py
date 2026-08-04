@@ -27,7 +27,10 @@ for parent in _HERE.parents:
         sys.path.insert(0, str(parent))
         break
 
-from common.sql import skill_sqlreview_003,skill_sqlreview_004
+# SQL 已迁到 scripts/registry/sqlreview/ —— 两条路径共用同一份定义
+
+HISTORY_SCRIPT = "sqlreview.from_history"
+STATEMENT_SCRIPT = "sqlreview.from_statement"
 
 
 # Tokens that cannot legitimately end a complete statement — if the stored text
@@ -96,26 +99,25 @@ def looks_truncated(sql: str) -> tuple[bool, str]:
     return False, ""
 
 
-def sql_fetch(db, raw_id: str) -> FetchResult:
+def sql_fetch(runner, raw_id: str) -> FetchResult:
+    """经统一入口取数。走中间件还是直连由连接的 driver 决定，这里不感知。"""
     try:
         sid = int(raw_id.strip())
     except ValueError as exc:
         raise ValueError(
             f"sql id {raw_id!r}: must be a (possibly negative) integer") from exc
 
-    hist = skill_sqlreview_003.format(sid=sid)
-    _, rows = db.query(hist)
+    rows = runner.run(HISTORY_SCRIPT, {"sid": sid})
     if rows:
-        schema, query = rows[0][0], rows[0][1]
+        schema, query = rows[0]["schema_name"], rows[0]["query"]
         source = "statement_history"
     else:
-        stmt = skill_sqlreview_004.format(sid=sid)
-        _, srows = db.query(stmt)
+        srows = runner.run(STATEMENT_SCRIPT, {"sid": sid})
         if not srows:
             raise ValueError(
                 f"sql id {raw_id} not found in dbe_perf.statement_history or "
                 f"dbe_perf.statement (check enable_stmt_track / track_stmt_parameter)")
-        schema, query = "", srows[0][0]
+        schema, query = "", srows[0]["query"]
         source = "statement"
 
     n = count_placeholders(query)

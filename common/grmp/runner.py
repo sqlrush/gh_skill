@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from . import serialize
 from .columns import check_columns
+from .errors import QueryError
 from .params import to_param_value
 from .placeholder import render
 from .registry import Registry
@@ -21,8 +22,12 @@ from .settings import Settings
 DEFAULT_STATEMENT_TIMEOUT_SECONDS = 60
 
 
-class RunError(Exception):
-    """执行层面的失败（无结果集等）。"""
+class RunError(QueryError):
+    """执行层面的失败（无结果集等）。
+
+    继承 QueryError，与中间件路径的 GrmpError 归一 ——
+    skill 的降级逻辑只认 access.QueryError 一个类型。
+    """
 
 
 def _default_open_db(name: str, read_only: bool = True):
@@ -69,6 +74,10 @@ class DirectRunner:
         try:
             db.set_statement_timeout(self._timeout)
             cols, rows = db.query(sql)
+        except Exception as exc:
+            # 归一到 QueryError：skill 的降级逻辑只认这一个类型，
+            # 换访问方式时不用改 skill。原因用 from 链住，不吞掉。
+            raise QueryError("执行脚本 %s 失败：%s" % (script_name, exc)) from exc
         finally:
             db.close()
 

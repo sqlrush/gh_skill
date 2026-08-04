@@ -31,12 +31,11 @@ for parent in _HERE.parents:
         break
 
 # SQL 已迁到 scripts/registry/health/ —— 两条路径共用同一份定义
-from common.grmp.client import GrmpError  # noqa: E402
-from common.grmp.runner import RunError  # noqa: E402
+# 取数失败只认这一个类型。换一种数据库访问方式时，改的是访问模块，
+# 不是这里 —— 详见 common/grmp/errors.py。
+from common import access  # noqa: E402
+from common.grmp.values import as_bool  # noqa: E402
 
-# 降级要能接住两条路径的失败：直连抛 DBError，中间件抛 GrmpError。
-# ColumnError / ParamError 刻意不在此列 —— 那是脚本定义缺陷，必须响亮失败。
-_QUERY_ERRORS = (common.DBError, GrmpError, RunError)
 
 
 
@@ -53,13 +52,14 @@ def _f(x, default: float = 0.0) -> float:
 def collect_overview(runner, th: Thresholds, _top: int) -> DimResult:
     try:
         rows = runner.run("health.overview")
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         return degraded(DIM_OVERVIEW, summarize_err(exc))
     r = rows[0]
     cache_hit = _f(r["cache_hit_pct"])
     backends = int(r["numbackends"] or 0)
     max_conn = int(r["max_conn"] or 0)
-    in_recovery = bool(r["in_recovery"])
+    # bool("f") 是 True —— 结果值全是字符串，必须用 as_bool 还原
+    in_recovery = as_bool(r["in_recovery"])
     oldest = int(r["oldest_xact_s"] or 0)
     oldest_str = f"{oldest}s" if oldest > 0 else "无"
     d = DimResult(dimension=DIM_OVERVIEW, available=True,
@@ -98,7 +98,7 @@ def collect_overview(runner, th: Thresholds, _top: int) -> DimResult:
 def collect_waits(runner, th: Thresholds, top: int) -> DimResult:
     try:
         rows = runner.run("health.waits")
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         return degraded(DIM_WAITS, summarize_err(exc))
     d = DimResult(dimension=DIM_WAITS, available=True, headers=["wait_status", "会话数"])
     total = top_cnt = 0
@@ -137,7 +137,7 @@ def collect_slowsql(runner, th: Thresholds, top: int) -> DimResult:
     try:
         rows = runner.run("health.slow_sql",
                           {"threshold_ms": int(th.slow_sql_avg_ms), "limit": top})
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         return degraded(DIM_SLOWSQL, summarize_err(exc))
     d = DimResult(dimension=DIM_SLOWSQL, available=True,
                   headers=["sql_id", "calls", "avg_ms", "total_s", "cpu_s", "query"])
@@ -193,7 +193,7 @@ def _xact_threshold(code: str, sev: Severity, th: Thresholds) -> str:
 def collect_xact(runner, th: Thresholds, top: int) -> DimResult:
     try:
         rows = runner.run("health.long_xact", {"limit": top})
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         return degraded(DIM_XACT, summarize_err(exc))
     d = DimResult(dimension=DIM_XACT, available=True,
                   headers=["pid", "user", "state", "时长(s)", "query"])
@@ -240,7 +240,7 @@ def collect_xact(runner, th: Thresholds, top: int) -> DimResult:
 def collect_bloat(runner, th: Thresholds, top: int) -> DimResult:
     try:
         rows = runner.run("health.bloat", {"limit": top})
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         return degraded(DIM_BLOAT, summarize_err(exc))
     d = DimResult(dimension=DIM_BLOAT, available=True,
                   headers=["table", "live", "dead", "dead%", "autovacuum前(s)", "autovacuum"])
@@ -250,7 +250,7 @@ def collect_bloat(runner, th: Thresholds, top: int) -> DimResult:
         sch, rel = row["schemaname"], row["relname"]
         live, dead = int(row["n_live_tup"]), int(row["n_dead_tup"])
         age = row["last_autovacuum_age_s"]
-        autovac = bool(row["autovac_enabled"])
+        autovac = as_bool(row["autovac_enabled"])
         ratio = 100.0 * dead / max(live + dead, 1)
         age_str = "—" if age is None else f"{float(age):.0f}"
         av_str = "on" if autovac else "off"
@@ -281,7 +281,7 @@ def collect_bloat(runner, th: Thresholds, top: int) -> DimResult:
 def collect_lwlock(runner, th: Thresholds, top: int) -> DimResult:
     try:
         rows = runner.run("health.lwlock", {"limit": top})
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         return degraded(DIM_LWLOCK, summarize_err(exc))
     d = DimResult(dimension=DIM_LWLOCK, available=True, headers=["lwlock", "等待会话数"])
     hot = ""
@@ -308,7 +308,7 @@ def collect_lwlock(runner, th: Thresholds, top: int) -> DimResult:
 def collect_locks(runner, th: Thresholds, top: int) -> DimResult:
     try:
         rows = runner.run("health.lock_chain", {"limit": top})
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         return degraded(DIM_LOCKS, summarize_err(exc))
     d = DimResult(dimension=DIM_LOCKS, available=True,
                   headers=["根阻塞pid", "链深", "被阻数", "根状态", "时长(s)"])
@@ -350,7 +350,7 @@ def collect_locks(runner, th: Thresholds, top: int) -> DimResult:
 def collect_conn(runner, th: Thresholds, _top: int) -> DimResult:
     try:
         rows = runner.run("health.conn_states")
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         return degraded(DIM_CONN, summarize_err(exc))
     d = DimResult(dimension=DIM_CONN, available=True, headers=["state", "会话数"])
     total = active = idle = iit = 0
@@ -373,7 +373,7 @@ def collect_conn(runner, th: Thresholds, _top: int) -> DimResult:
     if active >= th.active_conc_floor:
         try:
             r2 = runner.run("health.conn_concentration")
-        except _QUERY_ERRORS:
+        except access.QueryError:
             r2 = []
         if r2:
             top_q = r2[0]["q"]
@@ -396,7 +396,7 @@ def collect_logs(runner, th: Thresholds, _top: int) -> DimResult:
     d = DimResult(dimension=DIM_LOGS, available=True, headers=["指标", "值"])
     try:
         rows = runner.run("health.bgwriter")
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         return degraded(DIM_LOGS, summarize_err(exc))
     timed, req = (int(rows[0]["checkpoints_timed"]),
                   int(rows[0]["checkpoints_req"]))
@@ -419,7 +419,7 @@ def collect_logs(runner, th: Thresholds, _top: int) -> DimResult:
         if val is not None:
             am = str(val)
             d.rows.append(["archive_mode", am])
-    except _QUERY_ERRORS:
+    except access.QueryError:
         pass
     d.headline = f"checkpoint req 占比 {req_pct:.0f}%、归档 {am}"
     return d
@@ -432,7 +432,7 @@ def collect_logs(runner, th: Thresholds, _top: int) -> DimResult:
 def collect_repl(runner, th: Thresholds, _top: int) -> DimResult:
     try:
         rows = runner.run("health.replication")
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         return degraded(DIM_REPL, summarize_err(exc))
     d = DimResult(dimension=DIM_REPL, available=True,
                   headers=["standby", "client", "state", "sync", "replay_lag"])
@@ -491,7 +491,7 @@ def collect_schema(runner, th: Thresholds, top: int) -> DimResult:
         rows = runner.run("health.unused_index",
                           {"min_bytes": int(th.index_unused_bytes),
                            "schema_filter": _SCHEMA_SYS_FILTER, "limit": top})
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         return degraded(DIM_SCHEMA, summarize_err(exc))
     for row in rows:
         name, sz = row["idx_name"], int(row["idx_bytes"])
@@ -504,7 +504,7 @@ def collect_schema(runner, th: Thresholds, top: int) -> DimResult:
     try:
         _iv = runner.run("health.invalid_index")
         invalid = int(_iv[0]["cnt"] if _iv else 0)
-    except _QUERY_ERRORS:
+    except access.QueryError:
         invalid = 0
     if invalid > 0:
         d.rows.append(["失效索引", "(invalid)", i64(invalid)])
@@ -515,7 +515,7 @@ def collect_schema(runner, th: Thresholds, top: int) -> DimResult:
         srows = runner.run("health.stale_stats",
                            {"min_rows": int(th.stale_min_rows),
                             "schema_filter": _SCHEMA_SYS_FILTER, "limit": top})
-    except _QUERY_ERRORS:
+    except access.QueryError:
         srows = []
     for row in srows:
         name = row["tbl_name"]
@@ -535,7 +535,7 @@ def collect_concurrency(runner, th: Thresholds, _top: int) -> DimResult:
     d = DimResult(dimension=DIM_CONCURRENCY, available=True, headers=["指标", "值"])
     try:
         rows = runner.run("health.db_concurrency")
-    except _QUERY_ERRORS as exc:
+    except access.QueryError as exc:
         return degraded(DIM_CONCURRENCY, summarize_err(exc))
     deadlocks, commit, rollback = (int(rows[0]["deadlocks"]),
                                    int(rows[0]["xact_commit"]),
@@ -559,7 +559,7 @@ def collect_concurrency(runner, th: Thresholds, _top: int) -> DimResult:
         if prepared > 0:
             d.findings.append(Finding(DIM_CONCURRENCY, "PREPARED_XACT", Severity.WARN,
                                       "悬挂的两阶段事务", i64(prepared), ">0", "pg_prepared_xacts"))
-    except _QUERY_ERRORS:
+    except access.QueryError:
         pass
     d.headline = f"死锁 {deadlocks}、回滚率 {rb_pct:.1f}%、2PC {prepared}"
     return d

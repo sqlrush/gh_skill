@@ -94,7 +94,7 @@ def test_session_for_refuses_a_backend_without_persistent_session(monkeypatch):
         def close(self):
             closed["yes"] = True
 
-    monkeypatch.setattr(access, "_open_database", lambda conn: FakeDB())
+    monkeypatch.setattr(access, "_open_database", lambda conn, read_only=True: FakeDB())
     with pytest.raises(access.SessionUnavailable):
         access.session_for_conn(_conn(driver="gsql"))
     assert closed["yes"] is True, "拒绝时必须把已建立的连接关掉"
@@ -108,5 +108,23 @@ def test_session_for_returns_the_handle_when_supported(monkeypatch):
             pass
 
     fake = FakeDB()
-    monkeypatch.setattr(access, "_open_database", lambda conn: fake)
+    monkeypatch.setattr(access, "_open_database", lambda conn, read_only=True: fake)
     assert access.session_for_conn(_conn(driver="pg8000")) is fake
+
+
+def test_session_for_defaults_to_read_only(monkeypatch):
+    """写会话必须显式索取 —— 默认放开的话，--analyze 之外的路径也会拿到写权限。"""
+    seen = {}
+
+    class FakeDB:
+        provides_session = True
+
+    def _fake_open(conn, read_only=True):
+        seen["read_only"] = read_only
+        return FakeDB()
+
+    monkeypatch.setattr(access, "_open_database", _fake_open)
+    access.session_for_conn(_conn(driver="pg8000"))
+    assert seen["read_only"] is True
+    access.session_for_conn(_conn(driver="pg8000"), read_only=False)
+    assert seen["read_only"] is False
