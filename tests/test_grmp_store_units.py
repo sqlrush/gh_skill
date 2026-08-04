@@ -159,6 +159,51 @@ def test_data_survives_reopening_the_store(tmp_path):
     assert st.ScriptStore(path).find_by_name("slowsql.slow_sql") is not None
 
 
+# ===========================================================================
+# 只读标记：存在本地，不占 script_config 的 21 列
+# ===========================================================================
+
+def test_readonly_defaults_to_true_after_round_trip(store):
+    store.register(_rec())
+    assert store.find_by_name("slowsql.slow_sql").readonly is True
+
+
+def test_writable_script_round_trips(store):
+    store.register(sc.ScriptRecord(
+        script_name="ddl.one", script_content="create index i on t(a);",
+        readonly=False))
+    assert store.find_by_name("ddl.one").readonly is False
+
+
+def test_readonly_flag_does_not_add_a_column_to_script_config(store):
+    """21 列是交付契约。只读标记是我们自己加的概念，客户数据模型里没有，
+    塞进 script_config 会让导出的 DML 到客户环境用不了。"""
+    store.register(sc.ScriptRecord(
+        script_name="ddl.one", script_content="create index i on t(a);",
+        readonly=False))
+    assert set(store.columns()) == set(sc.SCRIPT_CONFIG_COLUMNS)
+    assert len(sc.SCRIPT_CONFIG_COLUMNS) == 21
+
+
+def test_readonly_flag_survives_replace(store):
+    store.register(sc.ScriptRecord(
+        script_name="ddl.one", script_content="create index i on t(a);",
+        readonly=False))
+    store.register(sc.ScriptRecord(
+        script_name="ddl.one", script_content="create index j on t(b);",
+        readonly=False), replace=True)
+    assert store.find_by_name("ddl.one").readonly is False
+
+
+def test_list_all_carries_the_readonly_flag(store):
+    store.register(_rec("a.one"))
+    store.register(sc.ScriptRecord(
+        script_name="b.two", script_content="create index i on t(a);",
+        readonly=False))
+    flags = {r.script_name: r.readonly for r in store.list_all()}
+    assert flags == {"a.one": True, "b.two": False}
+
+
 def test_register_does_not_mutate_the_input_record(store):
     rec = _rec()
     store.register(rec)

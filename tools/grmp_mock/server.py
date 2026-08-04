@@ -40,6 +40,8 @@ MAX_LIMIT = 1000
 _LIST_KEYS = frozenset({"dataIp", "offset", "limit"})
 
 # 接口二请求体允许的字段
+# 刻意不含 readonly：会话模式只能来自已注册脚本的声明。
+# 允许请求指定的话，任何调用方都能给自己开写权限。
 _INVOKE_KEYS = frozenset({"dataIp", "id", "param"})
 
 # param 数组元素只能是 OperationValue。接口文档 3.2 的示例误填成了
@@ -48,11 +50,11 @@ _INVOKE_KEYS = frozenset({"dataIp", "id", "param"})
 _OPERATION_VALUE_KEYS = frozenset({"param_name", "param_value"})
 
 
-def _default_open_db(name: str):
+def _default_open_db(name: str, read_only: bool = True):
     """默认连接方式：复用仓库既有的凭据与驱动兜底，不新增凭据存储。"""
     from common.db import Database
 
-    return Database.connect(name, read_only=True)
+    return Database.connect(name, read_only=read_only)
 
 
 class App:

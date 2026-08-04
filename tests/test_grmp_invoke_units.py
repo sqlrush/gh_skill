@@ -81,8 +81,8 @@ def ctx(tmp_path):
     )
     holder = {"db": FakeDB(), "opened": []}
 
-    def open_db(name):
-        holder["opened"].append(name)
+    def open_db(name, read_only=True):
+        holder["opened"].append((name, read_only))
         return holder["db"]
 
     app = App(
@@ -168,7 +168,36 @@ def test_connection_is_closed_after_execution(ctx):
 def test_instance_mapping_selects_the_connection(ctx):
     app, _, holder = ctx
     _invoke(app, _ok_body())
-    assert holder["opened"] == ["og"]
+    assert [name for name, _ro in holder["opened"]] == ["og"]
+
+
+def test_read_only_script_opens_a_read_only_session(ctx):
+    app, _, holder = ctx
+    _invoke(app, _ok_body())
+    assert holder["opened"][0][1] is True
+
+
+def test_writable_script_opens_a_writable_session(ctx):
+    """只有脚本自己声明了 readonly: false，执行器才开可写会话。"""
+    app, store, holder = ctx
+    rec = store.register(sc.ScriptRecord(
+        script_name="ddl.one", script_content="create index i on t(a);",
+        readonly=False))
+    _invoke(app, _ok_body(rec.id))
+    assert holder["opened"][0][1] is False
+
+
+def test_caller_cannot_ask_for_a_writable_session(ctx):
+    """写权限只能由已注册脚本携带，请求里指定一律拒绝。
+
+    否则任何调用方都能给自己开写权限，白名单与只读会话同时失效。
+    """
+    app, _, _ = ctx
+    body = _ok_body()
+    body["readonly"] = False
+    _, resp = _invoke(app, body)
+    assert resp["status"] != "finished"
+    assert "readonly" in resp["msg"]
 
 
 # ===========================================================================
@@ -364,7 +393,7 @@ def test_oversized_result_set_is_refused_not_truncated(ctx):
         instances=app._instances,
         token=TOKEN,
         settings=Settings(),
-        open_db=lambda name: holder["db"],
+        open_db=lambda name, read_only=True: holder["db"],
         max_result_rows=10,
     )
     _, body = _invoke(app_small, _ok_body())

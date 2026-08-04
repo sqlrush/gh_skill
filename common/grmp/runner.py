@@ -24,10 +24,10 @@ class RunError(Exception):
     """执行层面的失败（无结果集等）。"""
 
 
-def _default_open_db(name: str):
+def _default_open_db(name: str, read_only: bool = True):
     from ..db import Database
 
-    return Database.connect(name, read_only=True)
+    return Database.connect(name, read_only=read_only)
 
 
 class DirectRunner:
@@ -56,7 +56,7 @@ class DirectRunner:
         # 渲染（含类型校验）在连库之前：参数不合法时根本不该建立连接
         sql = render(record.script_content, record.params, raw, self._settings)
 
-        db = self._open_db(self.conn_name)
+        db = self._open_db(self.conn_name, record.readonly)
         try:
             db.set_statement_timeout(self._timeout)
             cols, rows = db.query(sql)

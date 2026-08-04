@@ -77,6 +77,13 @@ class ScriptStore:
         )
         with self._connect() as conn:
             conn.execute("CREATE TABLE IF NOT EXISTS script_config (%s)" % cols)
+            # 只读标记单独一张表。它是本实现自己的概念，客户 script_config
+            # 的 21 列里没有对应项；塞进去会让导出的 DML 多一列，客户拿去
+            # 直接执行就会失败。导出 DML 时这张表也不参与。
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS script_local ("
+                "script_name TEXT PRIMARY KEY, readonly INTEGER NOT NULL)"
+            )
 
     def columns(self) -> Tuple[str, ...]:
         with self._connect() as conn:
@@ -113,6 +120,11 @@ class ScriptStore:
                 % (col_list, placeholders),
                 values,
             )
+            conn.execute(
+                "INSERT OR REPLACE INTO script_local (script_name, readonly) "
+                "VALUES (?, ?)",
+                (stored.script_name, 1 if stored.readonly else 0),
+            )
         return stored
 
     def _next_id(self) -> str:
@@ -131,20 +143,28 @@ class ScriptStore:
     def find_by_id(self, script_id: str) -> Optional[ScriptRecord]:
         return self._one("id = ?", (str(script_id),))
 
+    # 只读标记来自旁表；缺失时按只读处理（默认拒绝写，不默认放行）
+    _SELECT = (
+        "SELECT c.*, COALESCE(l.readonly, 1) AS readonly "
+        "FROM script_config c "
+        "LEFT JOIN script_local l ON l.script_name = c.script_name "
+    )
+
     def list_all(self) -> List[ScriptRecord]:
         """有效脚本，按 id 升序。失效脚本（is_valid=0）不出现在命令清单里。"""
         with self._connect() as conn:
             cur = conn.execute(
-                "SELECT * FROM script_config WHERE is_valid = 1 "
-                "ORDER BY CAST(id AS INTEGER)"
+                self._SELECT + "WHERE c.is_valid = 1 ORDER BY CAST(c.id AS INTEGER)"
             )
             return [_row_to_record(row) for row in cur.fetchall()]
 
+    def writable_names(self) -> List[str]:
+        """声明为可写的脚本名。启动横幅要把它们列出来。"""
+        return sorted(r.script_name for r in self.list_all() if not r.readonly)
+
     def _one(self, where: str, args: Tuple[Any, ...]) -> Optional[ScriptRecord]:
         with self._connect() as conn:
-            cur = conn.execute(
-                "SELECT * FROM script_config WHERE %s" % where, args
-            )
+            cur = conn.execute(self._SELECT + "WHERE c." + where, args)
             row = cur.fetchone()
         return _row_to_record(row) if row is not None else None
 
@@ -188,4 +208,5 @@ def _row_to_record(row: sqlite3.Row) -> ScriptRecord:
         is_asyn=row["is_asyn"],
         extend=row["extend"],
         compliance_mode=row["compliance_mode"],
+        readonly=bool(row["readonly"]),
     )

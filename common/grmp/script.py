@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import yaml
 
 from .placeholder import ParamDef, api_type_name, extract_placeholders
+from .statement import is_read_only
 
 # 客户 script_config 的 21 列，顺序即样例 DML 的列顺序
 SCRIPT_CONFIG_COLUMNS: Tuple[str, ...] = (
@@ -69,6 +70,7 @@ _ALLOWED_TOP_KEYS = frozenset(
         "deployment_form",
         "execute_node_type",
         "refered_appbusiness",
+        "readonly",
     }
 )
 
@@ -111,6 +113,11 @@ class ScriptRecord:
     is_asyn: int = 0
     extend: Optional[str] = None
     compliance_mode: str = "ALL"
+
+    # 本地概念，**不属于客户 script_config 的 21 列**：执行器据此决定开
+    # 只读还是可写会话。客户文档全篇未提执行会话是否只读，所以这一项是
+    # 我们自己加的约束，存储上也不占 script_config 的列（见 store.py）。
+    readonly: bool = True
 
     # -- 派生 -------------------------------------------------------------
 
@@ -291,6 +298,29 @@ def load_script(path: pathlib.Path) -> ScriptRecord:
         raise ScriptError(
             "%s: params 声明了但 SQL 未使用：%s"
             % (path, ", ".join(sorted(unused)))
+        )
+
+    # 写操作必须显式声明。只标注不拦截的话，一条写脚本能注册进去却永远
+    # 执行不了——既不报错也不能用，问题要到执行时才暴露。
+    if "readonly" in data and not isinstance(data["readonly"], bool):
+        raise ScriptError(
+            "%s: readonly 必须是布尔值（true/false），收到 %r。"
+            "写成字符串 \"false\" 在真值判断下是 True，与作者意图相反。"
+            % (path, data["readonly"])
+        )
+    # 拦截的目的是**逼作者做决定**，不是禁止某个选择：
+    #   未声明 + 静态判不出只读  → 拒绝入库
+    #   显式 readonly: false     → 开可写会话（走单独审批）
+    #   显式 readonly: true      → 作者担保只读，仍开只读会话；
+    #                              整条是占位符（SQL 直通）这类静态判不了的
+    #                              脚本，靠它把会话钉在只读上
+    if "readonly" not in data and not is_read_only(str(sql)):
+        raise ScriptError(
+            "%s: 语句不是只读查询，但没有声明 readonly。会话模式必须显式指定：\n"
+            "  readonly: false  开可写会话（写操作需单独审批）\n"
+            "  readonly: true   仍用只读会话（作者担保，写操作会被数据库挡回）\n"
+            "不声明就默认只读的话，一条写脚本能注册进去却永远执行不了 ——"
+            "既不报错也不能用，问题要到执行时才暴露。" % path
         )
 
     overrides = {

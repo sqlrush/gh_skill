@@ -137,7 +137,7 @@ def test_direct_runner_renders_and_returns_stringified_rows(tmp_path):
         conn_name="og",
         registry=registry.Registry(_registry(tmp_path)),
         settings=Settings(),
-        open_db=lambda name: db,
+        open_db=lambda name, read_only=True: db,
     )
     rows = runner.run("slowsql.slow_sql", {"n": 10})
     assert rows == [{"datname": "postgres", "oid": "16384"}]
@@ -151,7 +151,7 @@ def test_direct_runner_rejects_missing_param(tmp_path):
         conn_name="og",
         registry=registry.Registry(_registry(tmp_path)),
         settings=Settings(),
-        open_db=lambda name: FakeDB(),
+        open_db=lambda name, read_only=True: FakeDB(),
     )
     with pytest.raises(ParamError):
         runner.run("slowsql.slow_sql", {})
@@ -185,7 +185,7 @@ def test_statement_without_result_set_raises_instead_of_returning_empty(tmp_path
         conn_name="og",
         registry=registry.Registry(_registry(tmp_path)),
         settings=Settings(),
-        open_db=lambda name: FakeDB(cols=(), rows=[]),
+        open_db=lambda name, read_only=True: FakeDB(cols=(), rows=[]),
     )
     with pytest.raises(RunError):
         runner.run("slowsql.slow_sql", {"n": 1})

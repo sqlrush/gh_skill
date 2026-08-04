@@ -17,6 +17,11 @@ import dataclasses
 import re
 from typing import Any, List, Sequence, Tuple
 
+# 只读判定统一由 common/grmp/statement 提供 —— 注册期硬拦截、运行期会话模式、
+# 这里的风险标注三处必须用同一份判定。各判各的会出现「注册时判只读、
+# 执行时却开了写会话」这种错位。
+from common.grmp.statement import is_read_only
+
 CODE_IDENT_POSITION = "IDENT_POSITION"
 CODE_MULTI_VALUE = "MULTI_VALUE"
 CODE_NON_READONLY = "NON_READONLY"
@@ -61,18 +66,6 @@ _IN_LIST_RE = re.compile(
     r"\bin\s*\((?P<body>[^()]*)\)", re.IGNORECASE | re.DOTALL
 )
 
-# 注释与前导空白，用于找出真正的首个关键字
-_LEADING_NOISE_RE = re.compile(r"^(?:\s|--[^\n]*\n?|/\*.*?\*/)+", re.DOTALL)
-
-_READ_ONLY_STARTERS = ("select", "with", "explain", "show", "values", "table")
-
-
-def _leading_keyword(sql: str) -> str:
-    stripped = _LEADING_NOISE_RE.sub("", sql).lstrip()
-    match = re.match(r"[A-Za-z_]+", stripped)
-    return match.group(0).lower() if match else ""
-
-
 def _names_in(text: str) -> List[str]:
     return [m.group(1) for m in _PLACEHOLDER_RE.finditer(text)]
 
@@ -108,7 +101,7 @@ def assess(sql: str, params: Sequence[Any] = ()) -> Tuple[Risk, ...]:
             )
         )
 
-    if _leading_keyword(sql) not in _READ_ONLY_STARTERS:
+    if not is_read_only(sql):
         risks.append(
             Risk(
                 CODE_NON_READONLY,

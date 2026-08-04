@@ -47,6 +47,13 @@ def banner(app_settings: Settings, store: ScriptStore, imap: inst.InstanceMap,
         lines.append("            %s -> %s" % (data_ip, conn))
     if imap.count() == 0:
         lines.append("            （空：任何 dataIp 都会返回「查不到实例」）")
+
+    writable = store.writable_names()
+    if writable:
+        lines.append("⚠️ 可写脚本 %d 条（执行时开可写会话）：" % len(writable))
+        lines += ["            %s" % n for n in writable]
+    else:
+        lines.append("可写脚本  无 —— 全部脚本都以只读会话执行")
     lines += [
         "",
         "本进程当前的假设（未经客户环境证实，猜错多半不报错、只出错值）：",

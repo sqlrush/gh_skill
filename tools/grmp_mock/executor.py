@@ -40,7 +40,9 @@ def execute(
     """
     sql = render(record.script_content, record.params, dict(values), settings)
 
-    db = open_db(conn_name)
+    # 会话模式只由**已注册脚本**的声明决定，请求里无从指定 ——
+    # 否则任何调用方都能给自己开写权限，白名单与只读会话同时失效。
+    db = open_db(conn_name, record.readonly)
     try:
         db.set_statement_timeout(timeout)
         cols, rows = db.query(sql)

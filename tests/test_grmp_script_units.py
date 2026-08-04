@@ -278,6 +278,82 @@ def test_placeholder_without_declaration_is_rejected(tmp_path):
     assert "n" in str(exc.value)
 
 
+# ===========================================================================
+# 5. 只读声明 —— 写操作必须显式声明，注册期硬拦截
+# ===========================================================================
+
+WRITE_YAML = """
+name: ddl.add_index
+description: 建索引
+sql: |
+  create index if not exists idx_x on t(a);
+"""
+
+
+def test_readonly_defaults_to_true(tmp_path):
+    """默认只读。开放写权限必须是显式动作，不能是忘了写导致的默认。"""
+    assert _load(MINIMAL_YAML, tmp_path).readonly is True
+
+
+def test_write_statement_without_declaration_is_rejected(tmp_path):
+    """开发方案 §4.2 硬拦截第 5 条：非只读语句需在 YAML 显式声明。
+
+    只标注不拦截的话，一条写脚本能注册进去却永远执行不了——
+    既不报错也不能用，问题要到执行时才暴露。
+    """
+    with pytest.raises(sc.ScriptError) as exc:
+        _load(WRITE_YAML, tmp_path)
+    assert "readonly" in str(exc.value)
+
+
+def test_write_statement_with_declaration_is_accepted(tmp_path):
+    rec = _load(WRITE_YAML + "readonly: false\n", tmp_path)
+    assert rec.readonly is False
+
+
+def test_write_statement_may_declare_readonly_true(tmp_path):
+    """显式 readonly: true 也算做了决定：仍用只读会话，写操作由数据库挡回。
+
+    SQL 直通那类整条是占位符的脚本静态判不出只读，靠这个把会话钉在只读上。
+    """
+    rec = _load(WRITE_YAML + "readonly: true\n", tmp_path)
+    assert rec.readonly is True
+
+
+def test_pure_placeholder_script_must_declare(tmp_path):
+    """整条 SQL 是占位符时无从静态判定，必须由作者声明。"""
+    passthrough = "name: x.through\ndescription: d\nsql: |\n  {{user_sql}}\n" \
+                  "params:\n  - key: user_sql\n    type: String\n    description: x\n"
+    with pytest.raises(sc.ScriptError):
+        _load(passthrough, tmp_path)
+    assert _load(passthrough + "readonly: true\n", tmp_path).readonly is True
+
+
+def test_read_statement_may_still_declare_write(tmp_path):
+    """SELECT 也可能写：select pg_stat_reset() 就会改状态。允许显式声明。"""
+    rec = _load(MINIMAL_YAML + "readonly: false\n", tmp_path)
+    assert rec.readonly is False
+
+
+def test_readonly_must_be_a_boolean(tmp_path):
+    """YAML 里写 readonly: "false" 会得到字符串，真值判断下变成 True——
+    正好与作者意图相反，必须拒绝。"""
+    with pytest.raises(sc.ScriptError):
+        _load(MINIMAL_YAML + 'readonly: "false"\n', tmp_path)
+
+
+def test_multi_statement_write_is_also_caught(tmp_path):
+    """多语句里只要有一条写，整条脚本就不是只读。"""
+    yaml_text = """
+name: x.multi
+description: d
+sql: |
+  select 1; delete from t;
+"""
+    with pytest.raises(sc.ScriptError):
+        _load(yaml_text, tmp_path)
+
+
 def test_duplicate_param_key_is_rejected(tmp_path):
     with pytest.raises(sc.ScriptError):
         _load(

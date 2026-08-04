@@ -63,6 +63,9 @@ params:
 ---
 name: unsafe.passthrough
 description: "⚠️ 任意 SQL 直通 —— 白名单的一个通用入口，仅用于演示"
+# 整条是占位符，静态判不出只读，必须显式声明。
+# 声明成 true：允许任意 SQL 进来，但会话钉在只读上，写操作由数据库挡回。
+readonly: true
 sql: |
   {{user_sql}}
 params:
@@ -71,7 +74,8 @@ params:
     description: 任意 SQL 正文
 ---
 name: ddl.create_index
-description: 给表加索引（写操作）
+description: 给表加索引（写操作，需单独审批）
+readonly: false
 sql: |
   create index if not exists {{idx_name}} on gsbench.lock_targets({{col}});
 params:
@@ -81,6 +85,16 @@ params:
   - key: col
     type: String
     description: 列名
+---
+name: ddl.drop_index
+description: 删索引（写操作，用于清理演示留下的索引）
+readonly: false
+sql: |
+  drop index if exists gsbench.{{idx_name}};
+params:
+  - key: idx_name
+    type: String
+    description: 索引名
 """
 
 COMPLEX_SQL_BIND = (
@@ -220,10 +234,11 @@ def report(resp, nbytes, elapsed, max_rows=None):
             note("（失败响应不含 result 键 —— 本实现约定）")
         return
     result = resp["result"]
-    if result.get("type") != "array":
-        note("type=%s  data=%r" % (result.get("type"), result.get("data")))
-        return
     print("   ← HTTP 200  status=finished  %d 字节  %.2fs" % (nbytes, elapsed))
+    if result.get("type") != "array":
+        note("type=%s  data=%r —— 该语句没有结果集（DDL/DML 走 Text 分支）"
+             % (result.get("type"), result.get("data")))
+        return
     table(result["data"], max_rows=max_rows)
     if RAW:
         print(json.dumps(resp, ensure_ascii=False, indent=1))
@@ -359,26 +374,53 @@ def _compare_plans(bind, literal):
 def scenario_4(cli, ids):
     hdr(4, "通过中间件给表加索引")
     note("目标：gsbench.lock_targets（1000 行的小表）")
-
-    sub("4-A  注册期：风险标注")
     ddl = "create index if not exists idx_demo_zz on gsbench.lock_targets(id);"
+
+    sub("4-A  注册期：没声明 readonly 的写脚本直接拒绝入库")
+    bad = pathlib.Path(tempfile.mkdtemp()) / "bad.yaml"
+    bad.write_text("name: x.no_decl\ndescription: d\nsql: |\n  %s\n" % ddl,
+                   encoding="utf-8")
+    try:
+        sc.load_script(bad)
+        warn("没有被拒 —— 与预期不符")
+    except sc.ScriptError as exc:
+        for line in str(exc).split("\n"):
+            note(line)
+
+    sub("4-B  注册期：风险标注（放行，只报告）")
     for item in risk.assess(ddl):
         note("[%s] %s" % (item.code, item.detail))
 
-    sub("4-B  运行期：执行已注册的建索引脚本")
+    sub("4-C  运行期：执行声明了 readonly: false 的建索引脚本")
     resp, n, t = invoke(cli, ids, "ddl.create_index",
                         {"idx_name": "idx_demo_zz", "col": "id"})
     report(resp, n, t)
+    created = resp and resp.get("status") == "finished"
+    if created:
+        good("索引已建 —— 会话模式由脚本声明决定，声明了可写就真能写")
 
-    sub("4-C  换成 SQL 直通脚本再试一次（绕过脚本定义）")
+    sub("4-D  验证索引确实存在")
+    resp, n, t = invoke(cli, ids, "unsafe.passthrough", {
+        "user_sql": "select indexname from pg_indexes "
+                    "where schemaname='gsbench' and indexname='idx_demo_zz'"})
+    report(resp, n, t)
+
+    sub("4-E  同一条 DDL 换成只读的 SQL 直通脚本 —— 应被挡住")
+    note("unsafe.passthrough 声明的是 readonly: true，会话钉在只读上")
     resp, n, t = invoke(cli, ids, "unsafe.passthrough", {"user_sql": ddl})
     report(resp, n, t)
 
+    sub("4-F  清理：删掉演示索引")
+    resp, n, t = invoke(cli, ids, "ddl.drop_index", {"idx_name": "idx_demo_zz"})
+    report(resp, n, t)
+
     print()
-    warn("两条路都被挡住，挡住它的是执行器的只读会话（SQLSTATE 25006），")
-    warn("不是白名单、也不是风险标注 —— 标注只报告不拦截。")
-    note("客户的 GRMP 是否允许写操作，文档未提。若允许，这里要加一个「脚本可写」的开关，")
-    note("并且开关本身应当只能由发布流程设置，不能由调用方指定。")
+    note("会话是只读还是可写，只由**已注册脚本的声明**决定：")
+    note("  · 请求体里没有对应字段，调用方无从指定（传了会被当未知字段拒绝）")
+    note("  · 未声明且静态判不出只读的脚本，注册期就被拒，不会留到执行时才炸")
+    note("  · 启动横幅会把所有可写脚本逐条列出来")
+    warn("但「客户的 GRMP 执行诊断脚本时是不是只读会话」，文档全篇未提。")
+    warn("这个开关是我们自己加的约束，不是复刻 —— 需要向客户确认一句话。")
 
 
 # ---------------------------------------------------------------- 主流程
