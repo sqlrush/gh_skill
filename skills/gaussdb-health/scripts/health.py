@@ -71,11 +71,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--exclude", default="", help="排除这些维度")
     ap.add_argument("--top", type=int, default=10, help="各 Top 列表条数")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
-    ap.add_argument("--timeout", type=int, default=30)
+    ap.add_argument("--timeout", type=int, default=None)
     args = ap.parse_args(argv)
 
     try:
-        runner = access.for_conn(args.conn)
+        runner = access.for_conn(args.conn, timeout=args.timeout)
     except (common.ConfigError, common.CredentialError, access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

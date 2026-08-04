@@ -138,10 +138,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--export", type=bool, default=False, help="export results to csv")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
     # 仅直连路径生效：GRMP 协议没有超时字段，走中间件时超时由服务端决定
-    ap.add_argument("--timeout", type=int, default=30)
+    ap.add_argument("--timeout", type=int, default=None)
     args = ap.parse_args(argv)
     try:
-        runner = access.for_conn(args.conn)
+        runner = access.for_conn(args.conn, timeout=args.timeout)
     except (common.ConfigError, common.CredentialError, access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

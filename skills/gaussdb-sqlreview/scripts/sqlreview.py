@@ -104,7 +104,7 @@ def _parse_args(argv):
     src.add_argument("--schema", help="审查该 schema 下已存在的表与索引")
 
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
-    ap.add_argument("--timeout", type=int, default=30, help="查询超时（秒）")
+    ap.add_argument("--timeout", type=int, default=None, help="查询超时（秒）")
     return ap.parse_args(argv)
 
 
@@ -146,7 +146,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # --- DB-backed sources -----------------------------------------------
     try:
-        runner = access.for_conn(args.conn)
+        runner = access.for_conn(args.conn, timeout=args.timeout)
     except (common.ConfigError, common.CredentialError, access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

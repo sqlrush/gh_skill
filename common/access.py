@@ -13,6 +13,7 @@ skill 不感知自己走的是中间件还是直连，两条路径返回相同�
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any, Optional
 
 from .config import Connection, find
@@ -48,6 +49,14 @@ DIRECT_DRIVERS = frozenset({"gsql", "pg8000"})
 # gsql 就是「能跑任意 SQL、但没有持久会话」的现成反例。
 _WHITELIST_ONLY = frozenset({"grmp"})
 _STATELESS = frozenset({"grmp"})
+
+# 语句超时:直连路径能设(SET statement_timeout),中间件路径设不了 ——
+# 协议没有这个旋钮,注册脚本里也塞不进 SET(那是第二条语句)。
+_NO_STATEMENT_TIMEOUT = frozenset({"grmp"})
+
+# skill 不显式指定 --timeout 时用的秒数。与迁移前各 skill 的 argparse
+# 默认值一致 —— 迁移只该换取数通道,不该顺手改超时行为。
+DEFAULT_SKILL_TIMEOUT_SECONDS = 30
 
 
 class AccessError(Exception):
@@ -148,16 +157,36 @@ def runner_for(
     conn: Connection,
     registry: Optional[Registry] = None,
     settings: Optional[Settings] = None,
+    timeout: Optional[int] = None,
 ) -> Any:
-    """按 Connection 造一个 runner。"""
+    """按 Connection 造一个 runner。
+
+    timeout 是**语句超时秒数**;None 表示调用方没提要求,用默认值。
+
+    中间件路径设不了超时(协议没这个旋钮)。这时如果调用方**显式**要了一个
+    超时值,就在 stderr 说一声 —— 收下参数然后当没看见,才是真正危险的:
+    用户以为查询 5 秒会被掐断,实际它能在客户生产库上一直跑。
+    只在显式指定时提示,默认值不吭声,否则每次调用都刷一行,提示很快
+    就没人看了。
+    """
     driver = conn.driver or "gsql"
     if driver in DIRECT_DRIVERS:
         return DirectRunner(
             conn_name=conn.name,
             registry=registry or Registry(),
             settings=settings or Settings(),
+            statement_timeout=(DEFAULT_SKILL_TIMEOUT_SECONDS
+                               if timeout is None else timeout),
         )
     if driver == "grmp":
+        if timeout is not None and driver in _NO_STATEMENT_TIMEOUT:
+            print(
+                "注意：连接 %s 的 driver 是 %s，该访问路径无法设置语句超时"
+                "（协议没有这个参数），--timeout %s 不会生效。"
+                "长查询能否被掐断取决于中间件和数据库自身的配置。"
+                % (conn.name, driver, timeout),
+                file=sys.stderr, flush=True,
+            )
         token = os.environ.get(TOKEN_ENV)
         if not token:
             # fail fast：令牌只从环境变量读，不落盘、不进代码。
@@ -185,6 +214,8 @@ def for_conn(
     name: str,
     registry: Optional[Registry] = None,
     settings: Optional[Settings] = None,
+    timeout: Optional[int] = None,
 ) -> Any:
-    """按连接名造 runner。"""
-    return runner_for(find(name), registry=registry, settings=settings)
+    """按连接名造 runner。timeout=None 表示不提要求,用默认值。"""
+    return runner_for(find(name), registry=registry, settings=settings,
+                      timeout=timeout)

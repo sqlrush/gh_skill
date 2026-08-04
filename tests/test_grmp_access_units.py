@@ -258,3 +258,67 @@ def test_middleware_runner_requires_the_token_at_construction(tmp_path, monkeypa
     monkeypatch.delenv("GRMP_AUTH_TOKEN", raising=False)
     with pytest.raises(access.AccessError):
         access.runner_for(_conn(driver="grmp", data_ip="10.0.0.9"))
+
+
+# ===========================================================================
+# 语句超时 —— 迁移曾把它整个丢掉
+# ===========================================================================
+
+def _timeout_conn(name="c", driver="pg8000"):
+    return Connection(name=name, type="opengauss", host="127.0.0.1", port=5433,
+                      database="d", user="u", driver=driver,
+                      data_ip="127.0.0.1")
+
+
+def test_explicit_timeout_reaches_the_direct_runner():
+    """--timeout 5 必须真的变成 statement_timeout。
+
+    迁移后这里断了：skill 收下参数、写进 --help，然后谁也不传给取数层。
+    用户设 --timeout 5，查询照样能跑到天荒地老，而且不报错。
+    """
+    r = access.runner_for(_timeout_conn(), timeout=5)
+    assert r._timeout == 5
+
+
+def test_unspecified_timeout_keeps_the_pre_migration_default():
+    """没提要求时用 30 秒 —— 与迁移前各 skill 的 argparse 默认值一致。
+
+    迁移只该换取数通道，不该顺手改超时行为。
+    """
+    r = access.runner_for(_timeout_conn(), timeout=None)
+    assert r._timeout == access.DEFAULT_SKILL_TIMEOUT_SECONDS == 30
+
+
+def test_whitelist_path_says_out_loud_that_it_cannot_enforce_timeout(monkeypatch, capsys):
+    """中间件设不了超时（协议没这个旋钮），显式指定时必须说一声。
+
+    收下参数然后当没看见才是真正危险的：用户以为查询 5 秒会被掐断，
+    实际它能在客户生产库上一直跑。
+    """
+    monkeypatch.setenv("GRMP_AUTH_TOKEN", "x" * 32)
+    access.runner_for(_timeout_conn(driver="grmp"), timeout=5)
+    assert "无法设置语句超时" in capsys.readouterr().err
+
+
+def test_whitelist_path_stays_quiet_when_timeout_was_not_asked_for(monkeypatch, capsys):
+    """没显式指定就不吭声 —— 每次调用都刷一行，提示很快就没人看了。"""
+    monkeypatch.setenv("GRMP_AUTH_TOKEN", "x" * 32)
+    access.runner_for(_timeout_conn(driver="grmp"), timeout=None)
+    assert capsys.readouterr().err == ""
+
+
+def test_every_skill_that_offers_timeout_actually_passes_it_down():
+    """任何声明了 --timeout 的 skill，都得把它交给取数层。
+
+    这条是防复发的：以后新增 skill 或改写入口，忘了传就红。
+    """
+    skills = _ROOT / "skills"
+    offenders = []
+    for entry in sorted(skills.glob("gaussdb-*/scripts/*.py")):
+        text = entry.read_text(encoding="utf-8")
+        if '"--timeout"' not in text:
+            continue
+        if "timeout=args.timeout" in text or "set_statement_timeout" in text:
+            continue
+        offenders.append(entry.relative_to(skills).as_posix())
+    assert not offenders, "这些 skill 收下 --timeout 却没往下传：%s" % offenders

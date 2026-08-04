@@ -107,11 +107,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--by", choices=SORT_KEYS, default="time", help="sort key")
     ap.add_argument("--limit", type=int, default=20, help="max rows")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
-    ap.add_argument("--timeout", type=int, default=30)
+    ap.add_argument("--timeout", type=int, default=None)
     args = ap.parse_args(argv)
 
     try:
-        runner = access.for_conn(args.conn)
+        runner = access.for_conn(args.conn, timeout=args.timeout)
     except (common.ConfigError, common.CredentialError, access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

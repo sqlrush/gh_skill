@@ -190,7 +190,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 1
 
     try:
-        runner = access.for_conn(args.conn)
+        runner = access.for_conn(args.conn, timeout=args.timeout)
     except (common.ConfigError, common.CredentialError, access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

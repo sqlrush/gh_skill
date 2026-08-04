@@ -43,7 +43,7 @@ from thresholds import default_thresholds  # noqa: E402
 
 def _cmd_snaps(args) -> int:
     try:
-        runner = access.for_conn(args.conn)
+        runner = access.for_conn(args.conn, timeout=args.timeout)
     except (common.ConfigError, common.CredentialError, access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -61,7 +61,7 @@ def _cmd_collect(args) -> int:
               file=sys.stderr)
         return 1
     try:
-        runner = access.for_conn(args.conn)
+        runner = access.for_conn(args.conn, timeout=args.timeout)
     except (common.ConfigError, common.CredentialError, access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -112,7 +112,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ps = sub.add_parser("snaps", help="list WDR snapshots + preflight")
     ps.add_argument("-c", "--conn", required=True)
     ps.add_argument("--limit", type=int, default=20, help="列出最近 N 个快照")
-    ps.add_argument("--timeout", type=int, default=30)
+    ps.add_argument("--timeout", type=int, default=None)
 
     pc = sub.add_parser("collect", help="collect snapshot-delta evidence + findings")
     pc.add_argument("-c", "--conn", required=True)
@@ -124,7 +124,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     pc.add_argument("--save-html", dest="save_html", default="",
                     help="落盘原生 WDR 原文到此路径（审计，默认不落）")
     pc.add_argument("--format", choices=["markdown", "json"], default="markdown")
-    pc.add_argument("--timeout", type=int, default=30)
+    pc.add_argument("--timeout", type=int, default=None)
 
     pr = sub.add_parser("render", help="render final report from evidence + interp (no DB)")
     pr.add_argument("--evidence", default="", help="collect --format json 产出的证据 JSON 路径")
