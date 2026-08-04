@@ -1,0 +1,21 @@
+# SQL 取自 common/sql.py 的 skill_wdr_001。
+# **改动：两个 COALESCE(...) 加了别名 db_time_us / cpu_time_us。**
+# 原来两列都叫 coalesce，协议按列名做键，重名列会被后一个覆盖 ——
+# DB time 会被 CPU time 顶掉，且不报错。加别名不改语义与结果。
+name: wdr.load_profile
+description: 窗口内 DB time 与 CPU time 增量（snap_summary_statement）
+sql: |
+  WITH b AS (SELECT snap_unique_sql_id AS sid, sum(snap_total_elapse_time) AS t, sum(snap_cpu_time) AS c
+               FROM snapshot.snap_summary_statement WHERE snapshot_id={{b}} GROUP BY snap_unique_sql_id),
+       e AS (SELECT snap_unique_sql_id AS sid, sum(snap_total_elapse_time) AS t, sum(snap_cpu_time) AS c
+               FROM snapshot.snap_summary_statement WHERE snapshot_id={{e}} GROUP BY snap_unique_sql_id)
+  SELECT COALESCE(SUM(e.t-b.t),0)  AS db_time_us,
+         COALESCE(SUM(e.c-b.c),0)  AS cpu_time_us
+  FROM e JOIN b USING (sid);
+params:
+  - key: b
+    type: INTEGER
+    description: 起始快照 ID
+  - key: e
+    type: INTEGER
+    description: 结束快照 ID

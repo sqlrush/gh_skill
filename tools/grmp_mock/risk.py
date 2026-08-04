@@ -70,6 +70,29 @@ def _names_in(text: str) -> List[str]:
     return [m.group(1) for m in _PLACEHOLDER_RE.finditer(text)]
 
 
+def _until_unbalanced_paren(text: str) -> str:
+    """截到第一个「多出来的」右括号为止。
+
+    ORDER BY / GROUP BY 的列表用正则找不到可靠的右边界：下一个子句关键字
+    可能出现在括号外很远的地方。CTE 里就会踩到 ——
+        WITH b AS (... GROUP BY a), e AS (... WHERE id={{e}} GROUP BY a)
+    第一个 GROUP BY 的范围一路扫到第二个 group by，把 {{e}} 这个取值位
+    占位符误判成排序位。
+
+    按括号配平截断即可：遇到没有对应左括号的右括号，说明已经出了当前子句
+    所在的那对括号。
+    """
+    depth = 0
+    for i, ch in enumerate(text):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            if depth == 0:
+                return text[:i]
+            depth -= 1
+    return text
+
+
 def assess(sql: str, params: Sequence[Any] = ()) -> Tuple[Risk, ...]:
     """返回该脚本的风险标注。无风险时返回空元组。
 
@@ -113,9 +136,9 @@ def assess(sql: str, params: Sequence[Any] = ()) -> Tuple[Risk, ...]:
     for match in _AFTER_KEYWORD_RE.finditer(sql):
         ident_names.append(match.group(1))
     for match in _SORT_CLAUSE_RE.finditer(sql):
-        ident_names.extend(_names_in(match.group("body")))
+        ident_names.extend(_names_in(_until_unbalanced_paren(match.group("body"))))
     for match in _SELECT_LIST_RE.finditer(sql):
-        ident_names.extend(_names_in(match.group("body")))
+        ident_names.extend(_names_in(_until_unbalanced_paren(match.group("body"))))
 
     unique_idents = sorted(set(ident_names))
     if unique_idents:

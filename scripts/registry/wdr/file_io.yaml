@@ -1,0 +1,24 @@
+# SQL 取自 common/sql.py 的 skill_wdr_008。列名齐全，未改动。
+name: wdr.file_io
+description: 窗口内物理读写最多的文件（snap_summary_file_iostat）
+sql: |
+  WITH b AS (SELECT snap_filenum, snap_dbid, snap_spcid, snap_phyrds AS reads, snap_phywrts AS writes
+               FROM snapshot.snap_summary_file_iostat WHERE snapshot_id={{b}}),
+       e AS (SELECT snap_filenum, snap_dbid, snap_spcid, snap_phyrds AS reads, snap_phywrts AS writes
+               FROM snapshot.snap_summary_file_iostat WHERE snapshot_id={{e}})
+  SELECT ('db'||e.snap_dbid||'/spc'||e.snap_spcid||'/f'||e.snap_filenum) AS filename,
+         (e.reads-b.reads)   AS reads,
+         (e.writes-b.writes) AS writes
+  FROM e JOIN b USING (snap_filenum, snap_dbid, snap_spcid)
+  WHERE (e.reads-b.reads) > 0 OR (e.writes-b.writes) > 0
+  ORDER BY reads DESC LIMIT {{top}};
+params:
+  - key: b
+    type: INTEGER
+    description: 起始快照 ID
+  - key: e
+    type: INTEGER
+    description: 结束快照 ID
+  - key: top
+    type: INTEGER
+    description: 返回条数上限

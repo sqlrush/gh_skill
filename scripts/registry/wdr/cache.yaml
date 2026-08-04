@@ -1,0 +1,26 @@
+# SQL 取自 common/sql.py 的 skill_wdr_007。列名齐全，未改动。
+name: wdr.cache
+description: 窗口内物理读最多的表（snap_summary_statio_all_tables）
+sql: |
+  WITH b AS (SELECT db_name, snap_schemaname, snap_relname,
+                    (COALESCE(snap_heap_blks_read,0)+COALESCE(snap_idx_blks_read,0)) AS phys,
+                    (COALESCE(snap_heap_blks_hit,0)+COALESCE(snap_idx_blks_hit,0))   AS logi
+               FROM snapshot.snap_summary_statio_all_tables WHERE snapshot_id={{b}}),
+       e AS (SELECT db_name, snap_schemaname, snap_relname,
+                    (COALESCE(snap_heap_blks_read,0)+COALESCE(snap_idx_blks_read,0)) AS phys,
+                    (COALESCE(snap_heap_blks_hit,0)+COALESCE(snap_idx_blks_hit,0))   AS logi
+               FROM snapshot.snap_summary_statio_all_tables WHERE snapshot_id={{e}})
+  SELECT e.snap_relname, (e.phys-b.phys) AS phys_read, (e.logi-b.logi) AS logical_read
+  FROM e JOIN b USING (db_name, snap_schemaname, snap_relname)
+  WHERE (e.phys-b.phys) > 0
+  ORDER BY phys_read DESC LIMIT {{top}};
+params:
+  - key: b
+    type: INTEGER
+    description: 起始快照 ID
+  - key: e
+    type: INTEGER
+    description: 结束快照 ID
+  - key: top
+    type: INTEGER
+    description: 返回条数上限

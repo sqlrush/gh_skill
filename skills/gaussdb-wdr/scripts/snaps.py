@@ -21,14 +21,19 @@ for parent in _HERE.parents:
         sys.path.insert(0, str(parent))
         break
 
-from common.sql import skill_wdr_010
+# SQL 已迁到 scripts/registry/wdr/ —— 两条路径共用同一份定义
+from common.grmp.client import GrmpError  # noqa: E402
+from common.grmp.runner import RunError  # noqa: E402
 
-def snaps(db, limit: int) -> str:
+_QUERY_ERRORS = (common.DBError, GrmpError, RunError)
+
+def snaps(runner, limit: int) -> str:
     if limit <= 0:
         limit = 20
     try:
-        enabled = db.scalar("SHOW enable_wdr_snapshot")
-    except common.DBError as exc:
+        rows = runner.run("wdr.wdr_enabled")
+        enabled = rows[0]["enable_wdr_snapshot"] if rows else ""
+    except _QUERY_ERRORS as exc:
         raise common.DBError(f"读取 enable_wdr_snapshot 失败：{exc}")
     if str(enabled or "").strip().lower() != "on":
         raise common.DBError(
@@ -36,13 +41,13 @@ def snaps(db, limit: int) -> str:
             "`ALTER SYSTEM SET enable_wdr_snapshot=on`（需 reload/重启）并等待自动快照，"
             "或自行 `SELECT create_wdr_snapshot();`。本工具只读、不代为开启或创建。")
 
-    q = skill_wdr_010.format(limit=int(limit))
     try:
-        _, rows = db.query(q)
-    except common.DBError as exc:
+        rows = runner.run("wdr.snapshots", {"limit": int(limit)})
+    except _QUERY_ERRORS as exc:
         raise common.DBError(f"查询 snapshot.snapshot 失败：{exc}")
 
-    snaps_list = [(int(r[0]), r[1], r[2], int(r[3] or 0)) for r in rows]
+    snaps_list = [(int(r["snapshot_id"]), r["start_ts"], r["end_ts"],
+                   int(r["dur_min"] or 0)) for r in rows]
     if len(snaps_list) < 2:
         raise common.DBError(
             f"可用快照不足（{len(snaps_list)} 个）：WDR 报告至少需要两个快照围出窗口。"

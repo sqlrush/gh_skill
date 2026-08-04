@@ -20,7 +20,12 @@ for parent in _HERE.parents:
         sys.path.insert(0, str(parent))
         break
 
-from common.sql import skill_wdr_009
+# SQL 已迁到 scripts/registry/wdr/ —— 两条路径共用同一份定义
+from common.grmp.client import GrmpError  # noqa: E402
+from common.grmp.runner import RunError  # noqa: E402
+
+# 降级要能接住两条路径的失败：直连抛 DBError，中间件抛 GrmpError
+_QUERY_ERRORS = (common.DBError, GrmpError, RunError)
 
 
 def sql_literal(s: str) -> str:
@@ -28,7 +33,7 @@ def sql_literal(s: str) -> str:
     return (s or "").replace("'", "''")
 
 
-def load_window(db, opt: Options) -> Window:
+def load_window(runner, opt: Options) -> Window:
     """Validate the snapshot pair, resolve node name, read wdr-enabled GUC, and
     fetch the window's begin/end times + duration."""
     if opt.begin <= 0 or opt.end <= opt.begin:
@@ -37,44 +42,48 @@ def load_window(db, opt: Options) -> Window:
     w = Window(begin_id=opt.begin, end_id=opt.end, scope=opt.scope or "node")
 
     try:
-        enabled = db.scalar("SHOW enable_wdr_snapshot")
+        rows = runner.run("wdr.wdr_enabled")
+        enabled = rows[0]["enable_wdr_snapshot"] if rows else ""
         w.wdr_enabled = str(enabled or "").strip().lower() == "on"
-    except common.DBError:
+    except _QUERY_ERRORS:
         pass
 
     w.node = opt.node
     if not w.node:
         try:
-            node = db.scalar("SHOW pgxc_node_name")
-            w.node = str(node or "").strip()
-        except common.DBError:
+            rows = runner.run("wdr.node_name")
+            w.node = str(rows[0]["pgxc_node_name"] if rows else "").strip()
+        except _QUERY_ERRORS:
             pass
 
-    q = skill_wdr_009.format(begin=int(opt.begin), end=opt.end)
     try:
-        _, rows = db.query(q)
-    except common.DBError as exc:
+        rows = runner.run("wdr.window",
+                          {"begin": int(opt.begin), "end": int(opt.end)})
+    except _QUERY_ERRORS as exc:
         raise common.DBError(
             f"加载快照窗口失败（snap {opt.begin}/{opt.end} 是否存在？run: wdr snaps）：{exc}")
     if not rows:
         raise common.DBError(
             f"加载快照窗口失败：snap {opt.begin}/{opt.end} 不存在（run: wdr snaps 查看可用快照）")
-    w.begin_ts, w.end_ts = rows[0][0], rows[0][1]
-    w.duration_min = int(rows[0][2] or 0)
+    w.begin_ts, w.end_ts = rows[0]["b_start"], rows[0]["e_start"]
+    w.duration_min = int(rows[0]["dur"] or 0)
     return w
 
 
-def generate_native(db, opt: Options, w: Window) -> NativeInfo:
+def generate_native(runner, opt: Options, w: Window) -> NativeInfo:
     """Call the native generate_wdr_report (read-only) for留底/审计. Failure is
     non-fatal — deterministic findings come from the self-computed delta."""
-    q = (f"SELECT generate_wdr_report({int(opt.begin)}, {int(opt.end)}, 'all', "
-         f"'{sql_literal(w.scope)}', '{sql_literal(w.node)}')")
+    # scope/node 仍走 sql_literal 转义：String 参数中间件不转义
+    # （引号责任在脚本作者），这是这两个取值唯一的防线，迁移时不能丢。
     try:
-        _, rows = db.query(q)
-    except common.DBError as exc:
+        rows = runner.run("wdr.native_report", {
+            "begin": int(opt.begin), "end": int(opt.end),
+            "scope": sql_literal(w.scope), "node": sql_literal(w.node)})
+    except _QUERY_ERRORS as exc:
         return NativeInfo(generated=False,
                           note="generate_wdr_report 不可用或失败：" + summarize_err(exc))
-    body = "".join((str(r[0]) + "\n") for r in rows if r[0] is not None)
+    body = "".join((str(r["report_line"]) + "\n")
+                   for r in rows if r["report_line"] is not None)
     ni = NativeInfo(generated=True, bytes=len(body.encode("utf-8")))
     if opt.save_html:
         try:

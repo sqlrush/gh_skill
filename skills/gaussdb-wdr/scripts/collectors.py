@@ -27,7 +27,14 @@ for parent in _HERE.parents:
         sys.path.insert(0, str(parent))
         break
 
-from common.sql import skill_wdr_001,skill_wdr_002,skill_wdr_003,skill_wdr_004,skill_wdr_005,skill_wdr_006,skill_wdr_007,skill_wdr_008
+# SQL 已迁到 scripts/registry/wdr/ —— 两条路径共用同一份定义
+from common.grmp.client import GrmpError  # noqa: E402
+from common.grmp.runner import RunError  # noqa: E402
+
+# 降级逻辑要能接住两条路径的失败：直连抛 DBError，中间件抛 GrmpError。
+# 只 catch DBError 的话，走中间件时某个维度取不到会从降级变成崩栈。
+# ColumnError / ParamError 刻意不在此列 —— 那是脚本定义缺陷，必须响亮失败。
+_QUERY_ERRORS = (common.DBError, GrmpError, RunError)
 
 
 def _i(x) -> int:
@@ -36,21 +43,20 @@ def _i(x) -> int:
 
 # --- Load Profile ------------------------------------------------------------
 
-def collect_loadprofile(db, opt: Options) -> DimResult:
+def collect_loadprofile(runner, opt: Options) -> DimResult:
     b, e = int(opt.begin), int(opt.end)
-    qt = skill_wdr_001.format(b=b, e=e)
     try:
-        _, rows = db.query(qt)
-    except common.DBError as exc:
+        rows = runner.run("wdr.load_profile", {"b": b, "e": e})
+    except _QUERY_ERRORS as exc:
         return degraded(DIM_LOADPROFILE, summarize_err(exc))
-    db_time_us, cpu_time_us = _i(rows[0][0]), _i(rows[0][1])
-    qd = skill_wdr_002.format(b=b, e=e)
-    
+    db_time_us, cpu_time_us = _i(rows[0]["db_time_us"]), _i(rows[0]["cpu_time_us"])
     try:
-        _, rows = db.query(qd)
-    except common.DBError as exc:
+        rows = runner.run("wdr.db_summary", {"b": b, "e": e})
+    except _QUERY_ERRORS as exc:
         return degraded(DIM_LOADPROFILE, summarize_err(exc))
-    commits, blks_read, blks_hit = _i(rows[0][0]), _i(rows[0][1]), _i(rows[0][2])
+    commits, blks_read, blks_hit = (_i(rows[0]["xact_commit"]),
+                                _i(rows[0]["blks_read"]),
+                                _i(rows[0]["blks_hit"]))
 
     cpu_pct = 100.0 * cpu_time_us / db_time_us if db_time_us > 0 else 0.0
     d = DimResult(dimension=DIM_LOADPROFILE, available=True,
@@ -65,14 +71,15 @@ def collect_loadprofile(db, opt: Options) -> DimResult:
 
 # --- Database Stat -----------------------------------------------------------
 
-def collect_dbstat(db, opt: Options) -> DimResult:
+def collect_dbstat(runner, opt: Options) -> DimResult:
     b, e = int(opt.begin), int(opt.end)
-    q = skill_wdr_003.format(b=b, e=e)
     try:
-        _, rows = db.query(q)
-    except common.DBError as exc:
+        rows = runner.run("wdr.db_stat", {"b": b, "e": e})
+    except _QUERY_ERRORS as exc:
         return degraded(DIM_DBSTAT, summarize_err(exc))
-    commits, rollbacks, deadlocks, temp_bytes, blks_hit, blks_read = (_i(x) for x in rows[0])
+    commits, rollbacks, deadlocks, temp_bytes, blks_hit, blks_read = (
+        _i(rows[0][k]) for k in ("xact_commit", "xact_rollback", "deadlocks",
+                                 "temp_bytes", "blks_hit", "blks_read"))
 
     total = commits + rollbacks
     rb_pct = 100.0 * rollbacks / total if total > 0 else 0.0
@@ -123,16 +130,17 @@ def collect_dbstat(db, opt: Options) -> DimResult:
 
 # --- Top SQL -----------------------------------------------------------------
 
-def collect_topsql(db, opt: Options) -> DimResult:
+def collect_topsql(runner, opt: Options) -> DimResult:
     b, e, top = int(opt.begin), int(opt.end), int(opt.top)
-    q = skill_wdr_004.format(b=b, e=e,top=top)
     try:
-        _, rows = db.query(q)
-    except common.DBError as exc:
+        rows = runner.run("wdr.top_sql", {"b": b, "e": e, "top": top})
+    except _QUERY_ERRORS as exc:
         return degraded(DIM_TOPSQL, summarize_err(exc))
 
     # each list item: dict-like tuple (id, query, calls, elapsed, cpu, spill, phys)
-    items = [(str(r[0]), str(r[1]), _i(r[2]), _i(r[3]), _i(r[4]), _i(r[5]), _i(r[6])) for r in rows]
+    items = [(str(r["sid"]), str(r["query"]), _i(r["calls"]), _i(r["elapsed_us"]),
+              _i(r["cpu_us"]), _i(r["spill_kb"]), _i(r["phys_blocks"]))
+             for r in rows]
     total_elapsed = sum(it[3] for it in items)
 
     d = DimResult(dimension=DIM_TOPSQL, available=True,
@@ -187,14 +195,13 @@ def collect_topsql(db, opt: Options) -> DimResult:
 
 # --- Wait Events / Classes ---------------------------------------------------
 
-def collect_waits(db, opt: Options) -> DimResult:
+def collect_waits(runner, opt: Options) -> DimResult:
     b, e, top = int(opt.begin), int(opt.end), int(opt.top)
-    q = skill_wdr_005.format(b=b, e=e,top=top)
     try:
-        _, rows = db.query(q)
-    except common.DBError as exc:
+        rows = runner.run("wdr.waits", {"b": b, "e": e, "top": top})
+    except _QUERY_ERRORS as exc:
         return degraded(DIM_WAITS, summarize_err(exc))
-    items = [(str(r[0]), _i(r[1]), _i(r[2])) for r in rows]
+    items = [(str(r["wait_class"]), _i(r["waits"]), _i(r["wait_us"])) for r in rows]
     total = sum(it[2] for it in items)
 
     d = DimResult(dimension=DIM_WAITS, available=True, headers=["等待类", "waits", "wait_s", "占比%"])
@@ -221,14 +228,13 @@ def collect_waits(db, opt: Options) -> DimResult:
 
 # --- Checkpoint / BgWriter / Redo --------------------------------------------
 
-def collect_checkpoint(db, opt: Options) -> DimResult:
+def collect_checkpoint(runner, opt: Options) -> DimResult:
     b, e = int(opt.begin), int(opt.end)
-    q = skill_wdr_006.format(b=b, e=e)
     try:
-        _, rows = db.query(q)
-    except common.DBError as exc:
+        rows = runner.run("wdr.checkpoint", {"b": b, "e": e})
+    except _QUERY_ERRORS as exc:
         return degraded(DIM_CHECKPOINT, summarize_err(exc))
-    timed, req = _i(rows[0][0]), _i(rows[0][1])
+    timed, req = _i(rows[0]["checkpoints_timed"]), _i(rows[0]["checkpoints_req"])
     total = timed + req
     req_pct = 100.0 * req / total if total > 0 else 0.0
 
@@ -251,16 +257,16 @@ def collect_checkpoint(db, opt: Options) -> DimResult:
 
 # --- Cache / Memory ----------------------------------------------------------
 
-def collect_cache(db, opt: Options) -> DimResult:
+def collect_cache(runner, opt: Options) -> DimResult:
     b, e, top = int(opt.begin), int(opt.end), int(opt.top)
-    q = skill_wdr_007.format(b=b, e=e, top=top)
     try:
-        _, rows = db.query(q)
-    except common.DBError as exc:
+        rows = runner.run("wdr.cache", {"b": b, "e": e, "top": top})
+    except _QUERY_ERRORS as exc:
         return degraded(DIM_CACHE, summarize_err(exc))
     d = DimResult(dimension=DIM_CACHE, available=True, headers=["对象", "物理读(块)", "逻辑读(块)"])
     for r in rows:
-        d.rows.append([str(r[0]), i64(_i(r[1])), i64(_i(r[2]))])
+        d.rows.append([str(r["snap_relname"]), i64(_i(r["phys_read"])),
+                       i64(_i(r["logical_read"]))])
     if not d.rows:
         d.headline = "窗口内无显著物理读对象"
     else:
@@ -270,16 +276,16 @@ def collect_cache(db, opt: Options) -> DimResult:
 
 # --- File IO -----------------------------------------------------------------
 
-def collect_fileio(db, opt: Options) -> DimResult:
+def collect_fileio(runner, opt: Options) -> DimResult:
     b, e, top = int(opt.begin), int(opt.end), int(opt.top)
-    q = skill_wdr_008.format(b=b, e=e, top=top)
     try:
-        _, rows = db.query(q)
-    except common.DBError as exc:
+        rows = runner.run("wdr.file_io", {"b": b, "e": e, "top": top})
+    except _QUERY_ERRORS as exc:
         return degraded(DIM_FILEIO, summarize_err(exc))
     d = DimResult(dimension=DIM_FILEIO, available=True, headers=["文件", "物理读", "物理写"])
     for r in rows:
-        d.rows.append([trunc(str(r[0]), 40), i64(_i(r[1])), i64(_i(r[2]))])
+        d.rows.append([trunc(str(r["filename"]), 40), i64(_i(r["reads"])),
+                       i64(_i(r["writes"]))])
     if not d.rows:
         d.headline = "窗口内无显著文件 IO"
     else:
@@ -295,16 +301,16 @@ def registry():
             collect_checkpoint, collect_cache, collect_fileio]
 
 
-def collect_evidence(db, opt: Options) -> Evidence:
+def collect_evidence(runner, opt: Options) -> Evidence:
     """Run every collector over the window and assemble evidence. Per-collector
     failures degrade; only the window/native prep can fail (propagated)."""
     if opt.top <= 0:
         opt.top = 10
     ev = Evidence()
-    ev.window = load_window(db, opt)            # validate snaps + scope/node + wdr-enabled
-    ev.native = generate_native(db, opt, ev.window)  # best-effort留底
+    ev.window = load_window(runner, opt)            # validate snaps + scope/node + wdr-enabled
+    ev.native = generate_native(runner, opt, ev.window)  # best-effort留底
     for fn in registry():
-        d = fn(db, opt)
+        d = fn(runner, opt)
         ev.dims.append(d)
         ev.findings.extend(d.findings)
     ev.findings.sort(key=lambda f: int(f.severity), reverse=True)

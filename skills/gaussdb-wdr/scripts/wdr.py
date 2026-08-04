@@ -31,6 +31,7 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
         break
 
 import common  # noqa: E402
+from common import access  # noqa: E402
 from collectors import collect_evidence  # noqa: E402
 from interp import load_evidence, load_interp  # noqa: E402
 from finalreport import render_report  # noqa: E402
@@ -42,19 +43,16 @@ from thresholds import default_thresholds  # noqa: E402
 
 def _cmd_snaps(args) -> int:
     try:
-        db = common.Database.connect(args.conn)
-    except (common.ConfigError, common.CredentialError, common.DBError) as exc:
+        runner = access.for_conn(args.conn)
+    except (common.ConfigError, common.CredentialError, access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     try:
-        db.set_statement_timeout(args.timeout)
-        print(run_snaps(db, args.limit), end="")
+        print(run_snaps(runner, args.limit), end="")
         return 0
     except common.DBError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    finally:
-        db.close()
 
 
 def _cmd_collect(args) -> int:
@@ -63,16 +61,15 @@ def _cmd_collect(args) -> int:
               file=sys.stderr)
         return 1
     try:
-        db = common.Database.connect(args.conn)
-    except (common.ConfigError, common.CredentialError, common.DBError) as exc:
+        runner = access.for_conn(args.conn)
+    except (common.ConfigError, common.CredentialError, access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     try:
-        db.set_statement_timeout(args.timeout)
         opt = Options(begin=args.begin, end=args.end, scope=args.scope, node=args.node,
                       top=args.top, save_html=args.save_html or "",
                       thresholds=default_thresholds())
-        ev = collect_evidence(db, opt)
+        ev = collect_evidence(runner, opt)
         ev.conn = args.conn
         if args.format == "json":
             print(render_evidence_json(ev))
@@ -82,8 +79,6 @@ def _cmd_collect(args) -> int:
     except common.DBError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    finally:
-        db.close()
 
 
 def _cmd_render(args) -> int:

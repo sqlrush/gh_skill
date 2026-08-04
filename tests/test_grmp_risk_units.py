@@ -63,6 +63,30 @@ def test_select_list_placeholder_after_from_is_not_confused_with_column_position
     assert _codes("select count(*) from t where x > {{n}}") == []
 
 
+def test_sort_clause_does_not_leak_past_its_closing_paren():
+    """CTE 里的 GROUP BY 不能把范围拖到括号外面去。
+
+    实测踩到：
+        WITH b AS (SELECT ... WHERE id={{b}} GROUP BY x),
+             e AS (SELECT ... WHERE id={{e}} GROUP BY x)
+    GROUP BY 的列表一直扫到下一个 group by，把第二个 CTE 的 WHERE 值位
+    占位符 {{e}} 误判成排序位。30 条脚本里误报了 3 条。
+
+    误报比漏报更伤：标注一旦不可信，人就学会整体忽略它，
+    真正需要人工判断的那几条也跟着被淹掉。
+    """
+    sql = ("WITH b AS (SELECT a FROM t WHERE id={{b}} GROUP BY a), "
+           "e AS (SELECT a FROM t WHERE id={{e}} GROUP BY a) "
+           "SELECT * FROM e JOIN b USING (a)")
+    assert "IDENT_POSITION" not in _codes(sql)
+
+
+def test_sort_clause_inside_parens_still_detected():
+    """括号内的排序表达式仍要能识别，别为了消误报把真信号也丢了。"""
+    assert "IDENT_POSITION" in _codes(
+        "select * from (select a from t order by {{col}}) x")
+
+
 # ===========================================================================
 # MULTI_VALUE：IN (...) 内的占位符，多值展开语义客户中间件未定义
 # ===========================================================================

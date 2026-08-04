@@ -1,0 +1,13 @@
+# SQL 取自 common/sql.py 的 skill_wdr_010。列名齐全，未改动。
+name: wdr.snapshots
+description: 最近的快照列表
+sql: |
+  SELECT snapshot_id,
+         to_char(start_ts,'YYYY-MM-DD HH24:MI') AS start_ts,
+         to_char(end_ts,'YYYY-MM-DD HH24:MI')   AS end_ts,
+         round(EXTRACT(EPOCH FROM (end_ts-start_ts))/60)::bigint AS dur_min
+  FROM snapshot.snapshot ORDER BY snapshot_id DESC LIMIT {{limit}};
+params:
+  - key: limit
+    type: INTEGER
+    description: 返回条数上限

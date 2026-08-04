@@ -1,0 +1,19 @@
+# SQL 取自 common/sql.py 的 skill_wdr_006。
+# **改动：两个 COALESCE(...) 加了别名 timed / req。**
+name: wdr.checkpoint
+description: 窗口内检查点次数增量（定时触发 / 请求触发）
+sql: |
+  WITH b AS (SELECT snap_node_name, snap_checkpoints_timed AS timed, snap_checkpoints_req AS req
+               FROM snapshot.snap_global_bgwriter_stat WHERE snapshot_id={{b}}),
+       e AS (SELECT snap_node_name, snap_checkpoints_timed AS timed, snap_checkpoints_req AS req
+               FROM snapshot.snap_global_bgwriter_stat WHERE snapshot_id={{e}})
+  SELECT COALESCE(SUM(e.timed-b.timed),0) AS checkpoints_timed,
+         COALESCE(SUM(e.req-b.req),0)     AS checkpoints_req
+  FROM e JOIN b USING (snap_node_name);
+params:
+  - key: b
+    type: INTEGER
+    description: 起始快照 ID
+  - key: e
+    type: INTEGER
+    description: 结束快照 ID
