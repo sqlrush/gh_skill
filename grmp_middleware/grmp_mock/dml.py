@@ -49,7 +49,7 @@ def script_file(
     """
     lines: List[str] = [
         "-- GRMP 诊断脚本注册 DML",
-        "-- 由 tools/grmp_register.py 从 scripts/registry/ 生成，请勿手工编辑",
+        "-- 由 grmp_middleware/grmp_register.py 从 scripts/registry/ 生成，请勿手工编辑",
         "-- 共 %d 条脚本：" % len(records),
     ]
     for rec in records:

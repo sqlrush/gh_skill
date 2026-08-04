@@ -74,7 +74,7 @@
            │ HTTP                              │
            ▼                                   │
 ┌────────────────────────────────────┐         │
-│  tools/grmp_mock/  （HTTP 服务）    │         │
+│  grmp_middleware/grmp_mock/  （HTTP 服务）    │         │
 │  ┌──────────────────────────────┐  │         │
 │  │ server.py    路由分发         │  │         │
 │  │ auth.py      auth 头校验      │  │         │

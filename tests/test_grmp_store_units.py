@@ -12,7 +12,7 @@ sys.path.insert(0, str(_ROOT))
 import pytest  # noqa: E402
 
 from common.grmp import script as sc  # noqa: E402
-from tools.grmp_mock import store as st  # noqa: E402
+from grmp_middleware.grmp_mock import store as st  # noqa: E402
 from common.grmp.placeholder import ParamDef  # noqa: E402
 
 

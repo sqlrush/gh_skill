@@ -7,7 +7,7 @@
 注册、到客户环境注册不了，又是一个本地测不出来的落差。
 
 用法：
-    python3 -m tools.grmp_register --registry scripts/registry \\
+    python3 -m grmp_middleware.grmp_register --registry scripts/registry \\
         --db ~/.gdaa/grmp/script_config.db --dml-out docs/delivery/scripts.sql
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ from typing import List, Sequence, Tuple
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from common.grmp import script as sc  # noqa: E402
-from tools.grmp_mock import dml, risk, store as st  # noqa: E402
+from grmp_middleware.grmp_mock import dml, risk, store as st  # noqa: E402
 from common.grmp.placeholder import ParamError  # noqa: E402
 
 DEFAULT_REGISTRY = "scripts/registry"

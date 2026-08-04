@@ -1,6 +1,6 @@
 """grmp-mock 启动入口。
 
-    GRMP_AUTH_TOKEN=xxx python3 -m tools.grmp_mock --port 8765
+    GRMP_AUTH_TOKEN=xxx python3 -m grmp_middleware.grmp_mock --port 8765
 
 令牌只从环境变量读，不落盘、不进代码、不进版本库；缺失即拒绝启动。
 """
@@ -14,15 +14,15 @@ from typing import Sequence
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
-from tools.grmp_mock import instances as inst  # noqa: E402
-from tools.grmp_mock.executor import (  # noqa: E402
+from grmp_middleware.grmp_mock import instances as inst  # noqa: E402
+from grmp_middleware.grmp_mock.executor import (  # noqa: E402
     DEFAULT_MAX_RESULT_ROWS,
     DEFAULT_STATEMENT_TIMEOUT_SECONDS,
 )
-from tools.grmp_mock.http_server import BIND_HOST, serve  # noqa: E402
-from tools.grmp_mock.server import LIST_PATH, App  # noqa: E402
+from grmp_middleware.grmp_mock.http_server import BIND_HOST, serve  # noqa: E402
+from grmp_middleware.grmp_mock.server import LIST_PATH, App  # noqa: E402
 from common.grmp.settings import Settings  # noqa: E402
-from tools.grmp_mock.store import ScriptStore  # noqa: E402
+from grmp_middleware.grmp_mock.store import ScriptStore  # noqa: E402
 
 DEFAULT_PORT = 8765
 DEFAULT_DB = "~/.gdaa/grmp/script_config.db"

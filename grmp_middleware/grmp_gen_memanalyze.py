@@ -15,8 +15,8 @@ memanalyze 与其他 skill 不同：它的 SQL 正文取决于目标实例有哪
     产出的 YAML 与 DML 才是那套环境专用的
 
 用法：
-    python3 -m tools.grmp_gen_memanalyze --conn og
-    python3 -m tools.grmp_gen_memanalyze --conn og --out scripts/registry/memanalyze
+    python3 -m grmp_middleware.grmp_gen_memanalyze --conn og
+    python3 -m grmp_middleware.grmp_gen_memanalyze --conn og --out scripts/registry/memanalyze
 
 ⚠️ 换一套实例就要重新生成。拿 A 实例生成的脚本去 B 实例跑，
    轻则报列不存在（会被降级逻辑接住），重则查到语义不同的列。
@@ -50,7 +50,7 @@ OP_COLS = ("queryid", "plan_node_id", "plan_node_name", "duration",
            "average_peak_memory", "spill_size", "warning")
 
 HEADER = """\
-# ⚠️ 本文件由 tools/grmp_gen_memanalyze.py 生成，请勿手工编辑。
+# ⚠️ 本文件由 grmp_middleware/grmp_gen_memanalyze.py 生成，请勿手工编辑。
 #
 # memanalyze 的 SQL 正文取决于目标实例有哪些视图、每个视图有哪些列 ——
 # 探测到什么就查什么，缺的列补 NULL。固定白名单覆盖不了这种形态，

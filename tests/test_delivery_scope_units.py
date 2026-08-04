@@ -16,7 +16,7 @@ import pytest
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
-from tools import grmp_register  # noqa: E402
+from grmp_middleware import grmp_register  # noqa: E402
 
 
 def test_scripts_no_skill_calls_are_listed():

@@ -11,7 +11,7 @@ _ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
 from common.grmp import script as sc  # noqa: E402
-from tools.grmp_mock import dml  # noqa: E402
+from grmp_middleware.grmp_mock import dml  # noqa: E402
 from common.grmp.placeholder import ParamDef  # noqa: E402
 
 

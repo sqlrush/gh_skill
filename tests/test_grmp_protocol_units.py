@@ -18,7 +18,7 @@ sys.path.insert(0, str(_ROOT))
 import pytest  # noqa: E402
 
 from common.grmp import serialize  # noqa: E402
-from tools.grmp_mock import envelope, pagination  # noqa: E402
+from grmp_middleware.grmp_mock import envelope, pagination  # noqa: E402
 from common.grmp.settings import Settings  # noqa: E402
 
 

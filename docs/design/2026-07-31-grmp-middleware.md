@@ -187,7 +187,7 @@ params:
 
 字段刻意与 `script_config` 的 21 列对齐，注册工具做的是机械映射而非再设计。
 
-### 4.2 注册工具 `tools/grmp_register.py`
+### 4.2 注册工具 `grmp_middleware/grmp_register.py`
 
 职责：把 YAML 变成 `script_config` 记录，**并在入库前把所有能静态发现的问题拦下来**。
 
@@ -228,7 +228,7 @@ params:
 
 表结构保留客户的 **21 列全集**（含 `region`、`deployment_form`、`refered_appbusiness` 等我们用不到的列），使导出的 DML 可直接用于客户环境。
 
-### 4.4 grmp-mock 服务 `tools/grmp_mock/`
+### 4.4 grmp-mock 服务 `grmp_middleware/grmp_mock/`
 
 标准库 `http.server`，单进程，只监听 `127.0.0.1`。
 
@@ -249,7 +249,7 @@ params:
 `dataIp` 映射沿用客户示例中的 IP，使同一份配置在本机与客户环境行为一致：
 
 ```yaml
-# tools/grmp_mock/instances.yaml
+# grmp_middleware/grmp_mock/instances.yaml
 <客户数据IP>: og        # 客户示例中的 dataIp（真实值不入库），本机映射到 og5
 ```
 
@@ -453,7 +453,7 @@ POST {base}/icbc/paas/aiops/grmp/diagnostic/agent/common-operations/invoke
 - 只读会话（`read_only=True`）
 - 注册期对存在注入面的脚本出具风险清单
 
-**这一偏离仅限 `tools/grmp_mock/` 与共享渲染器**。仓库其余部分不受影响；`common/` 下面向真实数据库的既有代码保持原有约定。
+**这一偏离仅限 `grmp_middleware/grmp_mock/` 与共享渲染器**。仓库其余部分不受影响；`common/` 下面向真实数据库的既有代码保持原有约定。
 
 ---
 

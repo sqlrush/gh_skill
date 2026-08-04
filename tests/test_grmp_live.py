@@ -17,8 +17,8 @@ import pytest  # noqa: E402
 
 import common  # noqa: E402
 from common.grmp import script as sc  # noqa: E402
-from tools.grmp_mock import instances as inst, store as st  # noqa: E402
-from tools.grmp_mock.server import App  # noqa: E402
+from grmp_middleware.grmp_mock import instances as inst, store as st  # noqa: E402
+from grmp_middleware.grmp_mock.server import App  # noqa: E402
 from common.grmp.settings import Settings  # noqa: E402
 
 pytestmark = pytest.mark.live

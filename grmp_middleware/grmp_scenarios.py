@@ -1,8 +1,8 @@
 """四个业务场景的中间件测试 —— 真实 HTTP，后端 og5，结果完整打印。
 
-    python3 -m tools.grmp_scenarios          跑全部
-    python3 -m tools.grmp_scenarios 2 3      只跑第 2、3 个
-    RAW=1 python3 -m tools.grmp_scenarios 2  额外打印完整 JSON
+    python3 -m grmp_middleware.grmp_scenarios          跑全部
+    python3 -m grmp_middleware.grmp_scenarios 2 3      只跑第 2、3 个
+    RAW=1 python3 -m grmp_middleware.grmp_scenarios 2  额外打印完整 JSON
 
 场景：
     1  访问常见动态性能视图（9 张）
@@ -30,9 +30,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from common.grmp import script as sc                          # noqa: E402
 from common.grmp.registry import Registry                     # noqa: E402
 from common.grmp.settings import Settings                     # noqa: E402
-from tools.grmp_mock import instances as inst, risk, store as st  # noqa: E402
-from tools.grmp_mock.http_server import serve                 # noqa: E402
-from tools.grmp_mock.server import App                        # noqa: E402
+from grmp_middleware.grmp_mock import instances as inst, risk, store as st  # noqa: E402
+from grmp_middleware.grmp_mock.http_server import serve                 # noqa: E402
+from grmp_middleware.grmp_mock.server import App                        # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TOKEN = "0123456789abcdef0123456789abcdef"

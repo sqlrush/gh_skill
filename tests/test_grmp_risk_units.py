@@ -18,7 +18,7 @@ import pytest  # noqa: E402
 
 from common.grmp import placeholder as ph  # noqa: E402
 
-from tools.grmp_mock import risk  # noqa: E402
+from grmp_middleware.grmp_mock import risk  # noqa: E402
 
 
 def _codes(sql):

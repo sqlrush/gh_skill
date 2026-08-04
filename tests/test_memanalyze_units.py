@@ -273,7 +273,7 @@ def _instance_catalog():
 
 
 def _mem_rows(dynamic_used, max_dynamic=10000, peak=None):
-    """列名与 tools/grmp_gen_memanalyze.py 的 INSTANCE_COLS 一致。"""
+    """列名与 grmp_middleware/grmp_gen_memanalyze.py 的 INSTANCE_COLS 一致。"""
     pairs = [
         ("max_process_memory", 12000),
         ("process_used_memory", dynamic_used + 500),
@@ -377,7 +377,7 @@ def test_sql_layer_flags_spill_and_estimate_deviation():
     cap = capability.assess(
         {"resource_track_level": "operator", "enable_resource_track": "on"},
         _catalog(wlm_session="gs_wlm_session_statistics"))
-    # 列名与 tools/grmp_gen_memanalyze.py 的 SQL_COLS 一致
+    # 列名与 grmp_middleware/grmp_gen_memanalyze.py 的 SQL_COLS 一致
     rows = [{
         "queryid": 101, "query": "SELECT * FROM big", "start_time": "2026-07-12",
         "duration": 9000, "estimate_memory": 100, "used_memory": 4096,

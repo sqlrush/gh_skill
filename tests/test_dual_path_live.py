@@ -23,9 +23,9 @@ from common.grmp.client import GrmpClient, GrmpRunner, GrmpError  # noqa: E402
 from common.grmp.registry import Registry  # noqa: E402
 from common.grmp.runner import DirectRunner  # noqa: E402
 from common.grmp.settings import Settings  # noqa: E402
-from tools.grmp_mock import instances as inst, store as st  # noqa: E402
-from tools.grmp_mock.http_server import serve  # noqa: E402
-from tools.grmp_mock.server import App  # noqa: E402
+from grmp_middleware.grmp_mock import instances as inst, store as st  # noqa: E402
+from grmp_middleware.grmp_mock.http_server import serve  # noqa: E402
+from grmp_middleware.grmp_mock.server import App  # noqa: E402
 
 CONN = "og"
 TOKEN = "0123456789abcdef0123456789abcdef"

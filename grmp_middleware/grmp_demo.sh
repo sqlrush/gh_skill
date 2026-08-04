@@ -2,9 +2,9 @@
 # grmp-mock 核心场景演示 —— 自己起服务、自己停，输出全打到屏幕。
 #
 # 用法：
-#   bash tools/grmp_demo.sh          跑全部场景
-#   bash tools/grmp_demo.sh 6        只跑第 6 个
-#   bash tools/grmp_demo.sh 6 7 8    跑第 6、7、8 个
+#   bash grmp_middleware/grmp_demo.sh          跑全部场景
+#   bash grmp_middleware/grmp_demo.sh 6        只跑第 6 个
+#   bash grmp_middleware/grmp_demo.sh 6 7 8    跑第 6、7、8 个
 #
 # 前置：og5 在 127.0.0.1:5433，~/.gdaa/grmp/ 下已有 instances.yaml
 #      （没有的话本脚本会自动建）
@@ -55,7 +55,7 @@ brief() {
 
 printf '%s准备：注册脚本到 %s%s\n' "$C_H" "$DB" "$C_R"
 rm -f "$DB"
-python3 -m tools.grmp_register --db "$DB" || exit 1
+python3 -m grmp_middleware.grmp_register --db "$DB" || exit 1
 
 # 先探端口。被占用时 mock 会 bind 失败退出，而后续调用会打到别人的服务上，
 # 报出一堆与本项目无关的错——必须在这里就停住。
@@ -65,7 +65,7 @@ s = socket.socket()
 try:
     s.bind(('127.0.0.1', $PORT))
 except OSError as exc:
-    sys.exit('端口 $PORT 已被占用（%s）。换一个：GRMP_DEMO_PORT=8770 bash tools/grmp_demo.sh' % exc)
+    sys.exit('端口 $PORT 已被占用（%s）。换一个：GRMP_DEMO_PORT=8770 bash grmp_middleware/grmp_demo.sh' % exc)
 finally:
     s.close()
 "; then exit 1; fi
@@ -74,7 +74,7 @@ printf '\n%s准备：启动 grmp-mock（端口 %s）%s\n' "$C_H" "$PORT" "$C_R"
 # 横幅与访问日志都走 stderr。全打到屏幕会把每条 200 日志混进报文里，
 # 所以导到文件：横幅在下面单独打一次，访问日志留在文件里备查。
 LOG=/tmp/grmp_demo.log
-python3 -m tools.grmp_mock --db "$DB" --instances "$INST" --port "$PORT" \
+python3 -m grmp_middleware.grmp_mock --db "$DB" --instances "$INST" --port "$PORT" \
         > /dev/null 2> "$LOG" &
 MOCK=$!
 trap 'kill $MOCK 2>/dev/null; wait $MOCK 2>/dev/null' EXIT
