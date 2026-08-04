@@ -1,0 +1,14 @@
+# SQL 取自 common/sql.py 的 skill_procinfo_002。
+# **改动：COALESCE(unit,'') 加了别名 unit。** 原来列名是 coalesce，
+# 虽不重名，但作为 JSON 键毫无意义，取值代码要写 r["coalesce"]。
+name: procinfo.key_gucs
+description: 与执行计划相关的关键 GUC 参数
+sql: |
+  SELECT name, setting, COALESCE(unit, '') AS unit
+  FROM pg_settings
+  WHERE name IN (
+    'work_mem', 'maintenance_work_mem', 'shared_buffers',
+    'effective_cache_size', 'random_page_cost', 'seq_page_cost',
+    'max_parallel_workers_per_gather', 'from_collapse_limit',
+    'join_collapse_limit', 'geqo_threshold', 'default_statistics_target')
+  ORDER BY name;

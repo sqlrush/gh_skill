@@ -28,6 +28,7 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
         break
 
 import common  # noqa: E402
+from common import access  # noqa: E402
 import procanalyze as pa  # noqa: E402
 import render  # noqa: E402
 
@@ -37,14 +38,12 @@ for parent in _HERE.parents:
         sys.path.insert(0, str(parent))
         break
 
-from common.sql import skill_procinfo_001,skill_procinfo_002
+# SQL 已迁到 scripts/registry/procinfo/ —— 两条路径共用同一份定义
 
 
-_PROC_DEF_QUERY = skill_procinfo_001
 
 
 # Key planner/memory GUCs (same whitelist as the proctune evidence collector).
-_KEY_GUCS_QUERY = skill_procinfo_002
 
 
 _RUNTIME_NOTE = ("运行时归因（embedded SQL 的真实 calls/avg/total）需实例开启 "
@@ -82,22 +81,28 @@ def _split_qualified(q: str) -> tuple[str, str]:
     return "", q
 
 
-def collect_gucs(db) -> list[GUC]:
-    _, rows = db.query(_KEY_GUCS_QUERY)
-    return [GUC(r[0], r[1], r[2]) for r in rows]
+KEY_GUCS_SCRIPT = "procinfo.key_gucs"
+PROC_DEF_SCRIPT = "procinfo.proc_def"
 
 
-def fetch_proc_def(db, qualified: str) -> pa.ProcDef:
+def collect_gucs(runner) -> list[GUC]:
+    rows = runner.run(KEY_GUCS_SCRIPT)
+    return [GUC(r["name"], r["setting"], r["unit"]) for r in rows]
+
+
+def fetch_proc_def(runner, qualified: str) -> pa.ProcDef:
+    """经统一入口取数。走中间件还是直连由连接的 driver 决定，这里不感知。"""
     schema, name = _split_qualified(qualified)
-    _, rows = db.query(_PROC_DEF_QUERY, (name, schema, schema))
+    rows = runner.run(PROC_DEF_SCRIPT, {"name": name, "schema": schema})
     if not rows:
         raise ValueError(f"proc {qualified!r} not found")
-    nsp, pn, lang, src, args = (x if x is not None else "" for x in rows[0])
-    return pa.analyze(nsp, pn, lang, src, args)
+    r = rows[0]
+    return pa.analyze(r["nspname"], r["proname"], r["lanname"],
+                      r["prosrc"], r["args"])
 
 
-def proc_collect(db, qualified: str) -> ProcEvidence:
-    proc = fetch_proc_def(db, qualified)
+def proc_collect(runner, qualified: str) -> ProcEvidence:
+    proc = fetch_proc_def(runner, qualified)
     embedded = [EmbeddedStmt(line=c.line, kind=f"cursor:{c.name}", sql=c.select_sql)
                 for c in pa.extract_cursors(proc.body)]
     return ProcEvidence(
@@ -105,7 +110,7 @@ def proc_collect(db, qualified: str) -> ProcEvidence:
         structure=pa.scan_structure(proc.body),
         embedded=embedded,
         runtime_note=_RUNTIME_NOTE,
-        gucs=collect_gucs(db),
+        gucs=collect_gucs(runner),
     )
 
 
@@ -171,23 +176,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = ap.parse_args(argv)
 
     try:
-        db = common.Database.connect(args.conn)
-    except (common.ConfigError, common.CredentialError, common.DBError) as exc:
+        runner = access.for_conn(args.conn)
+    except (common.ConfigError, common.CredentialError, access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     try:
-        db.set_statement_timeout(args.timeout)
-        pe = proc_collect(db, args.proc)
+        pe = proc_collect(runner, args.proc)
         if args.format == "json":
             print(json.dumps(_to_jsonable(pe), ensure_ascii=False, indent=2))
         else:
             print(proc_info_report(pe), end="")
         return 0
-    except (ValueError, common.DBError) as exc:
+    except (ValueError, KeyError, common.DBError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    finally:
-        db.close()
+    except Exception as exc:          # 渲染/协议层的失败也要清楚报出来
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

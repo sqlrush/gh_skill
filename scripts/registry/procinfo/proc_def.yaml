@@ -1,0 +1,27 @@
+# SQL 取自 common/sql.py 的 skill_procinfo_001。
+#
+# **改动：三个 %s 绑定变量换成 {{}} 占位符，并手工补上引号。**
+# 绑定变量下驱动会替字符串加引号，所以原文写的是 `= %s`；换成文本替换后
+# 引号责任回到脚本作者身上，不补就渲染成 `= pg_sleep`（被当成列名）。
+#
+# 参数是 String 类型，注册时会标 STRING_PARAM —— 类型校验对它无效。
+# 防线在调用方：procinfo.py 从 `schema.proc` 形式的入参里拆出两段，
+# 取值来自命令行而非任意文本。
+name: procinfo.proc_def
+description: 按名字取存储过程/函数的定义
+sql: |
+  SELECT n.nspname, p.proname, l.lanname, p.prosrc,
+         pg_catalog.pg_get_function_arguments(p.oid) AS args
+  FROM pg_proc p
+  JOIN pg_namespace n ON n.oid = p.pronamespace
+  JOIN pg_language l ON l.oid = p.prolang
+  WHERE p.proname = '{{name}}' AND ('{{schema}}' = '' OR n.nspname = '{{schema}}')
+  ORDER BY (n.nspname = 'public') DESC, n.nspname
+  LIMIT 1;
+params:
+  - key: name
+    type: String
+    description: 过程/函数名
+  - key: schema
+    type: String
+    description: 模式名；空串表示不限模式
