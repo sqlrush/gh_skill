@@ -1,0 +1,22 @@
+# SQL 取自 common/sql.py 的 skill_health_004。
+# **改动：两个 COALESCE(...) 加了别名 usename / query。**
+# 原来两列都叫 coalesce，协议按列名做键，后一个会把前一个覆盖 ——
+# query 顶掉 usename，且不报错。
+name: health.long_xact
+description: 长事务与长时间未变状态的会话
+sql: |
+  SELECT pid,
+         COALESCE(usename,'') AS usename,
+         state,
+         EXTRACT(EPOCH FROM (now()-xact_start))   AS xact_age_s,
+         EXTRACT(EPOCH FROM (now()-state_change)) AS state_age_s,
+         COALESCE(query,'') AS query
+  FROM pg_stat_activity
+  WHERE state IN ('active','idle in transaction') AND xact_start IS NOT NULL
+    AND COALESCE(connection_info,'') <> ''
+  ORDER BY xact_start
+  LIMIT {{limit}};
+params:
+  - key: limit
+    type: INTEGER
+    description: 返回条数上限

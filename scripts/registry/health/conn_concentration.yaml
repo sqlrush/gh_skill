@@ -1,0 +1,8 @@
+# SQL 取自 common/sql.py 的 skill_health_009。列名齐全，未改动。
+name: health.conn_concentration
+description: 活跃连接是否集中在同一条语句上
+sql: |
+  SELECT COALESCE(query,'') q, count(*) c, sum(count(*)) OVER () AS total
+  FROM pg_stat_activity
+  WHERE state='active' AND COALESCE(query,'')<>'' AND COALESCE(connection_info,'')<>''
+  GROUP BY query ORDER BY c DESC LIMIT 1;

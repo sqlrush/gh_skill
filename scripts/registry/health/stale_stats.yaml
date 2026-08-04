@@ -1,0 +1,21 @@
+# SQL 取自 common/sql.py 的 skill_health_012。
+# **改动：schemaname||'.'||relname 加别名 tbl_name**（原来是 ?column?）；
+# 两个 %s 换成 {{}}；{schema_filter} 换成 {{schema_filter}}。
+name: health.stale_stats
+description: 数据已变更但统计信息未更新的表
+sql: |
+  SELECT schemaname||'.'||relname AS tbl_name
+  FROM pg_stat_user_tables
+  WHERE n_live_tup > {{min_rows}} AND schemaname NOT IN {{schema_filter}}
+    AND (last_analyze IS NULL OR (last_data_changed IS NOT NULL AND last_data_changed > last_analyze))
+  ORDER BY n_live_tup DESC LIMIT {{limit}};
+params:
+  - key: min_rows
+    type: INTEGER
+    description: 行数下限
+  - key: schema_filter
+    type: String
+    description: 要排除的模式列表，形如 ('a','b')。须来自受控常量
+  - key: limit
+    type: INTEGER
+    description: 返回条数上限

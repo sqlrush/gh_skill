@@ -1,0 +1,30 @@
+# SQL 取自 common/sql.py 的 skill_health_011。
+# **改动一：s.schemaname||'.'||s.indexrelname 加别名 idx_name。**
+#   原来列名是 ?column?，拿不到有意义的键。
+# **改动二：两个 %s 换成 {{}}（数值位，无需补引号）；
+#   {schema_filter} 换成 {{schema_filter}}。**
+#
+# schema_filter 是整段 SQL 片段（如 ('pg_catalog','information_schema')），
+# GRMP 没有列表类型，只能当 String 塞进去 —— 注册时会标 STRING_PARAM。
+# 防线在调用方：取值来自 collectors.py 里的固定常量，不来自用户输入。
+name: health.unused_index
+description: 从未被扫描过的大索引
+sql: |
+  SELECT s.schemaname||'.'||s.indexrelname AS idx_name,
+         pg_relation_size(s.indexrelid) AS idx_bytes
+  FROM pg_stat_user_indexes s
+  JOIN pg_index i ON i.indexrelid = s.indexrelid
+  WHERE s.idx_scan=0 AND pg_relation_size(s.indexrelid) > {{min_bytes}}
+    AND NOT i.indisprimary AND NOT i.indisunique
+    AND s.schemaname NOT IN {{schema_filter}}
+  ORDER BY pg_relation_size(s.indexrelid) DESC LIMIT {{limit}};
+params:
+  - key: min_bytes
+    type: INTEGER
+    description: 索引大小下限（字节）
+  - key: schema_filter
+    type: String
+    description: 要排除的模式列表，形如 ('a','b')。须来自受控常量
+  - key: limit
+    type: INTEGER
+    description: 返回条数上限

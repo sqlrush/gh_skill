@@ -1,0 +1,24 @@
+# SQL 取自 common/sql.py 的 skill_health_005，**逐字照搬，包括其中的缺陷**。
+#
+# ⚠️ 这条 SQL 本身是坏的：WHERE t.n_dead_tup > 0+ 后面没有操作数，
+# 数据库会报 syntax error at or near "AND"。直连路径下今天也是坏的。
+#
+# 原意无法从代码判断 —— 可能是想写 > 0，也可能是丢了一个 %s 阈值参数。
+# 猜测等于替使用方定业务语义，所以按用户要求只报不修，保持原样迁移。
+# 执行失败会被 collectors 的降级逻辑接住，该维度显示为不可用。
+name: health.bloat
+description: 表膨胀（⚠️ SQL 本身有语法错误，见注释）
+sql: |
+  SELECT t.schemaname, t.relname, t.n_live_tup, t.n_dead_tup,
+         EXTRACT(EPOCH FROM (now()-t.last_autovacuum)) AS last_autovacuum_age_s,
+         CASE WHEN 'autovacuum_enabled=false' = ANY(c.reloptions) THEN false ELSE true END AS autovac_enabled
+  FROM pg_stat_user_tables t
+  JOIN pg_class c ON c.oid = t.relid
+  WHERE t.n_dead_tup > 0+
+    AND t.schemaname NOT IN ('pg_catalog','information_schema','snapshot','dbe_perf','dbe_pldeveloper','cstore')
+  ORDER BY t.n_dead_tup::numeric/GREATEST(t.n_live_tup+t.n_dead_tup,1) DESC
+  LIMIT {{limit}};
+params:
+  - key: limit
+    type: INTEGER
+    description: 返回条数上限

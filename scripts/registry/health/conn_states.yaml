@@ -1,0 +1,16 @@
+# SQL 取自 common/sql.py 的 skill_health_008。
+#
+# **修正（用户确认）：原文把 Python 隐式字符串拼接的源码连同括号和引号
+# 一起粘进了三引号里**，实际执行的是以 ("SELECT ... 开头的文本，
+# 数据库报 syntax error。collectors.py 的 _CONN_Q 正在用它 ——
+# health 的连接状态统计今天是坏的。
+# 去掉外层括号与引号即可，原意毫无歧义。
+#
+# 同时给 count(*) 加了别名 cnt。
+name: health.conn_states
+description: 连接状态分布
+sql: |
+  SELECT COALESCE(state,'<null>') AS state, count(*) AS cnt
+  FROM pg_stat_activity
+  GROUP BY state
+  ORDER BY cnt DESC;

@@ -1,0 +1,32 @@
+# SQL 取自 common/sql.py 的 skill_health_007。
+# **改动：末尾三列加了别名 state / xact_age_s / state_age_s。**
+# 原来 COALESCE(a.state,'') 叫 coalesce，两个 EXTRACT(...) 都叫 date_part ——
+# 两个 date_part 重名，走中间件后只剩一个。
+name: health.lock_chain
+description: 锁等待链（递归展开阻塞关系）
+sql: |
+  WITH RECURSIVE waits AS (
+    SELECT w.pid AS waiter, h.pid AS holder
+    FROM pg_locks w
+    JOIN pg_locks h ON h.granted AND NOT w.granted
+       AND h.locktype=w.locktype AND h.database IS NOT DISTINCT FROM w.database
+       AND h.relation IS NOT DISTINCT FROM w.relation
+       AND h.transactionid IS NOT DISTINCT FROM w.transactionid
+       AND h.pid<>w.pid),
+  chain AS (
+    SELECT holder AS root, waiter, 1 AS depth FROM waits
+    UNION ALL
+    SELECT c.root, w.waiter, c.depth+1 FROM chain c JOIN waits w ON w.holder=c.waiter
+    WHERE c.depth < 20)
+  SELECT c.root, max(c.depth) AS depth, count(DISTINCT c.waiter) AS waiters,
+         COALESCE(a.state,'') AS state,
+         EXTRACT(EPOCH FROM (now()-a.xact_start))   AS xact_age_s,
+         EXTRACT(EPOCH FROM (now()-a.state_change)) AS state_age_s
+  FROM chain c LEFT JOIN pg_stat_activity a ON a.pid=c.root
+  GROUP BY c.root, a.state, a.xact_start, a.state_change
+  ORDER BY depth DESC, waiters DESC
+  LIMIT {{limit}};
+params:
+  - key: limit
+    type: INTEGER
+    description: 返回条数上限

@@ -26,13 +26,14 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
         break
 
 import common  # noqa: E402
+from common import access  # noqa: E402
 import collectors  # noqa: E402
 from model import HealthEvidence, Severity, worst  # noqa: E402
 from report import render_health, render_health_json  # noqa: E402
 from thresholds import Thresholds, default_thresholds  # noqa: E402
 
 
-def run_health(db, include: list[str], exclude: list[str], top: int,
+def run_health(runner, include: list[str], exclude: list[str], top: int,
                th: Thresholds) -> HealthEvidence:
     """Run every selected collector (read-only) and assemble the evidence pack.
     Per-collector failures degrade (available=False); collectors never raise."""
@@ -46,7 +47,7 @@ def run_health(db, include: list[str], exclude: list[str], top: int,
             continue
         if key in exc:
             continue
-        d = fn(db, th, top)
+        d = fn(runner, th, top)
         ev.dims.append(d)
         ev.findings.extend(d.findings)
     # Stable sort by severity desc (matches Go sort.SliceStable).
@@ -74,13 +75,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = ap.parse_args(argv)
 
     try:
-        db = common.Database.connect(args.conn)
-    except (common.ConfigError, common.CredentialError, common.DBError) as exc:
+        runner = access.for_conn(args.conn)
+    except (common.ConfigError, common.CredentialError, access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     try:
-        db.set_statement_timeout(args.timeout)
-        ev = run_health(db, _split_dim_list(args.include), _split_dim_list(args.exclude),
+        ev = run_health(runner, _split_dim_list(args.include), _split_dim_list(args.exclude),
                         args.top, default_thresholds())
         ev.conn = args.conn
         if args.format == "json":
@@ -91,8 +91,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     except common.DBError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    finally:
-        db.close()
+    except Exception as exc:          # 渲染/协议层的失败也要清楚报出来
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
