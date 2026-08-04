@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, Mapping, Sequence
 
 from common.grmp import serialize
+from common.grmp.columns import check_columns
 from common.grmp.placeholder import ParamDef, render
 from common.grmp.script import ScriptRecord
 from common.grmp.settings import Settings
@@ -53,6 +54,9 @@ def execute(
         # 无结果集（DDL/DML/无返回的语句）走 Text 分支。
         # 【缺】文档没说 Text 分支的 data 放什么，这里给空串。
         return serialize.result_text("")
+
+    # 结果按列名做键返回，重名列会被后一个覆盖 —— 报错，不能少返回几列
+    check_columns(cols, record.script_name)
 
     if len(rows) > max_rows:
         raise ExecError(

@@ -175,6 +175,20 @@ def test_direct_runner_rejects_injection_before_connecting(tmp_path):
     assert opened == []
 
 
+def test_direct_runner_also_rejects_duplicate_columns(tmp_path):
+    """两条路径都要挡：否则同一条坏脚本在直连下能跑、走中间件才炸。"""
+    from common.grmp.columns import ColumnError
+    runner = DirectRunner(
+        conn_name="og",
+        registry=registry.Registry(_registry(tmp_path)),
+        settings=Settings(),
+        open_db=lambda name, read_only=True: FakeDB(
+            cols=("round", "round"), rows=[(1, 2)]),
+    )
+    with pytest.raises(ColumnError):
+        runner.run("slowsql.slow_sql", {"n": 1})
+
+
 def test_statement_without_result_set_raises_instead_of_returning_empty(tmp_path):
     """无结果集时报错，不返回 []。
 

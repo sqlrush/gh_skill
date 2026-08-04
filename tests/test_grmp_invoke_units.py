@@ -151,6 +151,27 @@ def test_empty_result_set_is_array_with_empty_data(ctx):
     assert body["result"] == {"type": "array", "data": []}
 
 
+def test_duplicate_column_names_fail_loudly(ctx):
+    """协议按列名做键，重名列会被后一个覆盖 —— 必须报错而不是少返回几列。
+
+    `select round(a,2), round(b,2)` 两列都叫 round，位置访问下没问题，
+    一走中间件就只剩一列，且不报错。
+    """
+    app, _, holder = ctx
+    holder["db"] = FakeDB(cols=("round", "round"), rows=[(1, 2)])
+    _, body = _invoke(app, _ok_body())
+    assert body["status"] != "finished"
+    assert "round" in body["msg"]
+
+
+def test_anonymous_column_fails_loudly(ctx):
+    """`select a||b` 的列名是 ?column?，拿不到有意义的键。"""
+    app, _, holder = ctx
+    holder["db"] = FakeDB(cols=("?column?",), rows=[(1,)])
+    _, body = _invoke(app, _ok_body())
+    assert body["status"] != "finished"
+
+
 def test_statement_without_result_set_becomes_text(ctx):
     """【规】type 取 Text 或 array。无结果集走 Text 分支。"""
     app, _, holder = ctx

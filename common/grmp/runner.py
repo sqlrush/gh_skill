@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from . import serialize
+from .columns import check_columns
 from .params import to_param_value
 from .placeholder import render
 from .registry import Registry
@@ -76,4 +77,7 @@ class DirectRunner:
             raise RunError(
                 "脚本 %s 未返回结果集。诊断脚本应当是查询语句。" % script_name
             )
+        # 与中间件路径同一道检查：否则同一条坏脚本在直连下能跑、
+        # 走中间件才炸，双路径一致性就成了摆设
+        check_columns(cols, script_name)
         return serialize.result_array(cols, rows, self._settings)["data"]

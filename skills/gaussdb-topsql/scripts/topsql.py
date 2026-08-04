@@ -28,9 +28,10 @@ for parent in _HERE.parents:
         sys.path.insert(0, str(parent))
         break
         
-from common.sql import skill_topsql_001        
+# SQL 已迁到 scripts/registry/topsql/top_sql.yaml —— 两条路径共用同一份定义
 
 import common  # noqa: E402
+from common import access  # noqa: E402
 import render  # noqa: E402
 
 # Whitelisted --by values; ORDER BY clause is injected, so it MUST come from
@@ -55,14 +56,28 @@ class StmtRow:
     rows: int
 
 
-def top_sql(db, by: str, limit: int) -> list[StmtRow]:
+TOP_SQL_SCRIPT = "topsql.top_sql"
+
+# 脚本 SELECT 列表的列名。用名字取值而不是下标：列序变了会当场 KeyError，
+# 而不是安静地把 avg_ms 当成 total_sec。
+TOP_SQL_COLUMNS = (
+    "unique_sql_id", "query", "calls", "total_sec", "avg_ms", "rows",
+)
+
+
+def top_sql(runner, by: str, limit: int) -> list[StmtRow]:
+    """经统一入口取数。走中间件还是直连由连接的 driver 决定，这里不感知。"""
     order = _SORT_COLS.get(by)
     if order is None:
         raise ValueError(f"--by {by!r}: must be one of {SORT_KEYS}")
-    q = skill_topsql_001.format(order=order,limit=int(limit))
-    _, rows = db.query(q)
-    return [StmtRow(r[0], r[1], int(r[2]), float(r[3]), float(r[4]), int(r[5]))
-            for r in rows]
+    # order 落在 ORDER BY 位，类型校验对标识符位无效 —— 取值只能来自
+    # 上面那张白名单，绝不能直接来自用户输入。
+    rows = runner.run(TOP_SQL_SCRIPT, {"order": order, "limit": int(limit)})
+    return [
+        StmtRow(r["unique_sql_id"], r["query"], int(r["calls"]),
+                float(r["total_sec"]), float(r["avg_ms"]), int(r["rows"]))
+        for r in rows
+    ]
 
 
 def stmt_table(title: str, rows: list[StmtRow]) -> str:
@@ -89,23 +104,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = ap.parse_args(argv)
 
     try:
-        db = common.Database.connect(args.conn)
-    except (common.ConfigError, common.CredentialError, common.DBError) as exc:
+        runner = access.for_conn(args.conn)
+    except (common.ConfigError, common.CredentialError, access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     try:
-        db.set_statement_timeout(args.timeout)
-        rows = top_sql(db, args.by, args.limit)
+        rows = top_sql(runner, args.by, args.limit)
         if args.format == "json":
             print(json.dumps([r.__dict__ for r in rows], ensure_ascii=False, indent=2))
         else:
             print(stmt_table("Top SQL by " + args.by, rows), end="")
         return 0
-    except (ValueError, common.DBError) as exc:
+    except (ValueError, KeyError, common.DBError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    finally:
-        db.close()
+    except Exception as exc:          # 渲染/协议层的失败也要清楚报出来
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
