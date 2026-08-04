@@ -1,5 +1,20 @@
-# tests/test_database_facade_units.py
-import sys, pathlib
+"""Database 门面：**driver 严格生效，不做跨驱动兜底**。
+
+原先的行为是「首选驱动失败就换另一个」。那会让同一份配置在不同机器上
+跑出不同的后端，而两个后端的能力并不相同：
+
+    gsql    provides_session = False   每条语句独立子进程
+    pg8000  provides_session = True    单条持久连接
+
+于是 hypopg 虚拟索引验证这类依赖会话的功能，在「配了 gsql、实际兜底到
+pg8000」的机器上能跑，在真用 gsql 的客户环境跑不了 —— 而且不报错。
+
+改成严格生效后，配了什么就是什么。本机没有 gsql，就在 config.yaml 里
+配一条 driver: pg8000 的连接，而不是靠兜底蒙混过去。
+"""
+import sys
+import pathlib
+
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
@@ -8,45 +23,63 @@ from common.config import Connection  # noqa: E402
 from common.backends.base import DBError  # noqa: E402
 import common.db as dbmod  # noqa: E402
 
+
 def _conn(driver="gsql"):
     return Connection(name="a", type="opengauss", host="h", port=5432,
                       database="d", user="u", driver=driver)
 
+
 class FakeBackend:
-    def __init__(self, tag): self.tag = tag
+    def __init__(self, tag):
+        self.tag = tag
+
     @classmethod
     def make(cls, tag, fail):
         def _open(conn, password, read_only=True):
             if fail:
-                raise DBError(f"{tag} cannot connect")
+                raise DBError("%s cannot connect" % tag)
             return cls(tag)
         return _open
 
-def test_uses_preferred_driver(monkeypatch):
-    loaded = {}
-    def fake_load(driver):
-        loaded["driver"] = driver
-        ok = type("B", (), {"open": staticmethod(FakeBackend.make(driver, fail=False))})
-        return ok
-    monkeypatch.setattr(dbmod, "_load_backend", fake_load)
-    db = dbmod.Database.open(_conn(driver="gsql"), "pw")
-    assert loaded["driver"] == "gsql"
 
-def test_falls_back_when_preferred_fails(monkeypatch):
-    seen = []
+def _loader(seen, failing=()):
     def fake_load(driver):
         seen.append(driver)
-        fail = (driver == "gsql")
-        return type("B", (), {"open": staticmethod(FakeBackend.make(driver, fail=fail))})
-    monkeypatch.setattr(dbmod, "_load_backend", fake_load)
-    db = dbmod.Database.open(_conn(driver="gsql"), "pw")
-    assert seen == ["gsql", "pg8000"]      # 先首选后兜底
-    assert db._backend.tag == "pg8000"
+        return type("B", (), {
+            "open": staticmethod(FakeBackend.make(driver, driver in failing))
+        })
+    return fake_load
 
-def test_raises_when_all_fail(monkeypatch):
-    def fake_load(driver):
-        return type("B", (), {"open": staticmethod(FakeBackend.make(driver, fail=True))})
-    monkeypatch.setattr(dbmod, "_load_backend", fake_load)
+
+@pytest.mark.parametrize("driver", ["gsql", "pg8000"])
+def test_uses_the_configured_driver(monkeypatch, driver):
+    seen = []
+    monkeypatch.setattr(dbmod, "_load_backend", _loader(seen))
+    db = dbmod.Database.open(_conn(driver=driver), "pw")
+    assert seen == [driver]
+    assert db._backend.tag == driver
+
+
+def test_does_not_fall_back_to_another_driver(monkeypatch):
+    """首选失败时不再改用别的驱动 —— 只试配置里写的那一个。"""
+    seen = []
+    monkeypatch.setattr(dbmod, "_load_backend", _loader(seen, failing=("gsql",)))
+    with pytest.raises(DBError):
+        dbmod.Database.open(_conn(driver="gsql"), "pw")
+    assert seen == ["gsql"], "不应再尝试 pg8000"
+
+
+def test_failure_message_names_the_configured_driver_and_how_to_change_it(monkeypatch):
+    """错误信息要能直接指导操作，而不是只说「连不上」。"""
+    monkeypatch.setattr(dbmod, "_load_backend", _loader([], failing=("gsql",)))
     with pytest.raises(DBError) as ei:
-        dbmod.Database.open(_conn(driver="pg8000"), "pw")
-    assert "gsql" in str(ei.value) and "pg8000" in str(ei.value)
+        dbmod.Database.open(_conn(driver="gsql"), "pw")
+    msg = str(ei.value)
+    assert "gsql" in msg
+    assert "driver" in msg
+    assert "cannot connect" in msg          # 保留底层原因
+
+
+def test_unknown_driver_is_rejected(monkeypatch):
+    with pytest.raises(DBError):
+        dbmod.Database.open(_conn(driver="mysqlcli"), "pw")

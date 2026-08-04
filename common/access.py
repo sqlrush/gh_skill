@@ -30,6 +30,54 @@ class AccessError(Exception):
     """选路或凭据缺失。一律在构造时抛出，不拖到第一次请求。"""
 
 
+class SessionUnavailable(AccessError):
+    """当前访问路径不提供跨语句的持久会话。
+
+    hypopg 虚拟索引验证这类流程（建虚拟索引 → 在同一会话里 EXPLAIN）
+    离开会话就会**静默给出错误结论**：虚拟索引没了，EXPLAIN 看到原计划，
+    于是得出「加这个索引没用」。所以宁可在入口处报错，也不能让它跑下去。
+    """
+
+
+def _open_database(conn: Connection):
+    """打开原始连接。抽成函数是为了测试能替换掉它。"""
+    from .db import Database
+
+    return Database.connect(conn.name, read_only=True)
+
+
+def session_for_conn(conn: Connection):
+    """索取一条**带持久会话**的原始连接，拿不到就报错。
+
+    与 runner_for() 是两条不同的口子：runner 面向「执行一条已注册脚本」，
+    这里面向「一串必须落在同一会话里的语句」。后者是白名单模型撑不住的
+    场景，所以要显式索取、显式失败。
+    """
+    driver = conn.driver or "gsql"
+    if driver == "grmp":
+        raise SessionUnavailable(
+            "连接 %s 的 driver 是 grmp：中间件的执行接口每次调用都是独立连接，"
+            "不提供跨语句的持久会话。\n"
+            "依赖会话的流程（hypopg 虚拟索引验证等）在客户的白名单模型下"
+            "本来就跑不了 —— 需要为这类诊断单独保留一条直连通道，"
+            "或在客户环境不提供该能力。" % conn.name
+        )
+    db = _open_database(conn)
+    if not getattr(db, "provides_session", False):
+        db.close()
+        raise SessionUnavailable(
+            "连接 %s 的 driver 是 %s：该后端每条语句起独立子进程，"
+            "不提供跨语句的持久会话。\n"
+            "本机调试请改用 driver: pg8000 的连接。" % (conn.name, driver)
+        )
+    return db
+
+
+def session_for(name: str):
+    """按连接名索取带持久会话的原始连接。"""
+    return session_for_conn(find(name))
+
+
 def _base_url(conn: Connection) -> str:
     scheme = "https" if conn.sslmode in ("require", "verify-ca", "verify-full") else "http"
     return "%s://%s:%d" % (scheme, conn.host, conn.port)

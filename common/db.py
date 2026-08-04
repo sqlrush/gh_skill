@@ -12,7 +12,15 @@ from .backends.base import Backend, DBError  # 再导出
 from .config import find
 from .credential import load_secret
 
-_DRIVER_ORDER = ("gsql", "pg8000")
+# 不做跨驱动兜底：配置里写的 driver 就是实际使用的 driver。
+#
+# 原先失败时会自动改用另一个驱动。那让同一份配置在不同机器上跑出不同后端，
+# 而两者能力不同 —— gsql 每条语句起独立子进程（provides_session=False），
+# pg8000 是单条持久连接（True）。于是 hypopg 虚拟索引验证这类依赖会话的功能，
+# 在「配了 gsql、实际兜底到 pg8000」的机器上能跑，在真用 gsql 的客户环境
+# 跑不了，而且不报错。
+#
+# 本机没有 gsql 时，在 config.yaml 里另配一条 driver: pg8000 的连接。
 
 
 def _load_backend(driver: str):
@@ -35,20 +43,18 @@ class Database:
 
     @classmethod
     def open(cls, conn: Any, password: str, read_only: bool = True) -> "Database":
-        preferred = conn.driver or "gsql"
-        order = [preferred] + [d for d in _DRIVER_ORDER if d != preferred]
-        errors = []
-        for drv in order:
-            try:
-                backend = _load_backend(drv).open(
-                    conn, password, read_only=read_only
-                )
-                return cls(backend, conn)
-            except DBError as exc:
-                errors.append(f"{drv}: {exc}")
-        raise DBError(
-            f"connect to {conn.name}: all drivers failed [{'; '.join(errors)}]"
-        )
+        driver = conn.driver or "gsql"
+        try:
+            backend = _load_backend(driver).open(
+                conn, password, read_only=read_only
+            )
+        except DBError as exc:
+            raise DBError(
+                f"connect to {conn.name} with driver {driver!r}: {exc}\n"
+                f"（driver 严格生效，不会自动改用其他驱动。"
+                f"要换驱动请改 config.yaml 里该连接的 driver 字段。）"
+            ) from exc
+        return cls(backend, conn)
 
     @classmethod
     def connect(cls, name: str, read_only: bool = True) -> "Database":

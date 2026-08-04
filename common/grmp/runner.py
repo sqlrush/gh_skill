@@ -31,7 +31,15 @@ def _default_open_db(name: str, read_only: bool = True):
 
 
 class DirectRunner:
-    """driver 为 gsql/pg8000 时使用。"""
+    """driver 为 gsql/pg8000 时使用。
+
+    **不提供跨调用的持久会话**：每次 run() 开连接、执行完就 close。
+    即便底层是支持持久会话的 pg8000 也一样 —— 能力属于「这个入口」，
+    不属于「这个驱动」。需要会话的流程（hypopg 虚拟索引验证等）
+    要用 access.session_for_conn() 单独索取原始连接。
+    """
+
+    provides_session = False
 
     def __init__(
         self,

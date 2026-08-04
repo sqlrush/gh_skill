@@ -158,7 +158,13 @@ class GrmpClient:
 
 
 class GrmpRunner:
-    """driver 为 grmp 时使用。对外形状与 DirectRunner 一致。"""
+    """driver 为 grmp 时使用。对外形状与 DirectRunner 一致。
+
+    **不提供持久会话**：接口二每次调用都是独立连接。实测 —— 第一次调用
+    set work_mem='63MB'，第二次调用 show 读回的是默认值 16MB。
+    """
+
+    provides_session = False
 
     def __init__(self, client: GrmpClient):
         self._client = client
