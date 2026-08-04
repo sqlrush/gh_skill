@@ -26,7 +26,7 @@ for parent in _HERE.parents:
 from common import access  # noqa: E402
 # 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
 # 类型还原一律走这里，不用裸 int()/float()/bool()。
-from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
+from common.grmp.values import as_bool, as_float, as_int, is_null  # noqa: E402
 
 
 
@@ -85,7 +85,7 @@ def generate_native(runner, opt: Options, w: Window) -> NativeInfo:
         return NativeInfo(generated=False,
                           note="generate_wdr_report 不可用或失败：" + summarize_err(exc))
     body = "".join((str(r["report_line"]) + "\n")
-                   for r in rows if r["report_line"] is not None)
+                   for r in rows if not is_null(r["report_line"]))
     ni = NativeInfo(generated=True, bytes=len(body.encode("utf-8")))
     if opt.save_html:
         try:

@@ -8,7 +8,7 @@ import pathlib
 import sys
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
-_SCRIPTS = _ROOT / "skills" / "health" / "scripts"
+_SCRIPTS = _ROOT / "skills" / "gaussdb-health" / "scripts"
 
 # health and wdr both define modules named model/thresholds/util/collectors/report
 # (with different contents). Purge any cached copies so this file always loads

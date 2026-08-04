@@ -7,6 +7,19 @@ hypothetical indexes (gs_index_advise auto-discovery and/or explicit DDLs).
 
 Both --original and --rewrite must be fully executable SQL (no placeholders).
 
+**本脚本走 access.session_for()，即直连的持久会话，不走已注册脚本那条口子。**
+两个原因，缺一不可：
+
+  1. 组合验证（--auto-index / --index）要「SET enable_hypo_index → 建虚拟索引
+     → 在同一会话里 EXPLAIN」，离开会话就会静默给出错误结论：虚拟索引没了，
+     EXPLAIN 看到原计划，于是判「加索引没用」。
+  2. cost 比较用 EXPLAIN (FORMAT JSON)。那一列会被驱动解成 Python 对象，
+     协议再 str() 一遍就成了 Python repr（单引号），json.loads 解不回来 ——
+     即便不要求会话，这条也过不去白名单那条路径。
+
+所以在 grmp 连接上本脚本会**明确报错**而不是降级：该能力在客户的白名单
+模型下本来就不存在，假装能跑等于交付一个错误结论。
+
 Usage:
     verify.py -c <conn> --original '<sql>' --rewrite '<sql>' [--no-equiv]
               [--auto-index] [--index 'CREATE INDEX ...' ...] [--format json]
@@ -28,6 +41,7 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
         break
 
 import common  # noqa: E402
+from common import access  # noqa: E402
 from cost import explain_cost, quote_columns, quote_ident, quote_sql_literal  # noqa: E402
 from evidence import is_dml  # noqa: E402
 from sqlfetch import count_placeholders  # noqa: E402
@@ -297,8 +311,15 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     combined = args.auto_index or bool(args.index)
     try:
-        db = common.Database.connect(args.conn)
-    except (common.ConfigError, common.CredentialError, common.DBError) as exc:
+        # SessionUnavailable 是 AccessError 的子类，必须先接 —— 它要给的是
+        # 「该能力在这条连接上不存在」，而不是笼统的「连不上」。
+        db = access.session_for(args.conn)
+    except access.SessionUnavailable as exc:
+        print("error: verify 需要一条持久会话，当前连接给不了。\n%s" % exc,
+              file=sys.stderr)
+        return 2
+    except (common.ConfigError, common.CredentialError,
+            common.DBError, access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     try:

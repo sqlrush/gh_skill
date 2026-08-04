@@ -3,6 +3,16 @@ tables.go, guc.go and analyze/risks.go).
 
 Collect gathers everything deterministic the agent needs for root-cause
 analysis in one pass: version → plan → findings → tables/indexes/stats → GUCs.
+
+取数分两条口子，**刻意不统一**（与 gaussdb-sqltune 的同名模块同形）：
+
+  固定查询（版本/表/索引/列统计/GUC）  走 runner —— 统一入口执行已注册脚本，
+                                       走中间件还是直连由连接的 driver 决定
+  EXPLAIN 游标 SELECT                  走 db —— 原始会话。变量替换后的语句
+                                       每次都不同，无法预注册
+
+后者是**安全策略的边界**，不是技术难点：把任意 SQL 塞进一条「直通脚本」
+等于把白名单拆了。所以它只走 access.session_for()，拿不到就在入口失败。
 """
 from __future__ import annotations
 
@@ -22,7 +32,20 @@ for parent in _HERE.parents:
         sys.path.insert(0, str(parent))
         break
 
-from common.sql import skill_proctune_001,skill_proctune_002,skill_proctune_003,skill_proctune_004
+# 字符串值的还原一律用共用层：bool("f") 是 True 这类坑错一次就是静默出
+# 错误结论，不该有各 skill 自己的一份实现
+from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
+
+# SQL 已迁到 scripts/registry/proctune/ —— 两条路径共用同一份定义
+DB_VERSION_SCRIPT = "proctune.db_version"
+TABLES_SCRIPT = "proctune.tables"
+INDEXES_SCRIPT = "proctune.indexes"
+COLUMN_STATS_SCRIPT = "proctune.column_stats"
+KEY_GUCS_SCRIPT = "proctune.key_gucs"
+
+# 协议把 NULL 渲染成空串，与真正的空串不可区分（settings.null_text = ''）。
+# 数值列上的空串只可能来自 NULL。
+_NULL_TEXT = ""
 
 # --- table-name extraction (port of tables.go ExtractTables) -----------------
 
@@ -103,7 +126,12 @@ def is_dml(sql_text: str) -> bool:
 
 
 def explain(db, sql_text: str, analyze: bool) -> str:
-    """EXPLAIN in TEXT format; analyze executes (DML wrapped in rollback)."""
+    """EXPLAIN in TEXT format; analyze executes (DML wrapped in rollback).
+
+    **db 是原始会话，不是 runner。** 这里的 SQL 是变量替换后的游标 SELECT，
+    每个游标都不同，注册不进白名单 —— 见模块头。调用方负责先用
+    access.session_for() 拿到会话。
+    """
     stmt = (f"EXPLAIN (ANALYZE {str(analyze).lower()}, "
             f"BUFFERS {str(analyze).lower()}, FORMAT TEXT) {sql_text}")
     if analyze and is_dml(sql_text):
@@ -189,45 +217,61 @@ class GUC:
     unit: str
 
 
-def _quote_literals(names: list[str]) -> str:
-    quoted = ["'" + n.replace("'", "''") + "'" for n in names]
-    return "(" + ",".join(quoted) + ")"
+def _quoted_list(names: list[str]) -> str:
+    """['a', "b'c"] -> "'a','b''c'"。**不带外层括号** —— 括号写在脚本的
+    `IN ({{names}})` 里。值和 SQL 各出一半括号是最容易踩的坑（会得到
+    IN (('a','b'))），所以这里只出字面量。与 gaussdb-sqltune 同名函数同形。
+
+    ⚠️ 这里顺带修掉了一个既有缺陷：迁移前三处调用都是
+    `SQL.format(names=names)`，names 是**Python 列表**，渲染出的是
+    `IN ['orders', 'customers']` —— 方括号在 SQL 里是语法错误。
+    模块里原本就摆着为此写的 _quote_literals()，但从来没人调用它。
+    实测直连路径迁移前就是坏的（ERROR: syntax error at or near "["），
+    后果是 tune-cursor 的每个游标都在证据采集这一步失败、进 Skipped
+    Cursors，整条子命令产不出任何一条已验证结论。
+    """
+    if not names:
+        # IN () 是语法错误。调用方都有空列表短路，走到这里说明短路漏了。
+        raise ValueError("_quoted_list: 表名列表为空，无法构造 IN 列表")
+    return ",".join("'" + n.replace("'", "''") + "'" for n in names)
 
 
-def collect_tables(db, names: list[str]) -> list[TableInfo]:
+def collect_tables(runner, names: list[str]) -> list[TableInfo]:
     if not names:
         return []
-    q = skill_proctune_001.format(names=names)
-    _, rows = db.query(q)
-    return [TableInfo(r[0], r[1], int(r[2]), int(r[3]), r[4], float(r[5])) for r in rows]
+    rows = runner.run(TABLES_SCRIPT, {"names": _quoted_list(names)})
+    return [TableInfo(r["nspname"], r["relname"], as_int(r["relpages"]),
+                      as_int(r["reltuples"]), r["relkind"], as_float(r["size_mb"]))
+            for r in rows]
 
 
-def collect_indexes(db, names: list[str]) -> list[IndexInfo]:
+def collect_indexes(runner, names: list[str]) -> list[IndexInfo]:
     if not names:
         return []
-    q = skill_proctune_002.format(names=names)
-    _, rows = db.query(q)
-    return [IndexInfo(r[0], r[1], bool(r[2]), bool(r[3]), r[4]) for r in rows]
+    rows = runner.run(INDEXES_SCRIPT, {"names": _quoted_list(names)})
+    # bool("f") 是 True —— 直接 bool() 会把每个索引都报成 UNIQUE/PRIMARY
+    return [IndexInfo(r["table_name"], r["index_name"], as_bool(r["indisunique"]),
+                      as_bool(r["indisprimary"]), r["index_def"]) for r in rows]
 
 
-def collect_column_stats(db, names: list[str]) -> list[ColumnStat]:
+def collect_column_stats(runner, names: list[str]) -> list[ColumnStat]:
     if not names:
         return []
-    q = skill_proctune_003.format(names=names)
-    _, rows = db.query(q)
+    rows = runner.run(COLUMN_STATS_SCRIPT, {"names": _quoted_list(names)})
     out = []
     for r in rows:
-        corr = float(r[5]) if r[5] is not None else None
-        out.append(ColumnStat(r[0], r[1], float(r[2]), float(r[3]), int(r[4]), corr))
+        # correlation 允许为 NULL，而 NULL 与空串在协议里不可区分。这是数值
+        # 列，空串只可能来自 NULL —— 保住 None，报表里才会显示 n/a 而不是 0.00。
+        raw_corr = r["correlation"]
+        corr = None if raw_corr == _NULL_TEXT else as_float(raw_corr)
+        out.append(ColumnStat(r["tablename"], r["attname"], as_float(r["n_distinct"]),
+                              as_float(r["null_frac"]), as_int(r["avg_width"]), corr))
     return out
 
 
-_KEY_GUCS_QUERY = skill_proctune_004
-
-
-def collect_gucs(db) -> list[GUC]:
-    _, rows = db.query(_KEY_GUCS_QUERY)
-    return [GUC(r[0], r[1], r[2]) for r in rows]
+def collect_gucs(runner) -> list[GUC]:
+    rows = runner.run(KEY_GUCS_SCRIPT)
+    return [GUC(r["name"], r["setting"], r["unit"]) for r in rows]
 
 
 # --- evidence orchestration (port of collect.go) -----------------------------
@@ -245,8 +289,10 @@ class Evidence:
     findings: list = field(default_factory=list)
 
 
-def collect(db, sql_text: str, do_analyze: bool) -> Evidence:
-    version = db.scalar("SELECT version()")
+def collect(runner, db, sql_text: str, do_analyze: bool) -> Evidence:
+    """runner 取固定查询，db（原始会话）只用来 EXPLAIN 游标的 SELECT。"""
+    rows = runner.run(DB_VERSION_SCRIPT)
+    version = rows[0]["version"] if rows else ""
     plan = explain(db, sql_text, do_analyze)
     names = extract_tables(sql_text)
     return Evidence(
@@ -255,10 +301,10 @@ def collect(db, sql_text: str, do_analyze: bool) -> Evidence:
         plan=plan,
         analyzed=do_analyze,
         findings=scan_plan(plan),
-        tables=collect_tables(db, names),
-        indexes=collect_indexes(db, names),
-        columns=collect_column_stats(db, names),
-        gucs=collect_gucs(db),
+        tables=collect_tables(runner, names),
+        indexes=collect_indexes(runner, names),
+        columns=collect_column_stats(runner, names),
+        gucs=collect_gucs(runner),
     )
 
 

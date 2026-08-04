@@ -11,6 +11,18 @@ Port of internal/probe/proc.go + internal/cli/proc.go. Two subcommands:
 
 The procedure is never executed; the session is read-only.
 
+取数分两条口子：
+
+  collect       全部是固定查询（过程定义 + 关键 GUC），走 access.for_conn()
+                的统一入口，中间件与直连两条路径都跑得通
+  tune-cursor   还需要一条**原始会话**：EXPLAIN 变量替换后的游标 SELECT
+                （每个游标都不同，注册不进白名单）与 hypopg 虚拟索引验证
+                （建索引与 EXPLAIN 必须同会话）。会话由 access.session_for()
+                索取，拿不到就 exit 2 —— 不降级成没有计划的证据包
+
+注：--timeout 只作用在 tune-cursor 的那条会话上；collect 走 runner，
+超时由统一入口自己管（DirectRunner 默认 60s）。
+
 Usage:
     proctune.py collect      -c <conn> <schema.proc>
     proctune.py tune-cursor  -c <conn> <schema.proc> [--cursor NAME ...] [--bind var=value ...]
@@ -32,6 +44,7 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
         break
 
 import common  # noqa: E402
+from common import access  # noqa: E402
 import procanalyze as pa  # noqa: E402
 import render  # noqa: E402
 from evidence import Evidence, collect, collect_gucs, evidence_report  # noqa: E402
@@ -42,9 +55,31 @@ for parent in _HERE.parents:
         sys.path.insert(0, str(parent))
         break
 
-from common.sql import skill_proctune_005
+# SQL 已迁到 scripts/registry/proctune/ —— 两条路径共用同一份定义
+PROC_DEF_SCRIPT = "proctune.proc_def"
 
-_PROC_DEF_QUERY = skill_proctune_005
+# 单个游标取证失败时降级成 Skipped Cursor 的错误集合。
+# access.QueryError 归一了两条路径的取数失败（中间件 GrmpError / 直连
+# DBError）；会话那条口子不经过 runner，报的还是原始的 common.DBError。
+# ColumnError / ParamError / SessionUnavailable **刻意不在此列** ——
+# 那三类分别是脚本定义缺陷、调用方传参错误、能力缺口，被降级逻辑接住
+# 就等于永远发现不了。
+_EVIDENCE_ERRORS = (access.QueryError, common.DBError, ValueError)
+
+_SESSION_REQUIRED = (
+    "proctune tune-cursor 的两项核心能力都要求一条原始数据库会话：\n"
+    "  · EXPLAIN 变量替换后的游标 SELECT —— 白名单按逻辑脚本名放行预注册的 SQL，"
+    "而每个游标的 SELECT 都不同，无法预注册；\n"
+    "  · hypopg 虚拟索引验证 —— 建虚拟索引与 EXPLAIN 必须落在同一会话，"
+    "跨调用会**不报错地**得出「加索引没用」的错误结论。\n"
+    "**该能力在白名单模型下不可用。**\n"
+    "已迁到白名单的部分（过程定义、表/索引/列统计/GUC）本身能走中间件，"
+    "但缺了执行计划与索引验证的证据包不足以支撑调优结论，所以整条子命令在此停止，"
+    "不做半份输出。\n"
+    "可选做法：为这类诊断保留一条直连通道（driver: pg8000），"
+    "或在客户环境不提供本能力；只做结构诊断可改用 "
+    "`proctune.py collect`（走中间件）或 gaussdb-procinfo。"
+)
 
 
 _RUNTIME_NOTE = ("运行时归因（embedded SQL 的真实 calls/avg/total）需实例开启 "
@@ -92,17 +127,21 @@ def _split_qualified(q: str) -> tuple[str, str]:
     return "", q
 
 
-def fetch_proc_def(db, qualified: str) -> pa.ProcDef:
+def fetch_proc_def(runner, qualified: str) -> pa.ProcDef:
+    """经统一入口取数。走中间件还是直连由连接的 driver 决定，这里不感知。"""
     schema, name = _split_qualified(qualified)
-    _, rows = db.query(_PROC_DEF_QUERY, (name, schema, schema))
+    rows = runner.run(PROC_DEF_SCRIPT, {"name": name, "schema": schema})
     if not rows:
         raise ValueError(f"proc {qualified!r} not found")
-    nsp, pn, lang, src, args = (x if x is not None else "" for x in rows[0])
-    return pa.analyze(nsp, pn, lang, src, args)
+    r = rows[0]
+    # 协议把 NULL 渲染成空串，原来那句 `x if x is not None else ""` 的效果
+    # 由入口保证，这里不必再兜。
+    return pa.analyze(r["nspname"], r["proname"], r["lanname"],
+                      r["prosrc"], r["args"])
 
 
-def proc_collect(db, qualified: str) -> ProcEvidence:
-    proc = fetch_proc_def(db, qualified)
+def proc_collect(runner, qualified: str) -> ProcEvidence:
+    proc = fetch_proc_def(runner, qualified)
     embedded = [EmbeddedStmt(line=c.line, kind=f"cursor:{c.name}", sql=c.select_sql)
                 for c in pa.extract_cursors(proc.body)]
     return ProcEvidence(
@@ -110,12 +149,21 @@ def proc_collect(db, qualified: str) -> ProcEvidence:
         structure=pa.scan_structure(proc.body),
         embedded=embedded,
         runtime_note=_RUNTIME_NOTE,
-        gucs=collect_gucs(db),
+        gucs=collect_gucs(runner),
     )
 
 
-def tune_cursors(db, qualified: str, only: list[str], binds: dict) -> CursorTuneResult:
-    proc = fetch_proc_def(db, qualified)
+def tune_cursors(runner, db, qualified: str,
+                 only: list[str], binds: dict) -> CursorTuneResult:
+    """runner 取固定查询；db 是原始会话，EXPLAIN 与 hypopg 两段都要用它。
+
+    hypopg 是「建虚拟索引 → 在**同一会话**里 EXPLAIN」，两步必须落在一条
+    连接上。统一入口的两条路径都不提供跨调用的持久会话（中间件每次调用
+    独立连接，DirectRunner 每次 run() 也开关连接），所以会话由 main()
+    显式向 access.session_for() 索取，拿不到就整条命令停下 —— 不降级、
+    不产出没有计划的证据包。
+    """
+    proc = fetch_proc_def(runner, qualified)
     only_set = {c.lower() for c in only}
     cursors: list[CursorEvidence] = []
     skipped: list[pa.CursorDecl] = []
@@ -140,8 +188,8 @@ def tune_cursors(db, qualified: str, only: list[str], binds: dict) -> CursorTune
             continue
         sub = pa.substitute_vars(cur.select_sql, proc.vars, binds)
         try:
-            ev = collect(db, sub.sql, False)
-        except (common.DBError, ValueError) as exc:
+            ev = collect(runner, db, sub.sql, False)
+        except _EVIDENCE_ERRORS as exc:
             cur.eligible = False
             cur.skip_reason = "证据采集失败：" + str(exc)
             skipped.append(cur)
@@ -321,26 +369,41 @@ def main(argv: Optional[list[str]] = None) -> int:
     except ValueError as exc:
         ap.error(str(exc))
 
+    # collect 全部走已注册脚本，中间件上跑得通；tune-cursor 还要一条原始会话
+    # （EXPLAIN 任意游标 SELECT + hypopg），在此显式索取，拿不到就当场停。
+    needs_session = args.cmd == "tune-cursor"
+    db = None
     try:
-        db = common.Database.connect(args.conn)
-    except (common.ConfigError, common.CredentialError, common.DBError) as exc:
+        runner = access.for_conn(args.conn)
+        if needs_session:
+            db = access.session_for(args.conn)
+    except access.SessionUnavailable as exc:
+        print(f"error: {exc}\n{_SESSION_REQUIRED}", file=sys.stderr)
+        return 2
+    except (common.ConfigError, common.CredentialError,
+            common.DBError, access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     try:
-        db.set_statement_timeout(args.timeout)
+        if db is not None:
+            db.set_statement_timeout(args.timeout)
         if args.cmd == "collect":
-            pe = proc_collect(db, args.proc)
+            pe = proc_collect(runner, args.proc)
             out = _collect_json(pe) if args.format == "json" else proc_collect_report(pe)
         else:
-            tr = tune_cursors(db, args.proc, args.cursor, binds)
+            tr = tune_cursors(runner, db, args.proc, args.cursor, binds)
             out = _tune_json(tr) if args.format == "json" else cursor_tune_report(tr)
         print(out, end="" if args.format == "markdown" else "\n")
         return 0
-    except (ValueError, common.DBError) as exc:
+    # access.QueryError 归一了两条路径的取数失败；common.DBError 仍要留着 ——
+    # 会话那条口子不经过 runner，报的还是原始的 DBError。
+    # ColumnError / ParamError 刻意不接：那是脚本定义缺陷，必须响亮失败。
+    except (ValueError, KeyError, common.DBError, access.QueryError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     finally:
-        db.close()
+        if db is not None:
+            db.close()
 
 
 if __name__ == "__main__":

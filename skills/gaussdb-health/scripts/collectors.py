@@ -36,7 +36,7 @@ for parent in _HERE.parents:
 from common import access  # noqa: E402
 # 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
 # 类型还原一律走这里，不用裸 int()/float()/bool()。
-from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
+from common.grmp.values import as_bool, as_float, as_int, is_null  # noqa: E402
 
 
 
@@ -254,7 +254,7 @@ def collect_bloat(runner, th: Thresholds, top: int) -> DimResult:
         age = row["last_autovacuum_age_s"]
         autovac = as_bool(row["autovac_enabled"])
         ratio = 100.0 * dead / max(live + dead, 1)
-        age_str = "—" if age is None else f"{float(age):.0f}"
+        age_str = "—" if is_null(age) else f"{as_float(age):.0f}"
         av_str = "on" if autovac else "off"
         d.rows.append([f"{sch}.{rel}", i64(live), i64(dead), f2(ratio), age_str, av_str])
         if dead > th.dead_tup_min:
@@ -418,7 +418,7 @@ def collect_logs(runner, th: Thresholds, _top: int) -> DimResult:
     try:
         _am = runner.run("health.archive_mode")
         val = _am[0]["setting"] if _am else None
-        if val is not None:
+        if not is_null(val):
             am = str(val)
             d.rows.append(["archive_mode", am])
     except access.QueryError:
@@ -449,7 +449,7 @@ def collect_repl(runner, th: Thresholds, _top: int) -> DimResult:
             d.findings.append(Finding(DIM_REPL, "REPL_NOT_STREAMING", Severity.WARN,
                                       f"备库 {app} 状态", state, "=Streaming",
                                       "pg_stat_replication.state"))
-        if lag is not None and int(lag) > th.repl_lag_notice:
+        if not is_null(lag) and as_int(lag) > th.repl_lag_notice:
             sev = Severity.NOTICE
             thr = th.repl_lag_notice
             if int(lag) > th.repl_lag_warn:

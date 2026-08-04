@@ -199,7 +199,9 @@ def test_trend_flat_produces_no_finding():
 # collectors — session correlation (memory row <-> the SQL it is running)
 # --------------------------------------------------------------------------
 def test_correlate_matches_session_by_sessionid():
-    mem = [("140737", 10, 900, 1200)]                    # sessid, init, used, peak
+    # 协议形态：列名做键、值全是字符串
+    mem = [{"sessid": "140737", "init_mem": "10",
+            "used_mem": "900", "peak_mem": "1200"}]
     act = {"140737": {"usename": "app", "application_name": "etl",
                       "state": "active", "query": "SELECT 1"}}
     rows = collectors.correlate_sessions(mem, act)
@@ -210,7 +212,8 @@ def test_correlate_matches_session_by_sessionid():
 
 def test_correlate_matches_openGauss_composite_sessid():
     """openGauss sessid can be `<timestamp>.<threadid>`; the thread id is the pid."""
-    mem = [("1663812345.140234", 10, 900, 1200)]
+    mem = [{"sessid": "1663812345.140234", "init_mem": "10",
+            "used_mem": "900", "peak_mem": "1200"}]
     act = {"140234": {"usename": "app", "application_name": "etl",
                       "state": "active", "query": "SELECT 2"}}
     rows = collectors.correlate_sessions(mem, act)
@@ -219,7 +222,8 @@ def test_correlate_matches_openGauss_composite_sessid():
 
 def test_correlate_keeps_unmatched_memory_rows():
     """A session that already ended still ate the memory — do not drop the row."""
-    mem = [("999999", 10, 900, 1200)]
+    mem = [{"sessid": "999999", "init_mem": "10",
+            "used_mem": "900", "peak_mem": "1200"}]
     rows = collectors.correlate_sessions(mem, {})
     assert len(rows) == 1
     assert rows[0].peak_mb == 1200
@@ -229,22 +233,39 @@ def test_correlate_keeps_unmatched_memory_rows():
 # --------------------------------------------------------------------------
 # collectors — instance layer findings
 # --------------------------------------------------------------------------
-class _FakeDB:
-    """Canned rows keyed by a query fragment; `fail` fragments raise DBError."""
+class _FakeRunner:
+    """按**脚本名**给预置行；fail 里的脚本名抛 access.QueryError。
+
+    行一律是**全字符串的字典** —— 协议就是这个形态。假连接若给原生类型，
+    测试就永远发现不了 bool("f")==True、int("3704.0") 抛异常这类
+    只在字符串形态下才出现的问题。
+    """
 
     def __init__(self, canned=None, fail=()):
         self.canned = canned or {}
         self.fail = fail
+        self.calls = []
 
-    def query(self, sql, params=None):
-        import common
-        for frag in self.fail:
-            if frag in sql:
-                raise common.DBError(f"permission denied for relation {frag}")
-        for frag, rows in self.canned.items():
-            if frag in sql:
-                return [], rows
-        return [], []
+    def run(self, script, values=None):
+        from common import access
+        self.calls.append((script, values))
+        for name in self.fail:
+            if name in script:
+                raise access.QueryError(
+                    "permission denied for relation behind %s" % script)
+        for name, rows in self.canned.items():
+            if name in script:
+                return [{k: _s(v) for k, v in row.items()} for row in rows]
+        return []
+
+
+def _s(value):
+    """协议把所有值渲染成字符串，NULL 渲染成空串。"""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "t" if value else "f"
+    return str(value)
 
 
 def _instance_catalog():
@@ -252,7 +273,8 @@ def _instance_catalog():
 
 
 def _mem_rows(dynamic_used, max_dynamic=10000, peak=None):
-    return [
+    """列名与 tools/grmp_gen_memanalyze.py 的 INSTANCE_COLS 一致。"""
+    pairs = [
         ("max_process_memory", 12000),
         ("process_used_memory", dynamic_used + 500),
         ("max_dynamic_memory", max_dynamic),
@@ -261,10 +283,11 @@ def _mem_rows(dynamic_used, max_dynamic=10000, peak=None):
         ("shared_used_memory", 400),
         ("other_used_memory", 100),
     ]
+    return [{"memorytype": t, "memorymbytes": mb} for t, mb in pairs]
 
 
 def test_instance_critical_when_dynamic_memory_nearly_exhausted():
-    db = _FakeDB({"gs_total_memory_detail": _mem_rows(9500)})   # 95%
+    db = _FakeRunner({"memanalyze.instance": _mem_rows(9500)})   # 95%
     d = collectors.collect_instance(db, _instance_catalog(), TH, 10)
     assert d.available is True
     codes = {f.code: f for f in d.findings}
@@ -273,7 +296,7 @@ def test_instance_critical_when_dynamic_memory_nearly_exhausted():
 
 
 def test_instance_healthy_when_dynamic_memory_is_low():
-    db = _FakeDB({"gs_total_memory_detail": _mem_rows(2000)})   # 20%
+    db = _FakeRunner({"memanalyze.instance": _mem_rows(2000)})   # 20%
     d = collectors.collect_instance(db, _instance_catalog(), TH, 10)
     assert [f for f in d.findings if f.code == "MEM_DYNAMIC_HIGH"] == []
 
@@ -281,7 +304,7 @@ def test_instance_healthy_when_dynamic_memory_is_low():
 def test_instance_flags_peak_that_already_fell_back():
     """Current usage is fine but the peak nearly hit the ceiling — the spike
     happened, it is just over. Saying nothing here would hide the incident."""
-    db = _FakeDB({"gs_total_memory_detail": _mem_rows(2000, peak=9500)})
+    db = _FakeRunner({"memanalyze.instance": _mem_rows(2000, peak=9500)})
     d = collectors.collect_instance(db, _instance_catalog(), TH, 10)
     codes = [f.code for f in d.findings]
     assert "MEM_PEAK_FALLBACK" in codes
@@ -290,13 +313,13 @@ def test_instance_flags_peak_that_already_fell_back():
 def test_instance_degrades_when_view_unavailable():
     cat = model.Catalog(views={"instance": model.ViewInfo(
         name="", columns=(), available=False, reason="no candidate exists")})
-    d = collectors.collect_instance(_FakeDB(), cat, TH, 10)
+    d = collectors.collect_instance(_FakeRunner(), cat, TH, 10)
     assert d.available is False
     assert "no candidate exists" in d.note
 
 
 def test_instance_degrades_on_query_failure():
-    db = _FakeDB(fail=("gs_total_memory_detail",))
+    db = _FakeRunner(fail=("memanalyze.instance",))
     d = collectors.collect_instance(db, _instance_catalog(), TH, 10)
     assert d.available is False
     assert "permission denied" in d.note
@@ -344,7 +367,7 @@ def test_operator_layer_degrades_with_the_capability_reason_not_an_empty_table()
     cap = capability.assess(
         {"resource_track_level": "query", "enable_resource_track": "on"},
         _catalog(wlm_operator="gs_wlm_operator_statistics"))
-    d = wlm.collect_operator(_FakeDB(), _catalog(wlm_operator="v"), cap, TH, 10)
+    d = wlm.collect_operator(_FakeRunner(), _catalog(wlm_operator="v"), cap, TH, 10)
     assert d.available is False
     assert "resource_track_level" in d.note
     assert d.rows == []
@@ -354,10 +377,14 @@ def test_sql_layer_flags_spill_and_estimate_deviation():
     cap = capability.assess(
         {"resource_track_level": "operator", "enable_resource_track": "on"},
         _catalog(wlm_session="gs_wlm_session_statistics"))
-    # queryid, query, start, duration, estimate_mem, max_peak_mem, spill_mb, warning
-    rows = [(101, "SELECT * FROM big", "2026-07-12", 9000, 100, 4096, 2048, "")]
-    db = _FakeDB({"wlm_session": rows, "gs_wlm_session": rows})
-    d = wlm.collect_sql(db, _catalog(wlm_session="gs_wlm_session_statistics"),
+    # 列名与 tools/grmp_gen_memanalyze.py 的 SQL_COLS 一致
+    rows = [{
+        "queryid": 101, "query": "SELECT * FROM big", "start_time": "2026-07-12",
+        "duration": 9000, "estimate_memory": 100, "used_memory": 4096,
+        "max_peak_memory": 2048, "average_peak_memory": 0, "spill_info": "",
+    }]
+    runner = _FakeRunner({"memanalyze.wlm_sql": rows})
+    d = wlm.collect_sql(runner, _catalog(wlm_session="gs_wlm_session_statistics"),
                         cap, TH, 10)
     assert d.available is True
     codes = [f.code for f in d.findings]
@@ -476,7 +503,7 @@ def test_sql_layer_explains_itself_when_the_view_is_present_but_empty():
     cap = capability.assess(
         {"resource_track_level": "operator", "enable_resource_track": "on"},
         _catalog(wlm_session="gs_wlm_session_statistics"))
-    d = wlm.collect_sql(_FakeDB(), _catalog(wlm_session="v"), cap, TH, 10)
+    d = wlm.collect_sql(_FakeRunner(), _catalog(wlm_session="v"), cap, TH, 10)
     assert d.available is True
     assert d.rows == []
     assert "resource_track_cost" in d.note
@@ -487,7 +514,7 @@ def test_operator_layer_explains_itself_when_the_view_is_present_but_empty():
     cap = capability.assess(
         {"resource_track_level": "operator", "enable_resource_track": "on"},
         _catalog(wlm_operator="gs_wlm_operator_statistics"))
-    d = wlm.collect_operator(_FakeDB(), _catalog(wlm_operator="v"), cap, TH, 10)
+    d = wlm.collect_operator(_FakeRunner(), _catalog(wlm_operator="v"), cap, TH, 10)
     assert d.available is True
     assert d.rows == []
     assert "单机" in d.note                  # names the real openGauss limitation

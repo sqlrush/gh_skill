@@ -62,7 +62,17 @@ def test_state_dir_falls_back_to_legacy_gdaa_home(tmp_path, monkeypatch):
     monkeypatch.setenv("GDAA_HOME", str(tmp_path / "legacy"))
     assert state_dir() == tmp_path / "legacy"
 
-def test_state_dir_defaults_to_dot_gdaa(monkeypatch):
+def test_state_dir_defaults_to_the_container_path(monkeypatch):
+    """两个环境变量都没有时，落到客户容器里的绝对路径。
+
+    这不是笔误：客户改造版把默认值从 ~/.gdaa 改成了容器内的固定路径，
+    OpenCode 容器里 /workspace 一定存在。而测试原本还断言 ~/.gdaa，
+    所以它自客户版导入起就一直是红的。
+
+    **在容器外这是个坑**：开发机上 /workspace 不存在、也建不出来（根目录
+    无写权限），不设 GSDB_HOME 直接跑任何 skill 都会在写状态时失败。
+    本机开发/测试请显式 export GSDB_HOME=$HOME/.gdaa。
+    """
     monkeypatch.delenv("GSDB_HOME", raising=False)
     monkeypatch.delenv("GDAA_HOME", raising=False)
-    assert state_dir() == pathlib.Path.home() / ".gdaa"
+    assert state_dir() == pathlib.Path("/workspace/.opencode/skills/common")

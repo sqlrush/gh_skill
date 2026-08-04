@@ -6,8 +6,18 @@ import sys
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
+def _dir(skill: str) -> str:
+    """技能目录一律带 gaussdb- 前缀；调用方两种写法都收。
+
+    这里曾经写死 skills/<skill>/，目录名却是 skills/gaussdb-<skill>/ ——
+    收集阶段就 FileNotFoundError，整个 tests/ 一起中断。也就是说本文件
+    自客户版导入起从未跑过，看着像覆盖，实际一条没执行。
+    """
+    return skill if skill.startswith("gaussdb-") else "gaussdb-" + skill
+
+
 def _load(skill: str, mod: str):
-    path = _ROOT / "skills" / skill / "scripts" / f"{mod}.py"
+    path = _ROOT / "skills" / _dir(skill) / "scripts" / f"{mod}.py"
     sys.path.insert(0, str(path.parent))
     sys.path.insert(0, str(_ROOT))
     spec = importlib.util.spec_from_file_location(f"{skill}_{mod}", path)

@@ -21,7 +21,44 @@ sys.path.insert(0, str(_ROOT))
 
 import pytest  # noqa: E402
 
-from common.grmp.values import as_bool, as_int, as_float  # noqa: E402
+from common.grmp.values import as_bool, as_int, as_float, is_null  # noqa: E402
+
+
+# ===========================================================================
+# NULL 判定 —— `x is None` 在协议下永远为假
+# ===========================================================================
+
+def test_null_renders_as_empty_string_not_none():
+    """协议把 NULL 渲染成空串（规范说明 §7.3），不是 None。
+
+    所以迁移前的 `if x is None` 全部失效：条件永不成立，后面那句
+    float("") 直接抛 ValueError。实测在 health 的 bloat 维度里就有一处
+    ——只因那条 SQL 本身坏着、维度一直降级才没暴露出来。
+    """
+    assert is_null("") is True
+    assert is_null(None) is True
+
+
+def test_real_values_are_not_null():
+    assert is_null("0") is False
+    assert is_null("f") is False
+    assert is_null(0) is False
+
+
+def test_zero_is_not_null():
+    """0 和 NULL 必须分得开：`if not x` 会把 0 当成 NULL。
+
+    「autovacuum 距今 0 秒」与「从未 autovacuum」是两回事。
+    """
+    assert is_null(0) is False
+    assert is_null("0") is False
+    assert is_null(0.0) is False
+
+
+def test_null_and_empty_string_are_indistinguishable_by_design():
+    """这是客户中间件自带的信息损失，不是我们能修的 ——
+    NULL 与真正的空串渲染结果相同，只能一并当作「无值」。"""
+    assert is_null("") == is_null(None)
 
 
 # ===========================================================================

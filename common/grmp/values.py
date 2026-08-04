@@ -24,6 +24,22 @@ _TRUE = frozenset({"t", "true", "y", "yes", "1", "on"})
 _FALSE = frozenset({"f", "false", "n", "no", "0", "off", ""})
 
 
+def is_null(value: Any) -> bool:
+    """这个取值是不是「无值」。
+
+    协议把 NULL 渲染成**空串**（规范说明 §7.3 的推断），不是 None。
+    所以迁移前的 `if x is None` 在协议下全部失效 —— 条件永不成立，
+    后面那句 float(x) 直接抛 ValueError。
+
+    不能写 `if not x`：那会把 0 当成 NULL，而「autovacuum 距今 0 秒」
+    与「从未 autovacuum」是两回事。
+
+    副作用：NULL 与真正的空串分不开。这是客户中间件自带的信息损失，
+    不是我们能修的，只能一并当作「无值」。
+    """
+    return value is None or value == ""
+
+
 def as_bool(value: Any) -> bool:
     """把协议返回的布尔列还原成 bool。
 
