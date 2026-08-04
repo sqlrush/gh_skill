@@ -5,7 +5,7 @@ sql: |
          to_char(backend_start,'YYYY-MM-DD HH24:MI:SS') as backend_start,
          to_char(query_start,'YYYY-MM-DD HH24:MI:SS') as query_start,
          waiting,
-         left(regexp_replace(query, E'\s+', ' ', 'g'), 120) as query
+         left(regexp_replace(query, '\s+', ' ', 'g'), 120) as query
   from pg_stat_activity
   where state <> 'idle'
   order by query_start nulls last

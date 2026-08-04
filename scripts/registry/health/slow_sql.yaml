@@ -5,7 +5,7 @@ description: 平均耗时超阈值的语句
 sql: |
   SELECT
     unique_sql_id::text,
-    LEFT(REGEXP_REPLACE(query, E'\s+', ' ', 'g'), 180) AS query,
+    LEFT(REGEXP_REPLACE(query, '\s+', ' ', 'g'), 180) AS query,
     n_calls AS calls,
     ROUND((total_elapse_time/NULLIF(n_calls,0))/1000::numeric, 2) AS avg_ms,
     ROUND(total_elapse_time/1000000::numeric, 2) AS total_sec,

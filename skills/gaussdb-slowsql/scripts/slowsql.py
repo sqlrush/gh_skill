@@ -92,7 +92,13 @@ def slow_sql(runner, threshold_ms: int, limit: int, begin_time: str, export: boo
     # === 新增逻辑：rows > 20 时保存为 CSV 文件 ===
     if len(rows) > SLOWSQL_MAX_ROWS or export:
         # 1. 定义 CSV 文件路径（可根据需要调整）
-        csv_filename = _HERE.parents[3] / "csv" / f"slow_sql_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        csv_dir = _HERE.parents[3] / "csv"
+        # 目录不存在就建。原先直接 open()，目录缺失时报的是
+        # 「No such file or directory: .../csv/slow_sql_export_xxx.csv」——
+        # 看不出是导出出了问题，像取数失败。而这条分支恰恰在「慢 SQL 多」时
+        # 才走到，也就是最需要这条命令的时候。
+        csv_dir.mkdir(parents=True, exist_ok=True)
+        csv_filename = csv_dir / f"slow_sql_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
         # 2. 定义 CSV 表头（根据你查询的字段调整）
         headers = ['unique_sql_id', 'query', 'calls', 'avg_ms', 'total_sec',
@@ -135,7 +141,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--threshold", type=int, default=1000, help="avg elapsed threshold (ms)")
     ap.add_argument("--limit", type=int, default=20, help="max rows")
     ap.add_argument("--begin_time", type=str, default=begin_time_str, help="execution begin time")
-    ap.add_argument("--export", type=bool, default=False, help="export results to csv")
+    # 不用 type=bool：那就是 bool(str)，非空字符串一律为真，于是
+    # `--export false` 反而打开了导出。与 bool("f") 是同一个坑。
+    ap.add_argument("--export", action="store_true",
+                    help="即使行数不多也导出 CSV")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
     # 仅直连路径生效：GRMP 协议没有超时字段，走中间件时超时由服务端决定
     ap.add_argument("--timeout", type=int, default=None)
