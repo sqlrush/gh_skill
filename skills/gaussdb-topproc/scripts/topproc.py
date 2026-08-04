@@ -30,9 +30,10 @@ for parent in _HERE.parents:
         sys.path.insert(0, str(parent))
         break
         
-from common.sql import skill_topproc_001
+# SQL 已迁到 scripts/registry/topproc/ —— 两条路径共用同一份定义
 
 import common  # noqa: E402
+from common import access  # noqa: E402
 import render  # noqa: E402
 
 # Whitelisted --by values; ORDER BY clause is injected, so it MUST come from
@@ -60,14 +61,25 @@ class ProcStat:
     self_ms: float
 
 
-def top_procs(db, by: str, limit: int) -> tuple[list[ProcStat], str]:
-    """Rank user functions/procedures; returns (rows, degrade_note)."""
+TOP_PROCS_SCRIPT = "topproc.top_procs"
+
+
+def top_procs(runner, by: str, limit: int) -> tuple[list[ProcStat], str]:
+    """Rank user functions/procedures; returns (rows, degrade_note).
+
+    经统一入口取数。走中间件还是直连由连接的 driver 决定，这里不感知。
+    """
     order = _SORT_COLS.get(by)
     if order is None:
         raise ValueError(f"--by {by!r}: must be one of {SORT_KEYS}")
-    q = skill_topproc_001.format(order=order, limit=int(limit))
-    _, rows = db.query(q)
-    out = [ProcStat(r[0], r[1], int(r[2]), float(r[3]), float(r[4])) for r in rows]
+    # order 落在 ORDER BY 位，类型校验对标识符位无效 ——
+    # 取值只能来自上面那张白名单，绝不能直接来自用户输入。
+    rows = runner.run(TOP_PROCS_SCRIPT, {"order": order, "limit": int(limit)})
+    out = [
+        ProcStat(r["nspname"], r["proname"], int(r["calls"]),
+                 float(r["total_ms"]), float(r["self_ms"]))
+        for r in rows
+    ]
     note = "" if out else _EMPTY_NOTE
     return out, note
 
@@ -96,24 +108,24 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = ap.parse_args(argv)
 
     try:
-        db = common.Database.connect(args.conn)
-    except (common.ConfigError, common.CredentialError, common.DBError) as exc:
+        runner = access.for_conn(args.conn)
+    except (common.ConfigError, common.CredentialError, access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     try:
-        db.set_statement_timeout(args.timeout)
-        rows, note = top_procs(db, args.by, args.limit)
+        rows, note = top_procs(runner, args.by, args.limit)
         if args.format == "json":
             print(json.dumps({"rows": [r.__dict__ for r in rows], "note": note},
                              ensure_ascii=False, indent=2))
         else:
             print(proc_table(args.by, rows, note), end="")
         return 0
-    except (ValueError, common.DBError) as exc:
+    except (ValueError, KeyError, common.DBError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    finally:
-        db.close()
+    except Exception as exc:          # 渲染/协议层的失败也要清楚报出来
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
