@@ -27,6 +27,7 @@ from .grmp.settings import Settings
 # 新增一种访问方式时，新 Runner 抛 QueryError 即可，skill 一行不改。
 # 详见 common/grmp/errors.py 里关于「哪些错误不归一」的说明。
 __all__ = ["for_conn", "runner_for", "session_for", "session_for_conn",
+           "connection_for", "connection_for_conn",
            "require_unregistered_sql", "require_unregistered_sql_for_conn",
            "QueryError", "AccessError", "SessionUnavailable",
            "UnregisteredSqlUnsupported"]
@@ -87,6 +88,26 @@ def _open_database(conn: Connection, read_only: bool = True):
     from .db import Database
 
     return Database.connect(conn.name, read_only=read_only)
+
+
+def connection_for_conn(conn: Connection, read_only: bool = True):
+    """索取一条**能执行任意 SQL** 的原始连接，给不了就报错。
+
+    与 session_for_conn() 的差别只在会话那一档：这里**不要求**跨语句状态
+    留存。explain 就属于这一档 —— 单条 EXPLAIN，DML 的 ANALYZE 也是在一次
+    调用里 BEGIN/ROLLBACK 包住的。用会话守卫会把 gsql（每条语句起独立
+    子进程）一并拒掉，那是借来的约束。
+
+    存在的理由是「怎么建连」不该写在 skill 里：explain 原先自己调
+    Database.connect，等于把访问方式的知识漏到了 skill 层。
+    """
+    require_unregistered_sql_for_conn(conn)
+    return _open_database(conn, read_only=read_only)
+
+
+def connection_for(name: str, read_only: bool = True):
+    """按连接名索取能执行任意 SQL 的原始连接。"""
+    return connection_for_conn(find(name), read_only=read_only)
 
 
 def session_for_conn(conn: Connection, read_only: bool = True):

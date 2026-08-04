@@ -61,6 +61,34 @@ def load_all(paths: Sequence[pathlib.Path]) -> Tuple[List[sc.ScriptRecord], List
     return records, errors
 
 
+SKILLS_SUBDIR = "skills"
+
+
+def scripts_no_skill_calls(registry: pathlib.Path) -> List[str]:
+    """列出注册目录里**没有任何 skill 调用**的脚本逻辑名。
+
+    判据是逻辑名全串在 skills/ 的 .py 源码里出现过。skill 里两种写法都有：
+
+        runner.run("health.overview")            # 字面量
+        TOP_SQL_SCRIPT = "topsql.top_sql"        # 常量,再 run(TOP_SQL_SCRIPT)
+
+    两种都是全串,所以搜全串就够，不必解析。**刻意不加「短名也算」的兜底** ——
+    试过，它把 perf.memory / perf.locks 全放过了（"memory"/"locks" 在别处
+    当维度名用着）。兜底比漏报危险：它让检查看起来跑过了。
+    """
+    root = pathlib.Path(__file__).resolve().parents[1]
+    skills = root / SKILLS_SUBDIR
+    if not skills.is_dir():          # 单测里指到临时目录，没有 skills/
+        return []
+    text = "\n".join(
+        f.read_text(encoding="utf-8", errors="replace")
+        for f in skills.rglob("*.py")
+    )
+    names = ["%s.%s" % (f.parent.name, f.stem)
+             for f in sorted(pathlib.Path(registry).glob("*/*.yaml"))]
+    return [n for n in names if n not in text]
+
+
 def report_risks(records: Sequence[sc.ScriptRecord]) -> List[str]:
     """风险标注 —— 只报告，不拦截。客户环境能跑通的脚本，本地不能拒绝。"""
     lines: List[str] = []
@@ -80,6 +108,11 @@ def main(argv: Sequence[str] = None) -> int:
         help="重名时覆盖（保持原 id 不变）。不给此参数时重名一律拒绝。",
     )
     parser.add_argument("--dml-out", default=None, help="导出客户格式 INSERT DML 的路径")
+    parser.add_argument(
+        "--include-unused",
+        action="store_true",
+        help="导出时连「没有任何 skill 调用」的脚本一起带上。默认拒绝导出。",
+    )
     parser.add_argument(
         "--user",
         default=os.environ.get("GRMP_REGISTER_USER", "grmp-register"),
@@ -113,6 +146,24 @@ def main(argv: Sequence[str] = None) -> int:
             print(line)
     else:
         print("风险标注：无")
+
+    if args.dml_out and not args.include_unused:
+        unused = scripts_no_skill_calls(registry)
+        if unused:
+            print(
+                "\n拒绝导出交付 DML：以下 %d 条脚本没有任何 skill 调用。" % len(unused),
+                file=sys.stderr)
+            for n in unused:
+                print("  - %s" % n, file=sys.stderr)
+            print(
+                "\n导出的每一条 INSERT 都要灌进客户生产库的 script_config，"
+                "客户得为它走变更评审。\n"
+                "这些多半是中间件自测用的脚本（perf.* 是动态性能视图那组验证场景，"
+                "session.* 给 grmp_demo.sh 用）—— 该留在仓库里，不该混进交付物。\n"
+                "确实要一起交付就加 --include-unused；否则用 --registry 指一个"
+                "只含交付脚本的目录。",
+                file=sys.stderr)
+            return 1
 
     if args.dry_run:
         print("\n--dry-run：未写库")

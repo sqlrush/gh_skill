@@ -159,7 +159,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         # 先判路：grmp 走不了任意 SQL，要在建连之前就说清楚原因，
         # 否则错误会表现成「中间件报脚本不存在」，排查方向被带偏。
         require_direct_sql_path(args.conn)
-        db = common.Database.connect(args.conn, read_only=not args.analyze)
+        # 建连交给连接模块 —— skill 不该知道怎么连库，否则客户换访问方式时
+        # 这里还得单独改一遍，「只改连接模块」就不成立了。
+        db = access.connection_for(args.conn, read_only=not args.analyze)
     except (common.ConfigError, common.CredentialError, common.DBError,
             access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
