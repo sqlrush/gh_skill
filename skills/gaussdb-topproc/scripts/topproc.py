@@ -34,6 +34,9 @@ for parent in _HERE.parents:
 
 import common  # noqa: E402
 from common import access  # noqa: E402
+# 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
+# 类型还原一律走这里，不用裸 int()/float()/bool()。
+from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
 import render  # noqa: E402
 
 # Whitelisted --by values; ORDER BY clause is injected, so it MUST come from
@@ -76,8 +79,8 @@ def top_procs(runner, by: str, limit: int) -> tuple[list[ProcStat], str]:
     # 取值只能来自上面那张白名单，绝不能直接来自用户输入。
     rows = runner.run(TOP_PROCS_SCRIPT, {"order": order, "limit": int(limit)})
     out = [
-        ProcStat(r["nspname"], r["proname"], int(r["calls"]),
-                 float(r["total_ms"]), float(r["self_ms"]))
+        ProcStat(r["nspname"], r["proname"], as_int(r["calls"]),
+                 as_float(r["total_ms"]), as_float(r["self_ms"]))
         for r in rows
     ]
     note = "" if out else _EMPTY_NOTE

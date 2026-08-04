@@ -25,6 +25,9 @@ for parent in _HERE.parents:
 # 取数失败只认这一个类型。换一种数据库访问方式时，改的是访问模块，
 # 不是这里 —— 详见 common/grmp/errors.py。
 from common import access  # noqa: E402
+# 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
+# 类型还原一律走这里，不用裸 int()/float()/bool()。
+from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
 
 
 def snaps(runner, limit: int) -> str:
@@ -46,8 +49,8 @@ def snaps(runner, limit: int) -> str:
     except access.QueryError as exc:
         raise common.DBError(f"查询 snapshot.snapshot 失败：{exc}")
 
-    snaps_list = [(int(r["snapshot_id"]), r["start_ts"], r["end_ts"],
-                   int(r["dur_min"] or 0)) for r in rows]
+    snaps_list = [(as_int(r["snapshot_id"]), r["start_ts"], r["end_ts"],
+                   as_int(r["dur_min"])) for r in rows]
     if len(snaps_list) < 2:
         raise common.DBError(
             f"可用快照不足（{len(snaps_list)} 个）：WDR 报告至少需要两个快照围出窗口。"

@@ -24,6 +24,9 @@ for parent in _HERE.parents:
 # 取数失败只认这一个类型。换一种数据库访问方式时，改的是访问模块，
 # 不是这里 —— 详见 common/grmp/errors.py。
 from common import access  # noqa: E402
+# 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
+# 类型还原一律走这里，不用裸 int()/float()/bool()。
+from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
 
 
 
@@ -65,7 +68,7 @@ def load_window(runner, opt: Options) -> Window:
         raise common.DBError(
             f"加载快照窗口失败：snap {opt.begin}/{opt.end} 不存在（run: wdr snaps 查看可用快照）")
     w.begin_ts, w.end_ts = rows[0]["b_start"], rows[0]["e_start"]
-    w.duration_min = int(rows[0]["dur"] or 0)
+    w.duration_min = as_int(rows[0]["dur"])
     return w
 
 

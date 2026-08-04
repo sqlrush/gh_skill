@@ -92,3 +92,39 @@ def test_numeric_garbage_is_rejected():
         as_int("abc")
     with pytest.raises(ValueError):
         as_float("abc")
+
+
+# ===========================================================================
+# 小数形态的整数列 —— 迁移中真炸过
+# ===========================================================================
+
+@pytest.mark.parametrize("raw,want", [
+    ("3704.0", 3704),
+    ("-2.0", -2),
+    ("1.9", 1),        # 截断，不是四舍五入
+    ("-1.9", -1),
+])
+def test_int_accepts_decimal_form_and_truncates(raw, want):
+    """openGauss 的 pg_class.relpages / reltuples 是 double precision，
+    经协议变成 "3704.0"。而 int("3704.0") 直接抛 ValueError ——
+    实测让每一次 sqltune 运行都挂掉。
+
+    迁移前这里是 int(3704.0)，即**截断**。协议只是把同一个值换了个形态
+    传过来，语义不该跟着变，所以照旧截断。
+
+    这不是「宽容解析」：小数形态是数据库对这些列的真实类型，
+    不是错误信号。真正的错误信号（列取错了）由列名检查负责。
+    """
+    assert as_int(raw) == want
+
+
+def test_int_still_rejects_non_numeric():
+    """放宽只针对小数形态，非数字仍然报错。"""
+    with pytest.raises(ValueError):
+        as_int("3704 rows")
+
+
+def test_int_matches_pre_migration_semantics():
+    """与迁移前的 int(float) 逐值一致 —— 这才是「行为没变」的判据。"""
+    for native in (3704.0, -2.0, 1.9, -1.9, 0.0):
+        assert as_int(str(native)) == int(native)

@@ -1,0 +1,25 @@
+# SQL 取自 common/sql.py 的 skill_proctune_002，f-string 的 {names} 换成 {{names}}。
+#
+# **改动：t.relname / i.relname 加别名 table_name / index_name，
+# pg_get_indexdef(...) 加别名 indexdef。**
+# 前两列原来**都叫 relname** —— 协议按列名做键返回对象，后一个会静默覆盖
+# 前一个，结果每行的表名都变成索引名，不报错也不告警。这条是本次迁移里
+# 唯一一处真正会丢数据的重名列。
+#
+# ⚠️ 既有缺陷（按用户要求只报不修）：与 proctune.tables 同一个问题 ——
+# 调用方传进来的 names 是 Python 列表，渲染成 `IN ['orders']`，语法错误。
+# 详见 tables.yaml 的说明。
+name: proctune.indexes
+description: 目标表上的索引定义（证据包的 Indexes 一节）
+sql: |
+  SELECT t.relname AS table_name, i.relname AS index_name,
+         ix.indisunique, ix.indisprimary,
+         pg_get_indexdef(ix.indexrelid) AS indexdef
+  FROM pg_class t
+  JOIN pg_index ix ON t.oid = ix.indrelid
+  JOIN pg_class i ON i.oid = ix.indexrelid
+  WHERE t.relname IN {{names}};
+params:
+  - key: names
+    type: String
+    description: 表名列表，须渲染成 SQL 的括号列表形式，如 ('orders','customers')

@@ -32,6 +32,9 @@ for parent in _HERE.parents:
 
 import common  # noqa: E402
 from common import access  # noqa: E402
+# 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
+# 类型还原一律走这里，不用裸 int()/float()/bool()。
+from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
 import render  # noqa: E402
 
 # Whitelisted --by values; ORDER BY clause is injected, so it MUST come from
@@ -74,8 +77,8 @@ def top_sql(runner, by: str, limit: int) -> list[StmtRow]:
     # 上面那张白名单，绝不能直接来自用户输入。
     rows = runner.run(TOP_SQL_SCRIPT, {"order": order, "limit": int(limit)})
     return [
-        StmtRow(r["unique_sql_id"], r["query"], int(r["calls"]),
-                float(r["total_sec"]), float(r["avg_ms"]), int(r["rows"]))
+        StmtRow(r["unique_sql_id"], r["query"], as_int(r["calls"]),
+                as_float(r["total_sec"]), as_float(r["avg_ms"]), as_int(r["rows"]))
         for r in rows
     ]
 

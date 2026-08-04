@@ -1,0 +1,20 @@
+# SQL 取自 common/sql.py 的 skill_proctune_003，f-string 的 {names} 换成 {{names}}，
+# 其余未动 —— 六列都是普通列引用，列名唯一且有意义，无需加别名。
+#
+# ⚠️ 既有缺陷（按用户要求只报不修）：与 proctune.tables 同一个问题 ——
+# 调用方传进来的 names 是 Python 列表，渲染成 `IN ['orders']`，语法错误。
+# 详见 tables.yaml 的说明。
+#
+# 注：correlation 允许为 NULL，协议把 NULL 渲染成空串（与真正的空串不可
+# 区分）。调用方 evidence.py 把空串按 NULL 处理 —— 该列是数值列，
+# 空串只可能来自 NULL。
+name: proctune.column_stats
+description: 目标表的列级统计信息（证据包的 Column Statistics 一节）
+sql: |
+  SELECT tablename, attname, n_distinct, null_frac, avg_width, correlation
+  FROM pg_stats
+  WHERE tablename IN {{names}};
+params:
+  - key: names
+    type: String
+    description: 表名列表，须渲染成 SQL 的括号列表形式，如 ('orders','customers')

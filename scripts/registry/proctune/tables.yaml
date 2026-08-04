@@ -1,0 +1,27 @@
+# SQL 取自 common/sql.py 的 skill_proctune_001，f-string 的 {names} 换成 {{names}}。
+#
+# **改动：pg_total_relation_size(...)/1024.0/1024.0 加别名 size_mb，
+# c.reltuples::bigint 显式命名 reltuples。** 前者原来的列名是 ?column?，
+# 协议按列名做键，无名列拿不到键 —— 注册期的列名检查会直接拒掉。
+#
+# ⚠️ 既有缺陷（按用户要求只报不修）：调用方 evidence.py 传进来的 names 是一个
+# **Python 列表**，`.format(names=[...])` 渲染出 `IN ['orders', 'customers']` ——
+# 方括号在 SQL 里是语法错误。evidence.py 里的 _quote_literals() 正是为此写的，
+# 但从来没被调用过。实测直连路径今天同样是坏的：
+#   ERROR: syntax error at or near "[" (SQLSTATE 42601)
+# 后果是 tune-cursor 的每个游标都在证据采集这一步失败、被记进 Skipped Cursors，
+# 整条子命令产不出任何一条已验证结论。
+# 原意无歧义（就是要按表名列表过滤），但修法涉及调用方，留给使用方拍板；
+# 这里按原样迁移，两条路径同样失败，行为与今天一致。
+name: proctune.tables
+description: 目标表的页数/行数/大小（证据包的 Tables 一节）
+sql: |
+  SELECT n.nspname, c.relname, c.relpages, c.reltuples::bigint AS reltuples, c.relkind,
+         pg_total_relation_size(c.oid) / 1024.0 / 1024.0 AS size_mb
+  FROM pg_class c
+  LEFT JOIN pg_namespace n ON c.relnamespace = n.oid
+  WHERE c.relname IN {{names}} AND c.relkind IN ('r','v','p','m');
+params:
+  - key: names
+    type: String
+    description: 表名列表，须渲染成 SQL 的括号列表形式，如 ('orders','customers')

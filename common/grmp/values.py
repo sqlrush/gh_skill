@@ -50,10 +50,25 @@ def as_bool(value: Any) -> bool:
 def as_int(value: Any, default: int = 0) -> int:
     """把字符串数值还原成 int。空串/None 取默认值（NULL 渲染成空串）。
 
-    非数字**报错而不是取默认值** —— 那会把「取数出错」伪装成「值就是 0」。
+    **接受小数形态并截断。** openGauss 的 pg_class.relpages / reltuples 是
+    double precision，经协议变成 "3704.0"，而 int("3704.0") 直接抛
+    ValueError —— 实测让每一次 sqltune 运行都挂掉。
+
+    迁移前这里是 int(3704.0)，即截断。协议只是把同一个值换了个形态传过来，
+    语义不该跟着变。小数形态是数据库对这些列的真实类型，不是错误信号；
+    真正的错误信号（列取错了）由 columns.py 的列名检查负责。
+
+    非数字仍然**报错而不是取默认值** —— 那会把「取数出错」伪装成「值就是 0」。
     """
     if value is None or value == "":
         return default
+    if isinstance(value, str):
+        text = value.strip()
+        # 先按整数试；带小数点的走 float 再截断，与迁移前的 int(float) 等价
+        try:
+            return int(text)
+        except ValueError:
+            return int(float(text))
     return int(value)
 
 

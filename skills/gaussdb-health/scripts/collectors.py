@@ -34,7 +34,9 @@ for parent in _HERE.parents:
 # 取数失败只认这一个类型。换一种数据库访问方式时，改的是访问模块，
 # 不是这里 —— 详见 common/grmp/errors.py。
 from common import access  # noqa: E402
-from common.grmp.values import as_bool  # noqa: E402
+# 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
+# 类型还原一律走这里，不用裸 int()/float()/bool()。
+from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
 
 
 
@@ -56,11 +58,11 @@ def collect_overview(runner, th: Thresholds, _top: int) -> DimResult:
         return degraded(DIM_OVERVIEW, summarize_err(exc))
     r = rows[0]
     cache_hit = _f(r["cache_hit_pct"])
-    backends = int(r["numbackends"] or 0)
-    max_conn = int(r["max_conn"] or 0)
+    backends = as_int(r["numbackends"])
+    max_conn = as_int(r["max_conn"])
     # bool("f") 是 True —— 结果值全是字符串，必须用 as_bool 还原
     in_recovery = as_bool(r["in_recovery"])
-    oldest = int(r["oldest_xact_s"] or 0)
+    oldest = as_int(r["oldest_xact_s"])
     oldest_str = f"{oldest}s" if oldest > 0 else "无"
     d = DimResult(dimension=DIM_OVERVIEW, available=True,
                   headers=["cache_hit%", "connections", "max_conn", "in_recovery", "最老事务"],
@@ -104,7 +106,7 @@ def collect_waits(runner, th: Thresholds, top: int) -> DimResult:
     total = top_cnt = 0
     top_wait = ""
     for n, row in enumerate(rows):
-        ws, cnt = row["wait_status"], int(row["cnt"])
+        ws, cnt = row["wait_status"], as_int(row["cnt"])
         total += cnt
         if n < top:
             d.rows.append([ws, i64(cnt)])
@@ -145,7 +147,7 @@ def collect_slowsql(runner, th: Thresholds, top: int) -> DimResult:
     for row in rows:
         sql_id = row["unique_sql_id"]
         query = row["query"]
-        calls = int(row["calls"])
+        calls = as_int(row["calls"])
         avg_ms = _f(row["avg_ms"])
         total_s = _f(row["total_sec"])
         cpu_s = _f(row["cpu_sec"])
@@ -202,7 +204,7 @@ def collect_xact(runner, th: Thresholds, top: int) -> DimResult:
     n_rows = 0
     max_secs = 0.0
     for row in rows:
-        pid = int(row["pid"])
+        pid = as_int(row["pid"])
         user, state = row["usename"], row["state"]
         xact_age, state_age = _f(row["xact_age_s"]), _f(row["state_age_s"])
         query = row["query"]
@@ -248,7 +250,7 @@ def collect_bloat(runner, th: Thresholds, top: int) -> DimResult:
     worst_tbl = ""
     for row in rows:
         sch, rel = row["schemaname"], row["relname"]
-        live, dead = int(row["n_live_tup"]), int(row["n_dead_tup"])
+        live, dead = as_int(row["n_live_tup"]), as_int(row["n_dead_tup"])
         age = row["last_autovacuum_age_s"]
         autovac = as_bool(row["autovac_enabled"])
         ratio = 100.0 * dead / max(live + dead, 1)
@@ -287,7 +289,7 @@ def collect_lwlock(runner, th: Thresholds, top: int) -> DimResult:
     hot = ""
     hot_cnt = 0
     for row in rows:
-        evt, cnt = row["evt"], int(row["cnt"])
+        evt, cnt = row["evt"], as_int(row["cnt"])
         d.rows.append([evt, i64(cnt)])
         if cnt >= th.lwlock_sessions and cnt > hot_cnt:
             hot, hot_cnt = evt, cnt
@@ -315,8 +317,8 @@ def collect_locks(runner, th: Thresholds, top: int) -> DimResult:
     worst_sev = Severity.OK
     worst_line = ""
     for row in rows:
-        root, depth, waiters = (int(row["root"]), int(row["depth"]),
-                                int(row["waiters"]))
+        root, depth, waiters = (as_int(row["root"]), as_int(row["depth"]),
+                                as_int(row["waiters"]))
         state = row["state"]
         secs = (_f(row["state_age_s"]) if state == "idle in transaction"
                 else _f(row["xact_age_s"]))
@@ -355,7 +357,7 @@ def collect_conn(runner, th: Thresholds, _top: int) -> DimResult:
     d = DimResult(dimension=DIM_CONN, available=True, headers=["state", "会话数"])
     total = active = idle = iit = 0
     for row in rows:
-        st, cnt = row["state"], int(row["cnt"])
+        st, cnt = row["state"], as_int(row["cnt"])
         d.rows.append([st, i64(cnt)])
         total += cnt
         if st == "active":
@@ -377,8 +379,8 @@ def collect_conn(runner, th: Thresholds, _top: int) -> DimResult:
             r2 = []
         if r2:
             top_q = r2[0]["q"]
-            top_c = int(r2[0]["c"])
-            real_total = int(r2[0]["total"] or 0)
+            top_c = as_int(r2[0]["c"])
+            real_total = as_int(r2[0]["total"] or 0)
             if real_total >= th.active_conc_floor and top_c > 0:
                 conc = 100.0 * top_c / real_total
                 if conc >= th.active_conc_pct:
@@ -398,8 +400,8 @@ def collect_logs(runner, th: Thresholds, _top: int) -> DimResult:
         rows = runner.run("health.bgwriter")
     except access.QueryError as exc:
         return degraded(DIM_LOGS, summarize_err(exc))
-    timed, req = (int(rows[0]["checkpoints_timed"]),
-                  int(rows[0]["checkpoints_req"]))
+    timed, req = (as_int(rows[0]["checkpoints_timed"]),
+                  as_int(rows[0]["checkpoints_req"]))
     req_pct = 100.0 * req / (timed + req) if timed + req > 0 else 0.0
     d.rows.append(["checkpoint timed/req", f"{timed}/{req}"])
     d.rows.append(["checkpoint req 占比", f2(req_pct) + "%"])
@@ -494,7 +496,7 @@ def collect_schema(runner, th: Thresholds, top: int) -> DimResult:
     except access.QueryError as exc:
         return degraded(DIM_SCHEMA, summarize_err(exc))
     for row in rows:
-        name, sz = row["idx_name"], int(row["idx_bytes"])
+        name, sz = row["idx_name"], as_int(row["idx_bytes"])
         d.rows.append(["无用索引", name, human_bytes(sz)])
         d.findings.append(Finding(DIM_SCHEMA, "INDEX_UNUSED", Severity.NOTICE,
                                   "无用索引 " + name, human_bytes(sz) + " idx_scan=0",
@@ -537,9 +539,9 @@ def collect_concurrency(runner, th: Thresholds, _top: int) -> DimResult:
         rows = runner.run("health.db_concurrency")
     except access.QueryError as exc:
         return degraded(DIM_CONCURRENCY, summarize_err(exc))
-    deadlocks, commit, rollback = (int(rows[0]["deadlocks"]),
-                                   int(rows[0]["xact_commit"]),
-                                   int(rows[0]["xact_rollback"]))
+    deadlocks, commit, rollback = (as_int(rows[0]["deadlocks"]),
+                                   as_int(rows[0]["xact_commit"]),
+                                   as_int(rows[0]["xact_rollback"]))
     total = commit + rollback
     rb_pct = 100.0 * rollback / total if total > 0 else 0.0
     d.rows.append(["deadlocks", i64(deadlocks)])

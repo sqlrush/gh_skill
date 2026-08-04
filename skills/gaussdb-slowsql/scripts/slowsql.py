@@ -35,6 +35,9 @@ for parent in _HERE.parents:
 
 import common  # noqa: E402
 from common import access  # noqa: E402
+# 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
+# 类型还原一律走这里，不用裸 int()/float()/bool()。
+from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
 import render  # noqa: E402
 
 SLOWSQL_MAX_ROWS = 10
@@ -103,11 +106,11 @@ def slow_sql(runner, threshold_ms: int, limit: int, begin_time: str, export: boo
                 writer.writerow([r[0], r[1], r[2], r[3], r[4], r[5], r[6]])
         print(f"数据已导出到: {csv_filename} (共 {len(rows)} 行)")
         last_index = min(SLOWSQL_MAX_ROWS, len(rows), 3)
-        return [StmtRow(r[0], r[1], int(r[2]), float(r[3]), float(r[4]),
-                        float(r[5]), int(r[6])) for r in rows[:last_index]]
+        return [StmtRow(r[0], r[1], as_int(r[2]), as_float(r[3]), as_float(r[4]),
+                        as_float(r[5]), as_int(r[6])) for r in rows[:last_index]]
     else:
-        return [StmtRow(r[0], r[1], int(r[2]), float(r[3]), float(r[4]),
-                      float(r[5]), int(r[6])) for r in rows]
+        return [StmtRow(r[0], r[1], as_int(r[2]), as_float(r[3]), as_float(r[4]),
+                      as_float(r[5]), as_int(r[6])) for r in rows]
 
 
 def stmt_table(title: str, rows: list[StmtRow]) -> str:

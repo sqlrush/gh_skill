@@ -31,6 +31,10 @@ for parent in _HERE.parents:
         sys.path.insert(0, str(parent))
         break
 
+# 字符串值的还原一律用共用层：bool("f") 是 True 这类坑错一次就是静默出
+# 错误结论，不该有各 skill 自己的一份实现
+from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
+
 # SQL 已迁到 scripts/registry/sqltune/ —— 两条路径共用同一份定义
 VERSION_SCRIPT = "sqltune.version"
 TABLES_SCRIPT = "sqltune.tables"
@@ -42,47 +46,21 @@ KEY_GUCS_SCRIPT = "sqltune.key_gucs"
 # --- 协议取值：所有列值都是字符串，NULL 是空串 ------------------------------
 #
 # 按列名取值而不是下标：列序变了会当场 KeyError，而不是安静地把 size_mb
-# 当成 reltuples。下面三个转换器则接住「字符串化」带来的三个坑。
+# 当成 reltuples。取值本身一律走 common.grmp.values 的 as_bool / as_int /
+# as_float，本文件只为一个 openGauss 特有的写法留一个包装。
 
-def _i(raw: str, default: int = 0) -> int:
-    """整数列。两个坑：
+def _pages(raw) -> int:
+    """页数列。**openGauss 的 pg_class.relpages 是 double precision**，
+    取回来是 "3704.0"，as_int 会当场报错（它刻意不接受非整数写法）。
 
-    1. NULL 渲染成空串，int("") 抛 ValueError。
-    2. **openGauss 的 pg_class.relpages 是 double precision**，取回来是
-       "3704.0"。迁移前拿到的是 float 对象，int(3704.0) 直接截断；改成字符串
-       之后 int("3704.0") 会抛 ValueError。这里补上同样的截断，行为与迁移前
-       一致 —— 先按整数解析（大整数不丢精度），失败才退回浮点截断。
+    迁移前这里拿到的是 float 对象，int(3704.0) 直接截断；这里补上同一次截断，
+    行为与迁移前逐字一致。**只在本列放宽，不下沉到 common.grmp.values** ——
+    「声明为整数的列里出现小数」在别处多半意味着取错了列，共用层报错是对的。
     """
-    text = (raw or "").strip()
-    if not text:
-        return default
-    try:
-        return int(text)
-    except ValueError:
+    text = "" if raw is None else str(raw).strip()
+    if "." in text:
         return int(float(text))
-
-
-def _f(raw: str, default: float = 0.0) -> float:
-    """浮点列。同上。"""
-    text = (raw or "").strip()
-    return float(text) if text else default
-
-
-def _opt_f(raw: str) -> Optional[float]:
-    """可空浮点列（pg_stats.correlation 经常是 NULL）。
-
-    协议把 NULL 与真空串渲染成同一个值 —— 这是客户中间件的信息损失，
-    这里只能把空串一律当 NULL。
-    """
-    text = (raw or "").strip()
-    return float(text) if text else None
-
-
-def _b(raw: str) -> bool:
-    """布尔列。**不能直接 bool()**：布尔渲染成 't'/'f'，而 bool("f") 是 True，
-    每个索引都会被报成 UNIQUE。两套已知渲染（t/f 与 true/false）都认。
-    """
-    return (raw or "").strip().lower() in ("t", "true")
+    return as_int(text)
 
 
 # --- table-name extraction (port of tables.go ExtractTables) -----------------
@@ -269,8 +247,9 @@ def collect_tables(runner, names: list[str]) -> list[TableInfo]:
     if not names:
         return []
     rows = runner.run(TABLES_SCRIPT, {"names": _quoted_list(names)})
-    return [TableInfo(r["nspname"], r["relname"], _i(r["relpages"]),
-                      _i(r["reltuples"]), r["relkind"], _f(r["size_mb"]))
+    return [TableInfo(r["nspname"], r["relname"], _pages(r["relpages"]),
+                      as_int(r["reltuples"]), r["relkind"],
+                      as_float(r["size_mb"]))
             for r in rows]
 
 
@@ -278,8 +257,9 @@ def collect_indexes(runner, names: list[str]) -> list[IndexInfo]:
     if not names:
         return []
     rows = runner.run(INDEXES_SCRIPT, {"names": _quoted_list(names)})
-    return [IndexInfo(r["table_name"], r["index_name"], _b(r["indisunique"]),
-                      _b(r["indisprimary"]), r["index_def"])
+    # bool("f") 是 True —— 直接 bool() 会把每个索引都报成 UNIQUE/PRIMARY
+    return [IndexInfo(r["table_name"], r["index_name"], as_bool(r["indisunique"]),
+                      as_bool(r["indisprimary"]), r["index_def"])
             for r in rows]
 
 
@@ -287,9 +267,12 @@ def collect_column_stats(runner, names: list[str]) -> list[ColumnStat]:
     if not names:
         return []
     rows = runner.run(COLUMN_STATS_SCRIPT, {"names": _quoted_list(names)})
-    return [ColumnStat(r["tablename"], r["attname"], _f(r["n_distinct"]),
-                       _f(r["null_frac"]), _i(r["avg_width"]),
-                       _opt_f(r["correlation"]))
+    # correlation 经常是 NULL，默认值给 None 而不是 0.0：0.0 会被读成
+    # 「物理顺序与索引顺序完全无关」，那是一个结论，不是「不知道」。
+    # 协议把 NULL 与真空串渲染成同一个值，这里只能把空串一律当 NULL。
+    return [ColumnStat(r["tablename"], r["attname"], as_float(r["n_distinct"]),
+                       as_float(r["null_frac"]), as_int(r["avg_width"]),
+                       as_float(r["correlation"], None))
             for r in rows]
 
 
