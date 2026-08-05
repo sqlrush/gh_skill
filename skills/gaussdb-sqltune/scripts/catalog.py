@@ -76,8 +76,13 @@ class Catalog:
         return found
 
     def total_table_pages(self) -> float:
-        """本查询涉及的所有表的页数之和 —— Mackert-Lohman 的缓存摊分基数。"""
-        return float(sum(t.pages for t in self._tables.values()))
+        """本查询涉及的所有表的页数之和 —— Mackert-Lohman 的缓存摊分基数。
+
+        用**实时**块数：规划器算缓存摊分时用的就是它，与 cost_index 里传的
+        baserel->pages 是同一个来源。混用冻结值会让摊分基数偏小，b 偏大，
+        于是「缓存装得下」被判成立，索引扫描的 IO 被低估。
+        """
+        return float(sum(t.cur_pages for t in self._tables.values()))
 
     # --- 门二 -------------------------------------------------------------
 

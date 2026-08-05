@@ -31,6 +31,12 @@ _PAGE_CPU_MULTIPLIER = 50.0
 # 换实例、换版本要重验 —— 校准闸会在它变了的时候当场报出来。
 PARALLEL_SETUP_COST = 1000.0
 
+# Streaming(LOCAL GATHER) 每传输一个 block_size 的数据收的费用基数。
+# **同样是实测反解的硬编码常数。** 实测它对 seq_page_cost / random_page_cost /
+# cpu_tuple_cost / cpu_operator_cost 四个 GUC 全都不敏感（逐个改动，C 一动不动），
+# 且 pg_settings 里没有任何 stream 相关的代价参数 —— 所以是内核写死的。
+STREAM_TRANSFER_COST = 1.3
+
 
 class ModelError(Exception):
     """输入不足以复算。调用方当作「这个节点没建模」处理，不能填 0 顶替。"""
@@ -229,6 +235,50 @@ def seq_scan(cur_pages: float, cur_tuples: float, cost, qual_operators: int = 0,
         terms=terms,
         approximate=has_filter,
         notes=notes,
+    )
+
+
+# --- Streaming（openGauss 特有） ---------------------------------------------
+
+def streaming_gather(child_total: float, child_startup: float,
+                     rows: float, width: int, cost, dop: int) -> Estimate:
+    """Streaming(type: LOCAL GATHER) —— 把各并行线程的结果汇总回来。
+
+    PostgreSQL 没有这个算子（对应的是 Gather），公式也不一样，文档没写。
+    实测反解：
+
+        total = 子节点 total + (行数 × 行宽 ÷ block_size) × 1.3 × (1 + 1/dop)
+
+    传输量按「行数×行宽 折算成多少个 block」算，每块收 1.3×(1+1/dop)。
+    五张表 × dop∈{2,4} 十组数据逐位吻合；1.3 对四个代价 GUC 都不敏感，
+    是内核硬编码。
+
+    **这个算子必须建模**，不是可选项：og5 默认 query_dop=2，几乎每个计划顶上
+    都顶着一个 Streaming。不建模的话校准覆盖率会一直上不去，而覆盖率低正是
+    「大部分节点没验过」的委婉说法。
+    """
+    if dop < 1:
+        raise ModelError("dop 必须 ≥ 1，取到 %r" % dop)
+    if rows < 0 or width < 0:
+        raise ModelError("行数/行宽不能为负：%r / %r" % (rows, width))
+    if cost.block_size <= 0:
+        raise ModelError("block_size 必须为正")
+
+    blocks = rows * width / float(cost.block_size)
+    per_block = STREAM_TRANSFER_COST * (1.0 + 1.0 / dop)
+    transfer = blocks * per_block
+
+    return Estimate(
+        node_type="Streaming",
+        startup_cost=child_startup,
+        total_cost=child_total + transfer,
+        terms=[
+            Term("子节点", "%g" % child_total, child_total),
+            Term("汇总传输",
+                 "(%g×%d÷%d) × %g × (1+1/%d)"
+                 % (rows, width, cost.block_size, STREAM_TRANSFER_COST, dop),
+                 transfer),
+        ],
     )
 
 

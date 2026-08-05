@@ -16,9 +16,11 @@ sys.path.insert(0, str(_ROOT / "skills" / "gaussdb-sqltune" / "scripts"))
 import catalog  # noqa: E402
 
 
-def _table(name, pages=1000, tuples=100000, schema="public"):
+def _table(name, pages=1000, tuples=100000, schema="public", cur_pages=None):
     return types.SimpleNamespace(schema=schema, name=name, pages=pages,
-                                 tuples=tuples, kind="r", size_mb=1.0)
+                                 tuples=tuples,
+                                 cur_pages=pages if cur_pages is None else cur_pages,
+                                 kind="r", size_mb=1.0)
 
 
 def _index(name, table="customers", pages=274, tuples=100000):
