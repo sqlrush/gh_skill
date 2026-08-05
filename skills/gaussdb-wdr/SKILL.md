@@ -14,7 +14,7 @@ metadata:
 
 只读、可信的 WDR 工作负载诊断。**确定性归脚本（采集 + 阈值发现），判断归你（LLM），但你的判断必须对脚本的 `## Deterministic Findings` 做证据锚定校验；优化建议出炉前还要对 Top SQL 做 hypopg 实证。** 严格只读：脚本绝不创建快照。
 
-本技能用 Python 脚本（`{baseDir}/scripts/wdr.py`）取数与渲染，连接元数据读取 `{baseDir}/../common/config.yaml`，凭据由脚本从 `{baseDir}/../common/credentials/` 自动解密。
+本技能用 Python 脚本（`{baseDir}/scripts/wdr.py`）取数与渲染，连接元数据读取 `$GSDB_HOME/config.yaml`（默认 `~/.gdaa/config.yaml`），凭据由脚本从 `{baseDir}/../common/credentials/` 自动解密。
 
 命中以下请求时，必须使用本 skill 并实际执行脚本，不要只做概念解释：
 
@@ -31,7 +31,7 @@ metadata:
 
 ## 工作流
 
-1. **选择连接。** 连接名沿用 `{baseDir}/../common/config.yaml` 的 `name` 字段。若不确定有哪些连接，看 name 列表；只在有多个时才问用哪一个。该文件**只含连接元数据，无密码**——口令在 `{baseDir}/../common/credentials/*.enc`，由脚本解密，**你不要去读/解密它**。
+1. **选择连接。** 连接名沿用 `$GSDB_HOME/config.yaml`（默认 `~/.gdaa/config.yaml`） 的 `name` 字段。若不确定有哪些连接，看 name 列表；只在有多个时才问用哪一个。该文件**只含连接元数据，无密码**——口令在 `{baseDir}/../common/credentials/*.enc`，由脚本解密，**你不要去读/解密它**。
 2. **列快照、定窗口。**
 
    ```bash

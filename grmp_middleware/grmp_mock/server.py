@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from . import envelope, executor, pagination
@@ -168,13 +169,18 @@ class App:
         每次调用都先取 task_id，失败响应也带着它，否则日志无从关联。
         """
         task_id = envelope.new_task_id()
+        parsed_holder: Dict[str, Any] = {}
 
         def fail(msg: str) -> Tuple[int, Dict[str, Any]]:
+            # 失败在 stderr 单独记一行 —— HTTP 层一律 200，访问日志里看不出来
+            print("[GRMP] FAIL %s :: %s" % (_log_name(parsed_holder), msg[:160]),
+                  file=sys.stderr, flush=True)
             return 200, envelope.fail_invoke(msg, task_id)
 
         parsed, error = _parse_json_object(body)
         if error is not None:
             return fail(error["msg"])
+        parsed_holder.update(parsed if isinstance(parsed, dict) else {})
 
         unknown = set(parsed) - _INVOKE_KEYS
         if unknown:
@@ -229,8 +235,15 @@ class App:
         except Exception as exc:  # 数据库错误等
             return fail(str(exc))
 
+        print("[GRMP] OK   %s :: %d 行" % (record.script_name, len(result.get("data") or [])),
+              file=sys.stderr, flush=True)
         return 200, envelope.ok_invoke(result, task_id)
 
+
+def _log_name(parsed: Mapping[str, Any]) -> str:
+    """失败日志里的标识。脚本名此时未必解析出来，退回用 id。"""
+    sid = parsed.get("id")
+    return "id=%s" % sid if sid else "(未取到 id)"
 
 def _parse_operation_values(raw: Any) -> Tuple[Dict[str, str], Optional[str]]:
     """把 param 数组解析成 {名: 值}。元素必须是 OperationValue。"""

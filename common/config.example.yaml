@@ -1,0 +1,13 @@
+# 这是**示例**，不是生效的配置。
+# 真实配置在 $GSDB_HOME/config.yaml（默认 ~/.gdaa/config.yaml）——
+# 代码只读那一个（common/config.py: state_dir() / "config.yaml"）。
+# 原先这个文件叫 config.yaml，12 个 SKILL.md 指着它让模型找连接名，
+# 于是模型看到的是下面这条根本不存在的 og-test。
+connections:
+  - name: og-test
+    type: opengauss
+    host: 127.0.0.1
+    port: 5432
+    database: db
+    user: gaussdb
+    driver: gsql 

@@ -15,7 +15,7 @@ metadata:
 存储过程深度调优工作流。**第一版只对只读游标（cursor）的 SELECT 做经验证的自动改写；写逻辑、循环结构、逐行 DML、游标 FOR UPDATE 等一律只给循证建议、绝不自动改写。**
 **你呈现的每条游标 SELECT 改写都必须有 `verify.py` 的 ACCEPTED 背书；其余建议放进明确分开的「建议（未验证）」小节。**
 
-本技能用 Python 脚本（`{baseDir}/scripts/`）取数与验证：`proctune.py collect` 出建议层证据，`proctune.py tune-cursor` 对每个合规游标出证据+索引硬验证，`verify.py` 验游标 SELECT 改写。连接元数据读取 `{baseDir}/../common/config.yaml`，凭据由脚本从 `{baseDir}/../common/credentials/` 自动解密。
+本技能用 Python 脚本（`{baseDir}/scripts/`）取数与验证：`proctune.py collect` 出建议层证据，`proctune.py tune-cursor` 对每个合规游标出证据+索引硬验证，`verify.py` 验游标 SELECT 改写。连接元数据读取 `$GSDB_HOME/config.yaml`（默认 `~/.gdaa/config.yaml`），凭据由脚本从 `{baseDir}/../common/credentials/` 自动解密。
 
 命中以下请求时，必须使用本 skill 并实际执行脚本，不要只做概念解释：
 
@@ -32,7 +32,7 @@ metadata:
 
 ## 工作流
 
-1. **选择连接。** 连接名沿用 `{baseDir}/../common/config.yaml` 的 `name` 字段。若不确定有哪些连接，看 name 列表；只在有多个时才问用哪一个。该文件**只含连接元数据，无密码**——口令在 `{baseDir}/../common/credentials/*.enc`，由脚本解密，**你不要去读/解密它**。
+1. **选择连接。** 连接名沿用 `$GSDB_HOME/config.yaml`（默认 `~/.gdaa/config.yaml`） 的 `name` 字段。若不确定有哪些连接，看 name 列表；只在有多个时才问用哪一个。该文件**只含连接元数据，无密码**——口令在 `{baseDir}/../common/credentials/*.enc`，由脚本解密，**你不要去读/解密它**。
 2. **采集证据——两条命令，中途不停。**
 
    ```bash

@@ -50,7 +50,7 @@ metadata:
    python3 {baseDir}/scripts/sqlreview.py -c <conn> --schema public
    ```
 
-   **选择连接。** 连接名沿用 `{baseDir}/../common/config.yaml` 的 `name` 字段。若不确定有哪些连接，看 name 列表；只在有多个时才问用哪一个。该文件**只含连接元数据，无密码**——口令在 `{baseDir}/../common/credentials/*.enc`，由脚本解密，**你不要去读/解密它**。
+   **选择连接。** 连接名沿用 `$GSDB_HOME/config.yaml`（默认 `~/.gdaa/config.yaml`） 的 `name` 字段。若不确定有哪些连接，看 name 列表；只在有多个时才问用哪一个。该文件**只含连接元数据，无密码**——口令在 `{baseDir}/../common/credentials/*.enc`，由脚本解密，**你不要去读/解密它**。
    需要机器可读结果时加 `--format json`。
 
 2. **读脚本输出，不要自己重新判定。**

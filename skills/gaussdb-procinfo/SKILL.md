@@ -14,7 +14,7 @@ metadata:
 
 轻量只读诊断。**本技能只采集并解读证据，不改写、不验证、不执行过程。** 要对游标 SELECT 做经验证的索引/改写优化，改用 `/gaussdb-proctune` 对同一过程做深度调优。
 
-本技能用 Python 脚本（`{baseDir}/scripts/`）取数：`procinfo.py` 出源码 + 结构发现 + 嵌入语句 + 运行时归因 + GUC。连接元数据读取 `{baseDir}/../common/config.yaml`，凭据由脚本从 `{baseDir}/../common/credentials/` 自动解密。
+本技能用 Python 脚本（`{baseDir}/scripts/`）取数：`procinfo.py` 出源码 + 结构发现 + 嵌入语句 + 运行时归因 + GUC。连接元数据读取 `$GSDB_HOME/config.yaml`（默认 `~/.gdaa/config.yaml`），凭据由脚本从 `{baseDir}/../common/credentials/` 自动解密。
 
 命中以下请求时，必须使用本 skill 并实际执行脚本，不要只做概念解释：
 
@@ -32,7 +32,7 @@ metadata:
 
 ## 工作流
 
-1. **选择连接。** 连接名沿用 `{baseDir}/../common/config.yaml` 的 `name` 字段。若不确定有哪些连接，看 name 列表；只在有多个时才问用哪一个。该文件**只含连接元数据，无密码**——口令在 `{baseDir}/../common/credentials/*.enc`，由脚本解密，**你不要去读/解密它**。
+1. **选择连接。** 连接名沿用 `$GSDB_HOME/config.yaml`（默认 `~/.gdaa/config.yaml`） 的 `name` 字段。若不确定有哪些连接，看 name 列表；只在有多个时才问用哪一个。该文件**只含连接元数据，无密码**——口令在 `{baseDir}/../common/credentials/*.enc`，由脚本解密，**你不要去读/解密它**。
 2. **采集证据——一条命令。**
 
    ```bash
