@@ -154,7 +154,8 @@ _EXPECTED_KEYS = {
         "last_analyze", "last_autoanalyze", "analyze_count", "autoanalyze_count",
     ],
     "sqltune/key_gucs.yaml": ["cpu_tuple_cost", "cpu_index_tuple_cost",
-                              "cpu_operator_cost"],
+                              "cpu_operator_cost", "block_size", "query_dop"],
+    "sqltune/tables.yaml": ["relpages", "reltuples", "curpages"],
 }
 
 

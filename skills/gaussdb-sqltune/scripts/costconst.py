@@ -45,6 +45,7 @@ class CostConstants:
     block_size: int              # 字节
     effective_cache_size: int    # **页数**，不是字节
     work_mem: int                # 字节
+    query_dop: int = 1           # openGauss 并行度
 
     def describe(self) -> list:
         """给推演报告用的「本实例实际值」清单。
@@ -61,6 +62,7 @@ class CostConstants:
             ("block_size", "%d B" % self.block_size),
             ("effective_cache_size", "%d 页" % self.effective_cache_size),
             ("work_mem", "%d B" % self.work_mem),
+            ("query_dop", "%d" % self.query_dop),
         ]
 
 
@@ -76,10 +78,18 @@ def from_gucs(rows: Iterable[Any]) -> CostConstants:
 
     # effective_cache_size 的 unit 通常是 '8kB'：setting 是块数不是字节
     cache_bytes = _as_bytes("effective_cache_size", table)
+
+    # query_dop 是 openGauss 特有的并行度。缺了它就只能当 1，而实例上是 2 时
+    # 每个复算值会差一倍 —— 校准闸只会报「模型不适用」，不会说少的是并行度。
+    dop = int(_as_float("query_dop", table))
+    if dop < 1:
+        raise MissingConstant("query_dop 取到 %r，不是正整数" % dop)
+
     return CostConstants(
         block_size=block_size,
         effective_cache_size=max(1, cache_bytes // block_size),
         work_mem=_as_bytes("work_mem", table),
+        query_dop=dop,
         **values,
     )
 

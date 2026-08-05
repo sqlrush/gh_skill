@@ -24,6 +24,13 @@ from typing import List, Optional
 # （PostgreSQL 的 DEFAULT_PAGE_CPU_MULTIPLIER）
 _PAGE_CPU_MULTIPLIER = 50.0
 
+# openGauss 每多一个并行线程收的固定启动费用。**这个数是实测反解出来的，
+# 不是文档写的，也没有对应的 GUC**（pg_settings 里 parallel|dop|smp 只有
+# query_dop / recovery_parallelism / ss_parallel_thread_count 三个）。
+# og5 上三张表 × dop∈{1,2,4} 九组数据全部逐位吻合。
+# 换实例、换版本要重验 —— 校准闸会在它变了的时候当场报出来。
+PARALLEL_SETUP_COST = 1000.0
+
 
 class ModelError(Exception):
     """输入不足以复算。调用方当作「这个节点没建模」处理，不能填 0 顶替。"""
@@ -161,42 +168,59 @@ def clamp_row_est(rows: float) -> float:
 
 # --- Seq Scan ----------------------------------------------------------------
 
-def seq_scan(relpages: float, reltuples: float, cost, qual_operators: int = 0,
-             has_filter: bool = False) -> Estimate:
-    """顺序扫描。costsize.c: cost_seqscan。
+def seq_scan(cur_pages: float, cur_tuples: float, cost, qual_operators: int = 0,
+             has_filter: bool = False, dop: int = 1) -> Estimate:
+    """顺序扫描。costsize.c: cost_seqscan，加上 openGauss 的并行调整。
 
-        run  = seq_page_cost × relpages
-             + cpu_tuple_cost × reltuples
-             + cpu_operator_cost × 过滤条件里的操作符个数 × reltuples
+        base  = seq_page_cost × 块数
+              + cpu_tuple_cost × 行数
+              + cpu_operator_cost × 过滤条件里的操作符个数 × 行数
+        total = base / dop + 1000 × (dop − 1)
 
-    没有 Filter 时前两项就是全部，公式是**精确**的 —— 校准闸最该拿这类节点
-    当锚点。有 Filter 时第三项要知道操作符个数，那是从计划文本里数出来的，
-    数错一个在亿行表上就是 25 万的偏差，所以置 approximate 让排查有方向。
+    **参数是「实时块数」和「换算行数」，不是 pg_class.relpages/reltuples。**
+    名字刻意起成 cur_*：规划器用的是 RelationGetNumberOfBlocks() 的实时块数，
+    行数按 density = reltuples/relpages 再乘实时块数换算。传冻结值进来不会
+    报错，只会让复算值差几个百分点，而校准闸报出来会像是「模型不适用」。
+
+    并行那两项是在 og5 上**实测反解**出来的，openGauss 文档没写：三张表
+    × dop∈{1,2,4} 九组数据逐位吻合。dop=1 时退化成标准的 PostgreSQL 公式。
     """
-    if relpages < 0 or reltuples < 0:
-        raise ModelError("relpages/reltuples 不能为负：%r / %r" % (relpages, reltuples))
+    if cur_pages < 0 or cur_tuples < 0:
+        raise ModelError("块数/行数不能为负：%r / %r" % (cur_pages, cur_tuples))
+    if dop < 1:
+        raise ModelError("dop 必须 ≥ 1，取到 %r" % dop)
 
-    io = cost.seq_page_cost * relpages
-    cpu = cost.cpu_tuple_cost * reltuples
+    io = cost.seq_page_cost * cur_pages
+    cpu = cost.cpu_tuple_cost * cur_tuples
     terms = [
-        Term("顺序读页", "%g × %g" % (cost.seq_page_cost, relpages), io),
-        Term("每行 CPU", "%g × %g" % (cost.cpu_tuple_cost, reltuples), cpu),
+        Term("顺序读页", "%g × %g" % (cost.seq_page_cost, cur_pages), io),
+        Term("每行 CPU", "%g × %g" % (cost.cpu_tuple_cost, cur_tuples), cpu),
     ]
-    total = io + cpu
+    base = io + cpu
 
     if qual_operators:
-        qual = cost.cpu_operator_cost * qual_operators * reltuples
+        qual = cost.cpu_operator_cost * qual_operators * cur_tuples
         terms.append(Term(
             "过滤条件求值",
-            "%g × %d × %g" % (cost.cpu_operator_cost, qual_operators, reltuples),
+            "%g × %d × %g" % (cost.cpu_operator_cost, qual_operators, cur_tuples),
             qual))
-        total += qual
+        base += qual
 
     notes = []
     if has_filter and not qual_operators:
         notes.append(
             "计划里有 Filter 但没数出操作符个数 —— 该项按 0 计，"
             "复算值会偏低。这不是「没有过滤代价」，是「没数出来」。")
+
+    total = base
+    if dop > 1:
+        setup = PARALLEL_SETUP_COST * (dop - 1)
+        total = base / dop + setup
+        terms.append(Term("并行摊分（dop=%d）" % dop,
+                          "%.2f ÷ %d − %.2f" % (base, dop, base - base / dop),
+                          base / dop - base))
+        terms.append(Term("并行启动", "%g × (%d−1)" % (PARALLEL_SETUP_COST, dop),
+                          setup))
 
     return Estimate(
         node_type="Seq Scan",

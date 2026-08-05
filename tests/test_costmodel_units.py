@@ -154,3 +154,52 @@ def test_seq_scan_filter_without_operator_count_says_so():
 def test_seq_scan_rejects_negative_inputs():
     with pytest.raises(costmodel.ModelError):
         costmodel.seq_scan(-1, 1000, COST)
+
+
+def test_seq_scan_rejects_dop_below_one():
+    with pytest.raises(costmodel.ModelError):
+        costmodel.seq_scan(100, 1000, COST, dop=0)
+
+
+# --- 与 og5 实测对齐 ---------------------------------------------------------
+#
+# 下面九组数字全部来自 og5 上的 EXPLAIN (FORMAT JSON)，三张表 × dop∈{1,2,4}。
+# 它们是这份代价模型唯一的外部锚点 —— 公式抄错、并行公式反解错、页数取错
+# 来源，任何一样都会让这九条里的某几条红。
+#
+# 注意传进去的是**实时块数**和**密度换算后的行数**，不是 pg_class 的冻结值：
+# snap_summary_statement 冻结 49596 页 / 535865 行，实时 51359 页 / 554914 行。
+_OG5 = [
+    # (表, 实时块数, 换算行数, {dop: 实测 total})
+    ("loadtest.big", 585895, 9959954,
+     {1: 685494.54, 2: 343747.27, 4: 174373.64}),
+    ("snapshot.snap_summary_statement", 51359, 554914,
+     {1: 56908.14, 2: 29454.07, 4: 17227.03}),
+    ("demo_mem.big_orders", 45501, 2000938,
+     {1: 65510.38, 2: 33755.19, 4: 19377.60}),
+]
+
+
+@pytest.mark.parametrize("name,pages,tuples,by_dop", _OG5,
+                         ids=[r[0] for r in _OG5])
+@pytest.mark.parametrize("dop", [1, 2, 4])
+def test_matches_og5_measurements(name, pages, tuples, by_dop, dop):
+    est = costmodel.seq_scan(float(pages), float(tuples), COST, dop=dop)
+    # EXPLAIN 只给两位小数，所以按绝对值 0.01 比
+    assert est.total_cost == pytest.approx(by_dop[dop], abs=0.01)
+
+
+def test_dop_one_is_the_plain_postgresql_formula():
+    """dop=1 时不该有任何并行项 —— 退化成标准公式。"""
+    est = costmodel.seq_scan(585895.0, 9959954.0, COST, dop=1)
+    assert [t.label for t in est.terms] == ["顺序读页", "每行 CPU"]
+    assert est.total_cost == pytest.approx(685494.54, abs=0.01)
+
+
+def test_parallel_setup_is_charged_per_extra_thread():
+    """dop=2 收 1000，dop=4 收 3000 —— 是 1000×(dop−1)，不是 1000×dop。"""
+    base = costmodel.seq_scan(585895.0, 9959954.0, COST, dop=1).total_cost
+    two = costmodel.seq_scan(585895.0, 9959954.0, COST, dop=2).total_cost
+    four = costmodel.seq_scan(585895.0, 9959954.0, COST, dop=4).total_cost
+    assert two - base / 2 == pytest.approx(1000.0)
+    assert four - base / 4 == pytest.approx(3000.0)

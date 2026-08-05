@@ -34,6 +34,7 @@ _ROWS = [
     {"name": "block_size", "setting": "8192", "unit": ""},
     {"name": "effective_cache_size", "setting": "524288", "unit": "8kB"},
     {"name": "work_mem", "setting": "65536", "unit": "kB"},
+    {"name": "query_dop", "setting": "2", "unit": ""},
 ]
 
 
@@ -112,7 +113,17 @@ def test_describe_lists_every_constant():
     assert set(names) == {
         "seq_page_cost", "random_page_cost", "cpu_tuple_cost",
         "cpu_index_tuple_cost", "cpu_operator_cost", "block_size",
-        "effective_cache_size", "work_mem"}
+        "effective_cache_size", "work_mem", "query_dop"}
+
+
+def test_query_dop_is_parsed():
+    """openGauss 特有。缺了它当 1，实例上是 2 时每个复算值差一倍。"""
+    assert costconst.from_gucs(_ROWS).query_dop == 2
+
+
+def test_zero_query_dop_raises():
+    with pytest.raises(costconst.MissingConstant):
+        costconst.from_gucs(_rows_with("query_dop", setting="0"))
 
 
 # --- 失败路径 ----------------------------------------------------------------
@@ -120,7 +131,7 @@ def test_describe_lists_every_constant():
 @pytest.mark.parametrize("name", [
     "seq_page_cost", "random_page_cost", "cpu_tuple_cost",
     "cpu_index_tuple_cost", "cpu_operator_cost", "block_size",
-    "effective_cache_size", "work_mem",
+    "effective_cache_size", "work_mem", "query_dop",
 ])
 def test_missing_constant_raises_and_names_it(name):
     with pytest.raises(costconst.MissingConstant) as ei:

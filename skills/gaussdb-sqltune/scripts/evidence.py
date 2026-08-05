@@ -240,10 +240,25 @@ def scan_plan(plan_text: str) -> list[Finding]:
 class TableInfo:
     schema: str
     name: str
-    pages: int
-    tuples: int
+    pages: int          # pg_class.relpages —— 冻结在上次 ANALYZE/VACUUM
+    tuples: int         # pg_class.reltuples —— 同上
+    cur_pages: int      # 实时块数。**规划器用的是这个**，不是 pages
     kind: str
     size_mb: float
+
+    @property
+    def planner_tuples(self) -> float:
+        """规划器实际使用的行数估算。
+
+        estimate_rel_size(): density = reltuples/relpages，再乘实时块数。
+        表在上次 ANALYZE 之后长大了的话，这个值与 reltuples 不同 —— og5 上
+        实测 snap_summary_statement 冻结 535865 行、换算后 554914 行，
+        而 EXPLAIN 报的 Plan Rows 正是后者。
+        """
+        if self.pages <= 0:
+            return float(self.tuples)
+        density = float(self.tuples) / float(self.pages)
+        return float(round(density * self.cur_pages))
 
 
 @dataclass(frozen=True)
@@ -311,8 +326,8 @@ def collect_tables(runner, names: list[str]) -> list[TableInfo]:
         return []
     rows = runner.run(TABLES_SCRIPT, {"names": _quoted_list(names)})
     return [TableInfo(r["nspname"], r["relname"], _pages(r["relpages"]),
-                      as_int(r["reltuples"]), r["relkind"],
-                      as_float(r["size_mb"]))
+                      as_int(r["reltuples"]), _pages(r["curpages"]),
+                      r["relkind"], as_float(r["size_mb"]))
             for r in rows]
 
 
@@ -417,10 +432,14 @@ def evidence_report(ev: Evidence) -> str:
     for f in ev.findings:
         out += f"- **[{f.severity}] {f.kind}**: {f.detail} — {f.advice}\n"
 
-    t_rows = [[t.schema, t.name, str(t.pages), str(t.tuples), t.kind, f"{t.size_mb:.1f}"]
+    # PAGES/TUPLES 是冻结值，CUR_PAGES/PLANNER_TUPLES 是规划器实际用的那一份。
+    # 两组并排，才看得出「统计有多旧」和「旧到什么程度影响了估算」。
+    t_rows = [[t.schema, t.name, str(t.pages), str(t.tuples), str(t.cur_pages),
+               "%.0f" % t.planner_tuples, t.kind, f"{t.size_mb:.1f}"]
               for t in ev.tables]
     out += "\n## Tables\n\n" + render.table(
-        ["SCHEMA", "TABLE", "PAGES", "TUPLES", "KIND", "SIZE_MB"], t_rows)
+        ["SCHEMA", "TABLE", "PAGES", "TUPLES", "CUR_PAGES", "PLANNER_TUPLES",
+         "KIND", "SIZE_MB"], t_rows)
 
     # 紧跟在 Tables 后面：上面那张表里的 PAGES/TUPLES 是上次 ANALYZE 的快照，
     # 这一节给的是「那是多久以前」。分开看容易把冻结值当现值。
