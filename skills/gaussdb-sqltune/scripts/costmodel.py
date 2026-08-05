@@ -131,7 +131,7 @@ def index_pages_fetched(tuples_fetched: float, pages: float,
     if T > total:
         # 单表页数不该超过总页数；出现说明调用方传错了 total_table_pages
         raise ModelError(
-            "表页数 %g 超过参与竞争的总页数 %g —— total_table_pages "
+            "表页数 %.15g 超过参与竞争的总页数 %.15g —— total_table_pages "
             "应当是本查询涉及的所有表的页数之和，含本表。" % (T, total))
 
     b = float(effective_cache_size) * T / total
@@ -199,8 +199,8 @@ def seq_scan(cur_pages: float, cur_tuples: float, cost, qual_operators: int = 0,
     io = cost.seq_page_cost * cur_pages
     cpu = cost.cpu_tuple_cost * cur_tuples
     terms = [
-        Term("顺序读页", "%g × %g" % (cost.seq_page_cost, cur_pages), io),
-        Term("每行 CPU", "%g × %g" % (cost.cpu_tuple_cost, cur_tuples), cpu),
+        Term("顺序读页", "%.15g × %.15g" % (cost.seq_page_cost, cur_pages), io),
+        Term("每行 CPU", "%.15g × %.15g" % (cost.cpu_tuple_cost, cur_tuples), cpu),
     ]
     base = io + cpu
 
@@ -208,7 +208,7 @@ def seq_scan(cur_pages: float, cur_tuples: float, cost, qual_operators: int = 0,
         qual = cost.cpu_operator_cost * qual_operators * cur_tuples
         terms.append(Term(
             "过滤条件求值",
-            "%g × %d × %g" % (cost.cpu_operator_cost, qual_operators, cur_tuples),
+            "%.15g × %d × %.15g" % (cost.cpu_operator_cost, qual_operators, cur_tuples),
             qual))
         base += qual
 
@@ -217,15 +217,22 @@ def seq_scan(cur_pages: float, cur_tuples: float, cost, qual_operators: int = 0,
         notes.append(
             "计划里有 Filter 但没数出操作符个数 —— 该项按 0 计，"
             "复算值会偏低。这不是「没有过滤代价」，是「没数出来」。")
+    elif qual_operators:
+        notes.append(
+            "过滤条件的操作符个数（%d）是从计划文本里**数**出来的，不是解析出来的。"
+            "数错一个在这张表上就是 %.2f 的偏差。"
+            % (qual_operators, cost.cpu_operator_cost * cur_tuples))
 
     total = base
     if dop > 1:
         setup = PARALLEL_SETUP_COST * (dop - 1)
         total = base / dop + setup
-        terms.append(Term("并行摊分（dop=%d）" % dop,
-                          "%.2f ÷ %d − %.2f" % (base, dop, base - base / dop),
+        # 记成「扣除」而不是「÷dop 后的值」：这样各项之和仍等于合计，
+        # 报告里那张逐项表才能一路加下来对得上。
+        terms.append(Term("并行摊分：扣除 (1−1/%d)" % dop,
+                          "−(1−1/%d) × %.4f" % (dop, base),
                           base / dop - base))
-        terms.append(Term("并行启动", "%g × (%d−1)" % (PARALLEL_SETUP_COST, dop),
+        terms.append(Term("并行启动", "%.15g × (%d−1)" % (PARALLEL_SETUP_COST, dop),
                           setup))
 
     return Estimate(
@@ -273,9 +280,9 @@ def streaming_gather(child_total: float, child_startup: float,
         startup_cost=child_startup,
         total_cost=child_total + transfer,
         terms=[
-            Term("子节点", "%g" % child_total, child_total),
+            Term("子节点", "%.15g" % child_total, child_total),
             Term("汇总传输",
-                 "(%g×%d÷%d) × %g × (1+1/%d)"
+                 "(%.15g×%d÷%d) × %.15g × (1+1/%d)"
                  % (rows, width, cost.block_size, STREAM_TRANSFER_COST, dop),
                  transfer),
         ],
@@ -302,7 +309,7 @@ def estimate_tree_height(index_pages: float, index_tuples: float) -> int:
     fanout = index_tuples / index_pages
     if fanout <= 1.0:
         raise ModelError(
-            "索引每页平均条目数 %g ≤ 1（%g 条目 / %g 页）—— 索引膨胀到这个程度，"
+            "索引每页平均条目数 %.15g ≤ 1（%.15g 条目 / %.15g 页）—— 索引膨胀到这个程度，"
             "扇出模型不成立，树高估不出来。这本身就是个值得报出去的发现，"
             "不该在这里凑一个数糊过去。" % (fanout, index_tuples, index_pages))
     return max(0, math.ceil(math.log(index_tuples) / math.log(fanout)) - 1)
@@ -327,7 +334,7 @@ def index_scan(inp: IndexScanInput, cost, loop_count: float = 1.0,
     _require_range("correlation", inp.correlation, -1.0, 1.0)
     if inp.index_pages <= 0 or inp.index_tuples <= 0:
         raise ModelError(
-            "索引页数/条目数必须为正，取到 %g / %g。为 0 通常意味着索引建好后"
+            "索引页数/条目数必须为正，取到 %.15g / %.15g。为 0 通常意味着索引建好后"
             "还没 ANALYZE 过，此时任何复算都是无意义的。"
             % (inp.index_pages, inp.index_tuples))
 
@@ -344,18 +351,18 @@ def index_scan(inp: IndexScanInput, cost, loop_count: float = 1.0,
         fetched = index_pages_fetched(num_index_pages * loop_count, inp.index_pages,
                                       inp.index_pages, inp.total_table_pages, cache)
         index_io = fetched * cost.random_page_cost / loop_count
-        index_io_formula = "%g 页 × %g ÷ %g 次探测" % (
+        index_io_formula = "%.15g 页 × %.15g ÷ %.15g 次探测" % (
             fetched, cost.random_page_cost, loop_count)
     else:
         index_io = num_index_pages * cost.random_page_cost
-        index_io_formula = "%g × %g" % (num_index_pages, cost.random_page_cost)
+        index_io_formula = "%.15g × %.15g" % (num_index_pages, cost.random_page_cost)
     terms.append(Term("索引读页", index_io_formula, index_io))
 
     qual_op_cost = cost.cpu_operator_cost * inp.num_index_quals
     index_cpu = num_index_tuples * (cost.cpu_index_tuple_cost + qual_op_cost)
     terms.append(Term(
         "索引条目 CPU",
-        "%g × (%g + %g×%d)" % (num_index_tuples, cost.cpu_index_tuple_cost,
+        "%.15g × (%.15g + %.15g×%d)" % (num_index_tuples, cost.cpu_index_tuple_cost,
                                cost.cpu_operator_cost, inp.num_index_quals),
         index_cpu))
 
@@ -370,7 +377,7 @@ def index_scan(inp: IndexScanInput, cost, loop_count: float = 1.0,
         index_total += descent          # num_sa_scans = 1（简单等值/范围条件）
         terms.append(Term(
             "btree 下降比较",
-            "ceil(log2(%g)) × %g" % (inp.index_tuples, cost.cpu_operator_cost),
+            "ceil(log2(%.15g)) × %.15g" % (inp.index_tuples, cost.cpu_operator_cost),
             descent))
 
     if variant.btree_page_cpu_cost:
@@ -388,7 +395,7 @@ def index_scan(inp: IndexScanInput, cost, loop_count: float = 1.0,
         index_total += descent
         terms.append(Term(
             "索引层下降 CPU",
-            "(%d+1) × %g × %g" % (height, _PAGE_CPU_MULTIPLIER,
+            "(%d+1) × %.15g × %.15g" % (height, _PAGE_CPU_MULTIPLIER,
                                   cost.cpu_operator_cost),
             descent))
 
@@ -423,7 +430,7 @@ def index_scan(inp: IndexScanInput, cost, loop_count: float = 1.0,
 
     heap_cpu = cost.cpu_tuple_cost * tuples_fetched
     terms.append(Term(
-        "回表每行 CPU", "%g × %g" % (cost.cpu_tuple_cost, tuples_fetched), heap_cpu))
+        "回表每行 CPU", "%.15g × %.15g" % (cost.cpu_tuple_cost, tuples_fetched), heap_cpu))
 
     return Estimate(
         node_type="Index Scan",
@@ -473,12 +480,12 @@ def nested_loop(outer_total: float, outer_startup: float,
         startup_cost=startup,
         total_cost=source + cpu,
         terms=[
-            Term("外层扫描", "%g" % outer_total, outer_total),
-            Term("内层重复 %g 次" % outer_rows,
-                 "%g × %g" % (outer_rows, inner_total),
+            Term("外层扫描", "%.15g" % outer_total, outer_total),
+            Term("内层重复 %.15g 次" % outer_rows,
+                 "%.15g × %.15g" % (outer_rows, inner_total),
                  outer_rows * inner_total),
             Term("配对 CPU",
-                 "(%g + %g×%d) × %g×%g" % (cost.cpu_tuple_cost,
+                 "(%.15g + %.15g×%d) × %.15g×%.15g" % (cost.cpu_tuple_cost,
                                            cost.cpu_operator_cost, join_quals,
                                            outer_rows, inner_rows),
                  cpu),
@@ -533,14 +540,14 @@ def hash_join(outer_total: float, outer_startup: float,
                    + probe_hash + bucket + out_cpu,
         terms=[
             Term("内表建哈希表（含其扫描）",
-                 "%g + (%g+%g)×%g" % (inner_total, hash_cost,
+                 "%.15g + (%.15g+%.15g)×%.15g" % (inner_total, hash_cost,
                                       cost.cpu_tuple_cost, inner_rows),
                  inner_total + build),
-            Term("外表扫描", "%g" % outer_total, outer_total),
-            Term("探测算哈希", "%g × %g" % (hash_cost, outer_rows), probe_hash),
+            Term("外表扫描", "%.15g" % outer_total, outer_total),
+            Term("探测算哈希", "%.15g × %.15g" % (hash_cost, outer_rows), probe_hash),
             Term("桶内比较（均匀分布近似）",
-                 "%g × %g × 0.5" % (hash_cost, outer_rows), bucket),
-            Term("输出行 CPU", "%g × %g" % (cost.cpu_tuple_cost, output_rows),
+                 "%.15g × %.15g × 0.5" % (hash_cost, outer_rows), bucket),
+            Term("输出行 CPU", "%.15g × %.15g" % (cost.cpu_tuple_cost, output_rows),
                  out_cpu),
         ],
         approximate=True,
@@ -568,4 +575,4 @@ def _maxalign(width: int) -> int:
 
 def _require_range(name: str, value: float, low: float, high: float) -> None:
     if value is None or value != value or not (low <= value <= high):
-        raise ModelError("%s 应在 [%g, %g] 内，取到 %r" % (name, low, high, value))
+        raise ModelError("%s 应在 [%.15g, %.15g] 内，取到 %r" % (name, low, high, value))
