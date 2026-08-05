@@ -9,3 +9,11 @@ common/__pycache__/
 # grmp-mock 的本地状态与交付产物(可能含客户工号/dataIp,不入库)
 /docs/delivery/
 *.db
+.preferences
+.arts/continuous-build.json
+.arts/settings.json
+.jlsp/debugger/breakpoints.json
+.jlsp/debugger/expressions.json
+.jlsp/debugger/type_renderers.json
+.jlsp/debugger/views_state.json
+.jlsp/debugger/watches.json

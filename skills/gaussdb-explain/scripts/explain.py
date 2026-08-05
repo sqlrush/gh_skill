@@ -78,6 +78,16 @@ def require_direct_sql_path(conn_name: str) -> None:
 _DML_RE = re.compile(r"(?i)^\s*(insert|update|delete|merge)\b")
 _CTE_RE = re.compile(r"(?i)^\s*with\b")
 _CTE_DML_RE = re.compile(r"(?i)\b(insert|update|delete|merge)\b")
+_ANALYZE_RE = re.compile(r'\s+ANALYZE\s+(?:true|on|yes|1)', re.IGNORECASE)
+_DDL_RE = re.compile(
+        r'\b(?:'
+        r'CREATE\s+OR\s+REPLACE|'
+        r'CREATE|ALTER|DROP|TRUNCATE|'
+        r'RENAME|COMMENT|REINDEX'
+        r')\b',
+        re.IGNORECASE
+    )
+
 
 
 @dataclass(frozen=True)
@@ -93,6 +103,8 @@ def is_dml(sql_text: str) -> bool:
         return True
     return bool(_CTE_RE.search(sql_text) and _CTE_DML_RE.search(sql_text))
 
+def is_ddl(sql_text: str) -> bool:
+    return _DDL_RE.search(sql_text)
 
 def explain_via_script(runner, sql_text: str, analyze: bool) -> str:
     """走已注册的 EXPLAIN 模板。中间件与直连共用这条路。
@@ -206,21 +218,46 @@ def main(argv: Optional[list[str]] = None) -> int:
         else:
             print(f"error: {exc}", file=sys.stderr)
         return 2
-    except (ValueError, access.QueryError) as exc:
+    try:
+        db.set_statement_timeout(args.timeout)
+        # 校验一：存在ANALYZE关键字，则不执行
+        #if _ANALYZE_RE.search(sql_text):
+        #    print("The EXPLAIN execution plan should not contain the ANALYZE keyword.")
+        #    return 1
+
+        # 校验二：存在DML，则不执行
+        if is_dml(sql_text) :
+            print("DML keywords (INSERT/UPDATE/DELETE) detected in SQL statement.")
+            return 1   
+
+        # 校验三：存在DDL，则不执行
+        if is_ddl(sql_text):
+            print("DDL keywords (CREATE/REPLACE/ALTER/DROP/TRUNCATE/RENAME/COMMENT/REINDEX) detected in SQL statement.")
+            return 1
+        # 校验四：存在多SQL,则不执行。 检测 SQL 中是否存在多个分号（排除字符串和注释中的分号）    
+        sql_cleaned = re.sub(r"'.*?'", "''", sql_text, flags=re.DOTALL)  # 
+        sql_cleaned = re.sub(r'".*?"', '""', sql_cleaned, flags=re.DOTALL)  # 
+        sql_cleaned = re.sub(r'--.*?$', '', sql_cleaned, flags=re.MULTILINE)  # 
+        sql_cleaned = re.sub(r'/\*.*?\*/', '', sql_cleaned, flags=re.DOTALL)  # 
+        semicolon_count = sql_cleaned.count(';')
+        if semicolon_count > 1:
+            print("Multiple semicolons (;) detected, suspected of containing multiple SQL statements. Please review and modify before executing.")
+            return 1
+		plan = explain(db, sql_text, args.analyze)
+
+        findings = scan_plan(plan)
+        if args.format == "json":
+            print(json.dumps({"sql": sql_text, "plan": plan,
+                              "findings": [f.__dict__ for f in findings]},
+                             ensure_ascii=False, indent=2))
+        else:
+            print(explain_report(sql_text, plan, findings), end="")
+        return 0
+    except (ValueError, common.DBError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     finally:
-        if db is not None:
-            db.close()
-
-    findings = scan_plan(plan)
-    if args.format == "json":
-        print(json.dumps({"sql": sql_text, "plan": plan,
-                          "findings": [f.__dict__ for f in findings]},
-                         ensure_ascii=False, indent=2))
-    else:
-        print(explain_report(sql_text, plan, findings), end="")
-    return 0
+        db.close()
 
 
 if __name__ == "__main__":

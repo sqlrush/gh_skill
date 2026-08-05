@@ -1,7 +1,7 @@
-﻿---
+---
 name: gaussdb-slowsql
 version: 2.0.0
-description: "通过内置脚本发现 OpenGauss/GaussDB 慢 SQL。用户要查慢 SQL、找出超过某个耗时阈值的语句、查看高平均耗时语句，或先拿一批可调优的 SQL 候选时使用，包括“查慢 SQL”“找超过 1 秒的 SQL”“哪些 SQL 很慢”“给我慢 SQL 列表”等请求。触发后运行 scripts/slowsql.py，输出真实的慢 SQL 排名，不要只解释慢 SQL 的概念。"
+description: "通过内置脚本发现 OpenGauss/GaussDB 中超过指定耗时阈值的慢 SQL。用户要按阈值筛出慢语句、找出超过某个耗时门槛的 SQL、查看高平均耗时且3已超阈值的语句，或先拿一批可调优的 SQL 候选时使用，包括“查超过 1 秒的 SQL”“找出超阈值慢 SQL”“哪些 SQL 平均耗时超过 500ms”“给我超 1 秒的 SQL 列表”等请求。触发后运行 scripts/slowsql.py，输出真实的超阈值慢 SQL 结果，不要只解释慢 SQL 的概念。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
 metadata:
@@ -14,16 +14,16 @@ metadata:
 
 命中以下请求时，必须使用本 skill 并实际执行脚本，不要只做概念解释：
 
-- 用户要查慢 SQL 或慢 SQL 列表
+- 用户要按耗时阈值查慢 SQL 或慢 SQL 列表
 - 用户要找超过某个耗时阈值的 SQL
 - 用户要先拿一批候选 SQL 再继续 explain 或 tune
 
 典型触发语句：
 
-- 查慢 SQL
+- 查超过 1 秒的慢 SQL
 - 哪些 SQL 很慢
 - 找超过 1 秒的 SQL
-- 给我慢 SQL 列表
+- 给我超阈值慢 SQL 列表
 - 先看一下最慢的 SQL
 
 ## 工作流
@@ -38,7 +38,7 @@ metadata:
 
 3. 查找慢sql的结果如果超过设置的阈值`SLOWSQL_MAX_ROWS`，询问用户是否导出。或者输入`export=true`, 两者触发文件下载功能
    
-3. 总结最严重的语句（调用次数 × 平均耗时 = 影响）。可建议：
+4. 总结最严重的语句（调用次数 × 平均耗时 = 影响）。可建议：
    
    - `python3 {baseDir}/../gaussdb-sqlfetch/scripts/sqlfetch.py -c <conn> <SQL_ID>` 取完整 SQL 文本；
    - 对头部语句走 gaussdb-sqltune 工作流。

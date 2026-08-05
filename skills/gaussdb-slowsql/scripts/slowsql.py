@@ -92,26 +92,39 @@ def slow_sql(runner, threshold_ms: int, limit: int, begin_time: str, export: boo
     # === 新增逻辑：rows > 20 时保存为 CSV 文件 ===
     if len(rows) > SLOWSQL_MAX_ROWS or export:
         # 1. 定义 CSV 文件路径（可根据需要调整）
-        csv_dir = _HERE.parents[3] / "csv"
-        # 目录不存在就建。原先直接 open()，目录缺失时报的是
-        # 「No such file or directory: .../csv/slow_sql_export_xxx.csv」——
-        # 看不出是导出出了问题，像取数失败。而这条分支恰恰在「慢 SQL 多」时
-        # 才走到，也就是最需要这条命令的时候。
-        csv_dir.mkdir(parents=True, exist_ok=True)
-        csv_filename = csv_dir / f"slow_sql_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        #暂时关闭导出，仅当export开启时
+        if export:
+            csv_dir = _HERE.parents[3] / "csv"
+            # 目录不存在就建。原先直接 open()，目录缺失时报的是
+            # 「No such file or directory: .../csv/slow_sql_export_xxx.csv」——
+            # 看不出是导出出了问题，像取数失败。而这条分支恰恰在「慢 SQL 多」时
+            # 才走到，也就是最需要这条命令的时候。
+            csv_dir.mkdir(parents=True, exist_ok=True)
+            csv_filename = csv_dir / f"slow_sql_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
-        # 2. 定义 CSV 表头（根据你查询的字段调整）
-        headers = ['unique_sql_id', 'query', 'calls', 'avg_ms', 'total_sec',
-                   'cpu_sec', 'rows']
+	        # 2. 定义 CSV 表头（根据你查询的字段调整）
+	        headers = ['unique_sql_id', 'query', 'calls', 'avg_ms', 'total_sec',
+	                   'cpu_sec', 'rows']
 
-        # 3. 写入 CSV 文件
-        with open(csv_filename, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow(headers)
-            for r in rows:
-                writer.writerow([r[0], r[1], r[2], r[3], r[4], r[5], r[6]])
-        print(f"数据已导出到: {csv_filename} (共 {len(rows)} 行)")
-        last_index = min(SLOWSQL_MAX_ROWS, len(rows), 3)
+	        # 3. 写入 CSV 文件
+	        g_export_dir = os.environ.get('G_EXPORT_DIR')
+	        csv_dir = (g_export_dir if  g_export_dir else _HERE.parents[3] / "tmp") / "csv"
+	        if not csv_dir.exists():
+	            try:
+	               csv_dir.mkdir(parents=True, exist_ok=True)
+	            except PermissionError as e:
+	               print(f"权限不足: {e}")
+	            except OSError as e:
+	               print(f"创建目录失败: {e}")
+
+	        csv_filename = csv_dir / f"slow_sql_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+	        with open(csv_filename, 'w', newline='', encoding='utf-8') as f:
+	            writer = csv.writer(f)
+	            writer.writerow(headers)
+	            for r in rows:
+	                writer.writerow([r[0], r[1], r[2], r[3], r[4], r[5], r[6]])
+	        print(f"数据已导出到: {csv_filename} (共 {len(rows)} 行)")
+        last_index = min(SLOWSQL_MAX_ROWS, len(rows), 5)
         return [StmtRow(r[0], r[1], as_int(r[2]), as_float(r[3]), as_float(r[4]),
                         as_float(r[5]), as_int(r[6])) for r in rows[:last_index]]
     else:
