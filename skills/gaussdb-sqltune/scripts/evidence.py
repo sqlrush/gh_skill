@@ -280,6 +280,12 @@ class ColumnStat:
     null_frac: float
     avg_width: int
     correlation: Optional[float]
+    # MCV / 直方图按**原文**存：解析规则（引号里的逗号、前导点小数）归
+    # selectivity.py 管，采集层不掺和。这里存成解析后的结构，会让「怎么解析」
+    # 散到两个地方，而这类解析出错是安静的 —— 只会让选择率偏。
+    most_common_vals: str = ""
+    most_common_freqs: str = ""
+    histogram_bounds: str = ""
 
 
 @dataclass(frozen=True)
@@ -352,7 +358,10 @@ def collect_column_stats(runner, names: list[str]) -> list[ColumnStat]:
     # 协议把 NULL 与真空串渲染成同一个值，这里只能把空串一律当 NULL。
     return [ColumnStat(r["tablename"], r["attname"], as_float(r["n_distinct"]),
                        as_float(r["null_frac"]), as_int(r["avg_width"]),
-                       as_float(r["correlation"], None))
+                       as_float(r["correlation"], None),
+                       str(r.get("most_common_vals", "") or ""),
+                       str(r.get("most_common_freqs", "") or ""),
+                       str(r.get("histogram_bounds", "") or ""))
             for r in rows]
 
 
