@@ -68,6 +68,22 @@ _GROUPS = {
         "proctune/db_version.yaml",
         "sqltune/version.yaml",
     ],
+    # EXPLAIN 模板 —— 三个 skill 各一份。这几条是注入面，分叉的后果比别的
+    # 严重得多：在一份里补了防护、另外两份还敞着，而防护本身看起来是有的。
+    "执行计划 TEXT": [
+        "explain/plan_text.yaml",
+        "sqltune/plan_text.yaml",
+        "proctune/plan_text.yaml",
+    ],
+    "执行计划 TEXT + ANALYZE": [
+        "explain/plan_text_analyze.yaml",
+        "sqltune/plan_text_analyze.yaml",
+        "proctune/plan_text_analyze.yaml",
+    ],
+    "执行计划 JSON": [
+        "sqltune/plan_json.yaml",
+        "proctune/plan_json.yaml",
+    ],
 }
 
 

@@ -31,6 +31,10 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
 
 import common  # noqa: E402
 from common import access  # noqa: E402
+from common.grmp.statement import (  # noqa: E402
+    ExplainNotAllowed,
+    ensure_explainable,
+)
 import render  # noqa: E402
 from evidence import Evidence, collect, evidence_report  # noqa: E402
 from hypoindex import MIN_SPEEDUP, IndexCandidate, verify_indexes  # noqa: E402
@@ -79,6 +83,24 @@ class TuneResult:
     index_verify_note: str = ""
 
 
+_NO_HYPOPG_NOTE = (
+    "**索引建议未经验证。** 本次连接不提供跨语句的持久会话（中间件的白名单模型，"
+    "或每条语句起独立子进程的 gsql），而 hypopg 虚拟索引必须与随后的 EXPLAIN "
+    "落在同一条连接里 —— 跨调用会不报错地得出「加这个索引没用」的错误结论。\n"
+    "下面的索引建议来自表/列统计与执行计划的推断，**加索引前请人工验证**；"
+    "需要验证背书请改用 driver: pg8000 的连接重跑。"
+)
+
+
+def _guard_sql(sql_text: str, analyze: bool) -> None:
+    """没有会话时，用户 SQL 要走 EXPLAIN 模板 —— 先过注入守卫。
+
+    DML + --analyze 在这条路上**不可用**，必须报错而不是悄悄不 analyze：
+    静默降级会让用户以为拿到的是实际执行的计划，实测两者能差 2.3 倍。
+    """
+    ensure_explainable(sql_text, analyze=analyze)
+
+
 def _tune(runner, db, *, original_sql: str, binds: list[str], do_analyze: bool,
           sql_id: str = "", source: str = "", schema: str = "") -> TuneResult:
     sub = substitute(original_sql, binds)
@@ -86,12 +108,17 @@ def _tune(runner, db, *, original_sql: str, binds: list[str], do_analyze: bool,
 
     verified: list[IndexCandidate] = []
     note = ""
-    try:
-        # db 是原始会话：hypopg 的虚拟索引必须与随后的 EXPLAIN 同处一条连接
-        verified = verify_indexes(db, sub.sql, MIN_SPEEDUP)
-    except Exception as exc:  # best-effort: degrade gracefully (non-fatal)
-        note = ("索引验证不可用（OpenGauss hypopg/gs_index_advise 未启用或不支持）："
-                + str(exc))
+    if db is None:
+        # 没有原始会话 —— hypopg 的虚拟索引必须与随后的 EXPLAIN 同处一条连接，
+        # 跨调用会**不报错地**得出「加这个索引没用」的错误结论。所以不做，
+        # 并且把这件事写进报告：本次的索引建议没有验证背书。
+        note = _NO_HYPOPG_NOTE
+    else:
+        try:
+            verified = verify_indexes(db, sub.sql, MIN_SPEEDUP)
+        except Exception as exc:  # best-effort: degrade gracefully (non-fatal)
+            note = ("索引验证不可用（OpenGauss hypopg/gs_index_advise 未启用或不支持）："
+                    + str(exc))
 
     return TuneResult(original_sql=original_sql, substitution=sub, evidence=ev,
                       sql_id=sql_id, source=source, schema=schema,
@@ -192,7 +219,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--analyze", action="store_true",
                     help="EXPLAIN ANALYZE (executes the SQL; DML wrapped in rollback)")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
-    ap.add_argument("--timeout", type=int, default=30, help="statement timeout (s)")
+    ap.add_argument("--timeout", type=int, default=None, help="statement timeout (s)")
     args = ap.parse_args(argv)
 
     has_id = args.sql_id is not None
@@ -207,20 +234,27 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not sql_text.strip():
             ap.error("empty SQL on stdin")
 
+    db = None
     try:
-        runner = access.for_conn(args.conn)
-        # 会话在此显式索取：拿不到就当场停，绝不降级成「没有计划的证据包」。
-        # read_only 与迁移前一致 —— --analyze 要真执行 SQL（DML 包在回滚事务里）。
-        db = access.session_for(args.conn, read_only=not args.analyze)
-    except access.SessionUnavailable as exc:
-        print(f"error: {exc}\n{_SESSION_REQUIRED}", file=sys.stderr)
-        return 2
+        runner = access.for_conn(args.conn, timeout=args.timeout)
+        try:
+            # 有会话就用 —— 索引验证只有这条路
+            db = access.session_for(args.conn, read_only=not args.analyze)
+        except access.SessionUnavailable:
+            # 没有会话不等于什么都做不了：证据与执行计划照采，
+            # 只是索引建议拿不到 hypopg 背书。降级的事实写进报告，不隐瞒。
+            db = None
+            if not has_id:
+                _guard_sql(sql_text, args.analyze)
     except (common.ConfigError, common.CredentialError, common.DBError,
-            access.AccessError) as exc:
+            ExplainNotAllowed, access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     try:
-        db.set_statement_timeout(args.timeout)
+        if db is not None:
+            db.set_statement_timeout(
+                args.timeout if args.timeout is not None
+                else access.DEFAULT_SKILL_TIMEOUT_SECONDS)
         if has_id:
             tr = tune_by_id(runner, db, args.sql_id, args.bind, args.analyze)
         else:
@@ -244,7 +278,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     finally:
-        db.close()
+        if db is not None:
+            db.close()
 
 
 if __name__ == "__main__":

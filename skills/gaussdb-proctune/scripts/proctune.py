@@ -153,6 +153,15 @@ def proc_collect(runner, qualified: str) -> ProcEvidence:
     )
 
 
+_NO_HYPOPG_NOTE = (
+    "**索引建议未经验证。** 本次连接不提供跨语句的持久会话（中间件的白名单模型，"
+    "或每条语句起独立子进程的 gsql），而 hypopg 虚拟索引必须与随后的 EXPLAIN "
+    "落在同一条连接里 —— 跨调用会不报错地得出「加这个索引没用」的错误结论。\n"
+    "下面的索引建议来自表/列统计与执行计划的推断，**加索引前请人工验证**；"
+    "需要验证背书请改用 driver: pg8000 的连接重跑。"
+)
+
+
 def tune_cursors(runner, db, qualified: str,
                  only: list[str], binds: dict) -> CursorTuneResult:
     """runner 取固定查询；db 是原始会话，EXPLAIN 与 hypopg 两段都要用它。
@@ -196,10 +205,16 @@ def tune_cursors(runner, db, qualified: str,
             continue
 
         verified, note = [], ""
-        try:
-            verified = verify_indexes(db, sub.sql, MIN_SPEEDUP)
-        except Exception as exc:
-            note = "索引验证不可用（hypopg/gs_index_advise 未启用或不支持）：" + str(exc)
+        if db is None:
+            # 没有原始会话 —— hypopg 虚拟索引必须与随后的 EXPLAIN 同处一条连接，
+            # 跨调用会**不报错地**得出「加这个索引没用」的错误结论。
+            note = _NO_HYPOPG_NOTE
+        else:
+            try:
+                verified = verify_indexes(db, sub.sql, MIN_SPEEDUP)
+            except Exception as exc:
+                note = ("索引验证不可用（hypopg/gs_index_advise 未启用或不支持）："
+                        + str(exc))
 
         cursors.append(CursorEvidence(
             name=cur.name, kind=cur.kind, orig_sql=cur.select_sql,
@@ -350,7 +365,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     pc.add_argument("proc", help="schema.proc")
     pc.add_argument("-c", "--conn", required=True)
     pc.add_argument("--format", choices=["markdown", "json"], default="markdown")
-    pc.add_argument("--timeout", type=int, default=30)
+    pc.add_argument("--timeout", type=int, default=None)
 
     pt = sub.add_parser("tune-cursor", help="tune read-only cursor SELECTs")
     pt.add_argument("proc", help="schema.proc")
@@ -360,7 +375,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     pt.add_argument("--bind", action="append", default=[],
                     help="override a cursor variable: var=value (repeatable)")
     pt.add_argument("--format", choices=["markdown", "json"], default="markdown")
-    pt.add_argument("--timeout", type=int, default=30)
+    pt.add_argument("--timeout", type=int, default=None)
 
     args = ap.parse_args(argv)
 
@@ -374,19 +389,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     needs_session = args.cmd == "tune-cursor"
     db = None
     try:
-        runner = access.for_conn(args.conn)
+        runner = access.for_conn(args.conn, timeout=args.timeout)
         if needs_session:
-            db = access.session_for(args.conn)
-    except access.SessionUnavailable as exc:
-        print(f"error: {exc}\n{_SESSION_REQUIRED}", file=sys.stderr)
-        return 2
+            try:
+                db = access.session_for(args.conn)
+            except access.SessionUnavailable:
+                # 没有会话不等于什么都做不了：证据与执行计划照采，
+                # 只是索引建议拿不到 hypopg 背书。降级写进报告，不隐瞒。
+                db = None
     except (common.ConfigError, common.CredentialError,
             common.DBError, access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     try:
         if db is not None:
-            db.set_statement_timeout(args.timeout)
+            db.set_statement_timeout(
+                args.timeout if args.timeout is not None
+                else access.DEFAULT_SKILL_TIMEOUT_SECONDS)
         if args.cmd == "collect":
             pe = proc_collect(runner, args.proc)
             out = _collect_json(pe) if args.format == "json" else proc_collect_report(pe)

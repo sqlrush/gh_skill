@@ -27,6 +27,10 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
 
 import common  # noqa: E402
 from common import access  # noqa: E402
+from common.grmp.statement import (  # noqa: E402
+    ExplainNotAllowed,
+    ensure_explainable,
+)
 import render  # noqa: E402
 
 # 本 skill 唯一的查询点就是「对用户给的任意 SQL 做 EXPLAIN」。
@@ -90,6 +94,17 @@ def is_dml(sql_text: str) -> bool:
     return bool(_CTE_RE.search(sql_text) and _CTE_DML_RE.search(sql_text))
 
 
+def explain_via_script(runner, sql_text: str, analyze: bool) -> str:
+    """走已注册的 EXPLAIN 模板。中间件与直连共用这条路。
+
+    调用前必须先过 ensure_explainable() —— 模板是文本替换，参数位就是注入面。
+    """
+    script = "explain.plan_text_analyze" if analyze else "explain.plan_text"
+    rows = runner.run(script, {"sql": sql_text})
+    # 结果行是列名到值的字典；EXPLAIN 只有一列，取那一列的值
+    return "\n".join(str(next(iter(r.values()), "")) for r in rows)
+
+
 def explain(db, sql_text: str, analyze: bool) -> str:
     stmt = (f"EXPLAIN (ANALYZE {str(analyze).lower()}, "
             f"BUFFERS {str(analyze).lower()}, FORMAT TEXT) {sql_text}")
@@ -148,40 +163,57 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--analyze", action="store_true",
                     help="EXPLAIN ANALYZE (executes; DML wrapped in rollback)")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
-    ap.add_argument("--timeout", type=int, default=30)
+    ap.add_argument("--timeout", type=int, default=None)
     args = ap.parse_args(argv)
 
     sql_text = sys.stdin.read()
     if not sql_text.strip():
         ap.error("empty SQL on stdin")
 
+    # DML 的 EXPLAIN ANALYZE 要把语句包在回滚事务里真执行 —— 模板做不到
+    # （多语句回滚包装实测可被一个 `--` 注释绕过），只能走直连的原始会话。
+    needs_rollback = args.analyze and is_dml(sql_text)
+
     try:
-        # 先判路：grmp 走不了任意 SQL，要在建连之前就说清楚原因，
-        # 否则错误会表现成「中间件报脚本不存在」，排查方向被带偏。
-        require_direct_sql_path(args.conn)
-        # 建连交给连接模块 —— skill 不该知道怎么连库，否则客户换访问方式时
-        # 这里还得单独改一遍，「只改连接模块」就不成立了。
-        db = access.connection_for(args.conn, read_only=not args.analyze)
+        ensure_explainable(sql_text, analyze=args.analyze and not needs_rollback)
+    except ExplainNotAllowed as exc:
+        if not needs_rollback:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
+    db = None
+    try:
+        if needs_rollback:
+            # 走原始会话。中间件给不了，会在这里明确报错而不是静默降级 ——
+            # 降级成「不 analyze」会让用户拿到估算计划却以为是实际计划，
+            # 实测两者能差 2.3 倍。
+            db = access.connection_for(args.conn, read_only=False)
+            db.set_statement_timeout(
+                args.timeout if args.timeout is not None
+                else access.DEFAULT_SKILL_TIMEOUT_SECONDS)
+            plan = explain(db, sql_text, True)
+        else:
+            runner = access.for_conn(args.conn, timeout=args.timeout)
+            plan = explain_via_script(runner, sql_text, args.analyze)
     except (common.ConfigError, common.CredentialError, common.DBError,
             access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    try:
-        db.set_statement_timeout(args.timeout)
-        plan = explain(db, sql_text, args.analyze)
-        findings = scan_plan(plan)
-        if args.format == "json":
-            print(json.dumps({"sql": sql_text, "plan": plan,
-                              "findings": [f.__dict__ for f in findings]},
-                             ensure_ascii=False, indent=2))
-        else:
-            print(explain_report(sql_text, plan, findings), end="")
-        return 0
-    except (ValueError, common.DBError) as exc:
+    except (ValueError, access.QueryError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     finally:
-        db.close()
+        if db is not None:
+            db.close()
+
+    findings = scan_plan(plan)
+    if args.format == "json":
+        print(json.dumps({"sql": sql_text, "plan": plan,
+                          "findings": [f.__dict__ for f in findings]},
+                         ensure_ascii=False, indent=2))
+    else:
+        print(explain_report(sql_text, plan, findings), end="")
+    return 0
 
 
 if __name__ == "__main__":

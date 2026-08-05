@@ -1,0 +1,20 @@
+# EXPLAIN 用户临时给的 SQL。
+#
+# 白名单模型下这是唯一的路:注册模板,用户 SQL 落进 {{sql}} 参数位。
+# 中间件是**文本替换**不是绑定变量,所以这个参数位就是注入面。三道防线:
+#
+#   1. 调用前 common.grmp.statement.ensure_explainable() 校验单语句 + 只读
+#   2. readonly: true —— 只读会话执行,DML/DDL 被数据库本身挡掉
+#   3. 模板里 ANALYZE 写死为 true —— 用户 SQL **会被真执行**,
+#      所以只受理只读语句(第 1 道防线保证),写操作另有只读会话兜底
+#
+# 实测注入载荷全部被拒:多语句 DROP、直接 DDL、括号逃逸。
+name: explain.plan_text_analyze
+description: 取一条只读 SQL 的实际执行计划（TEXT 格式，会真执行该 SQL）
+readonly: true
+sql: |
+  EXPLAIN (ANALYZE true, BUFFERS true, FORMAT TEXT) {{sql}}
+params:
+  - key: sql
+    type: String
+    description: 待分析的只读 SQL（单条语句；写语句不受理）

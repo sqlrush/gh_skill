@@ -141,6 +141,16 @@ def is_dml(sql_text: str) -> bool:
     return bool(_CTE_RE.search(sql_text) and _CTE_DML_RE.search(sql_text))
 
 
+def explain_via_script(runner, sql_text: str, analyze: bool) -> str:
+    """走已注册的 EXPLAIN 模板 —— 没有原始会话时用这条。
+
+    调用前必须先过 ensure_explainable()：模板是文本替换，参数位就是注入面。
+    """
+    script = "sqltune.plan_text_analyze" if analyze else "sqltune.plan_text"
+    rows = runner.run(script, {"sql": sql_text})
+    return "\n".join(str(next(iter(r.values()), "")) for r in rows)
+
+
 def explain(db, sql_text: str, analyze: bool) -> str:
     """EXPLAIN in TEXT format; analyze executes (DML wrapped in rollback).
 
@@ -297,10 +307,18 @@ class Evidence:
 
 
 def collect(runner, db, sql_text: str, do_analyze: bool) -> Evidence:
-    """runner 取固定查询，db（原始会话）只用来 EXPLAIN 用户的任意 SQL。"""
+    """runner 取固定查询；EXPLAIN 用户 SQL 视有无原始会话走两条路。
+
+    db 为 None 表示这条连接给不了持久会话（中间件、或每语句起子进程的 gsql）。
+    这时 EXPLAIN 走已注册模板 —— 单条 EXPLAIN 本来就零状态，不需要会话。
+    真正需要会话的只有 hypopg 索引验证，由调用方跳过并标注。
+    """
     rows = runner.run(VERSION_SCRIPT)
     version = rows[0]["version"] if rows else ""
-    plan = explain(db, sql_text, do_analyze)
+    if db is None:
+        plan = explain_via_script(runner, sql_text, do_analyze)
+    else:
+        plan = explain(db, sql_text, do_analyze)
     names = extract_tables(sql_text)
     return Evidence(
         sql=sql_text,

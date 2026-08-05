@@ -67,3 +67,54 @@ def is_read_only(sql: str) -> bool:
     if not parts:
         return True
     return all(leading_keyword(p) in READ_ONLY_STARTERS for p in parts)
+
+
+class ExplainNotAllowed(Exception):
+    """这条 SQL 不能递进 EXPLAIN 模板。"""
+
+
+def ensure_explainable(sql: str, analyze: bool = False) -> None:
+    """把用户 SQL 递进 `EXPLAIN (...) {{sql}}` 模板前的守卫。
+
+    白名单模型下，EXPLAIN 用户临时给的 SQL 只有这一条路:注册一条模板，
+    用户 SQL 落进参数位。而中间件是**文本替换**不是绑定变量，参数位就是
+    注入面 —— 本函数是第一道防线。
+
+    三道防线缺一不可:
+      1. 这里:单语句 + 只读
+      2. 脚本标 readonly: true，只读会话里执行 —— DML/DDL 被数据库挡掉
+      3. 模板里 ANALYZE 写死 —— 不 analyze 时用户 SQL 根本不被执行
+
+    **为什么不放行 DML 的 EXPLAIN ANALYZE**:那要 `BEGIN; ...; ROLLBACK;`
+    多语句模板加可写会话。实测载荷
+
+        SELECT 1 AS n; COMMIT; CREATE TABLE x(i int); --
+
+    用一个 `--` 注释掉模板末尾的 ROLLBACK，表真建出来了 —— 回滚包装拦不住。
+    而那条脚本必须可写，逃出来就是带写权限的任意 SQL 通道。收益配不上代价。
+
+    analyze 参数在这里只影响错误措辞:只读 SQL 两种都放行，非只读两种都拒。
+    留着它是为了让调用方的意图出现在调用点上。
+    """
+    if not sql or not sql.strip():
+        raise ExplainNotAllowed("SQL 为空。")
+
+    statements = split_statements(sql)
+    if not statements:
+        raise ExplainNotAllowed("SQL 里没有可执行的语句（只有注释或空白）。")
+    if len(statements) > 1:
+        raise ExplainNotAllowed(
+            "SQL 含多条语句（%d 条），不能递进 EXPLAIN 模板。\n"
+            "模板是文本替换，多语句会整串拼进去 —— 实测能用一个 `--` "
+            "注释掉模板尾部，绕过原本的限制。请一次只给一条语句。"
+            % len(statements)
+        )
+
+    if not is_read_only(statements[0]):
+        raise ExplainNotAllowed(
+            "只受理只读语句，本次是 %s。\n"
+            "EXPLAIN 一条写语句需要把它包在回滚事务里真执行，而回滚包装"
+            "实测可被注释绕过，那条通道等于开放写权限。\n"
+            "写语句的执行计划请走直连（driver: pg8000）。"
+            % (leading_keyword(statements[0]).upper() or "非查询语句")
+        )

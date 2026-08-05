@@ -301,7 +301,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--index", action="append", default=[],
                     help="explicit CREATE INDEX DDL to combine (repeatable)")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
-    ap.add_argument("--timeout", type=int, default=30, help="statement timeout (s)")
+    ap.add_argument("--timeout", type=int, default=None, help="statement timeout (s)")
     args = ap.parse_args(argv)
 
     if not args.original.strip():
@@ -323,7 +323,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     try:
-        db.set_statement_timeout(args.timeout)
+        db.set_statement_timeout(
+                args.timeout if args.timeout is not None
+                else access.DEFAULT_SKILL_TIMEOUT_SECONDS)
         if combined:
             cv = verify_combined(db, args.original, args.rewrite, args.index,
                                  args.auto_index, MIN_SPEEDUP, not args.no_equiv)
