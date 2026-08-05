@@ -14,6 +14,7 @@ import re
 from typing import List, Optional
 
 import costmodel
+import selectivity
 from costmodel import ModelError
 from plantree import PlanNode
 
@@ -114,9 +115,60 @@ def make_resolver(catalog, cost, variant: Optional[costmodel.Variant] = None):
                 num_hashclauses=_count_clauses(node.raw.get("Hash Cond", "")),
                 join_quals=count_qual_operators(node.raw.get("Join Filter", "")))
 
+        if kind == "Merge Join":
+            outer, inner = _two_children(node, children)
+            return costmodel.merge_join(
+                outer_total=outer.total_cost, outer_startup=outer.startup_cost,
+                inner_total=inner.total_cost, inner_startup=inner.startup_cost,
+                outer_rows=outer.plan_rows, inner_rows=inner.plan_rows,
+                output_rows=node.plan_rows,
+                fractions=_merge_fractions(node, outer, inner, catalog),
+                cost=cost,
+                num_merge_clauses=_count_clauses(node.raw.get("Merge Cond", "")),
+                join_quals=count_qual_operators(node.raw.get("Join Filter", "")))
+
         return None      # 未建模
 
     return resolve
+
+
+_MERGE_COND_RE = re.compile(
+    r"\(?\s*(?:([A-Za-z_][A-Za-z0-9_]*)\.)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+    r"(?:([A-Za-z_][A-Za-z0-9_]*)\.)?([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _merge_fractions(node, outer, inner, catalog):
+    """从 Merge Cond 找出两侧的连接列，取直方图算扫描比例。
+
+    按**别名**把条件的左右两半对到两个子节点上 —— 不能按出现顺序：
+    `Merge Cond: (r.id = o.id)` 里左半可能对应计划里的内层。对反了会把两侧的
+    比例互换，而互换后仍是两个合法的比例，代价照样算得出来，只是错的。
+    """
+    match = _MERGE_COND_RE.search(node.raw.get("Merge Cond", "") or "")
+    if not match:
+        raise ModelError("Merge Cond 解析不出连接列：%r"
+                         % node.raw.get("Merge Cond", ""))
+    left_alias, left_col, right_alias, right_col = match.groups()
+
+    def side_for(child):
+        alias = (child.alias or child.relation or "").lower()
+        if left_alias and left_alias.lower() == alias:
+            return left_col
+        if right_alias and right_alias.lower() == alias:
+            return right_col
+        raise ModelError(
+            "Merge Cond 里的别名（%s / %s）与子节点 %r 对不上 —— "
+            "对错边会把两侧扫描比例互换，而互换后仍是两个合法的数字。"
+            % (left_alias, right_alias, alias))
+
+    stats = []
+    for child in (outer, inner):
+        if not child.relation:
+            raise ModelError("归并的一侧不是基表扫描（%s），取不到连接列统计"
+                             % child.node_type)
+        stats.append(selectivity.from_row(
+            catalog.column(child.relation, side_for(child))))
+    return selectivity.merge_scan_fractions(stats[0], stats[1])
 
 
 # --- 内部 --------------------------------------------------------------------

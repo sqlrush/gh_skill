@@ -103,9 +103,14 @@ def test_seq_scan_is_dispatched_with_dop():
     assert est.total_cost == pytest.approx(expected.total_cost)
 
 
-def test_unknown_operator_returns_none():
-    """未建模返回 None，由校准闸计入覆盖率 —— 不是抛错让整棵树作废。"""
-    assert resolve.make_resolver(_catalog(), COST)(_node("Merge Join"), []) is None
+@pytest.mark.parametrize("kind", ["Bitmap Heap Scan", "Materialize",
+                                  "WindowAgg", "CTE Scan"])
+def test_unknown_operator_returns_none(kind):
+    """未建模返回 None，由校准闸计入覆盖率 —— 不是抛错让整棵树作废。
+
+    （原先这条拿 Merge Join 当例子，它现在建模了。挑几个确实还没做的。）
+    """
+    assert resolve.make_resolver(_catalog(), COST)(_node(kind), []) is None
 
 
 def test_scan_without_relation_name_refuses():

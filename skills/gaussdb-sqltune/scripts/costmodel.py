@@ -556,6 +556,72 @@ def hash_join(outer_total: float, outer_startup: float,
     )
 
 
+def merge_join(outer_total: float, outer_startup: float,
+               inner_total: float, inner_startup: float,
+               outer_rows: float, inner_rows: float, output_rows: float,
+               fractions, cost, num_merge_clauses: int = 1,
+               join_quals: int = 0) -> Estimate:
+    """归并连接。costsize.c: initial_cost_mergejoin + final_cost_mergejoin。
+
+        startup = 外.startup + 外run×外起始比 + 内.startup + 内run×内起始比
+        run     = 外run×(外结束比−外起始比) + 内run×(内结束比−内起始比)
+        cpu     = cpu_operator_cost×归并列数 × (实扫外行数 + 实扫内行数)
+                + (cpu_tuple_cost + cpu_operator_cost×附加条件数) × 输出行数
+
+    **关键在那几个比例。** 归并一边耗尽就停，两侧都不一定扫完 —— 所以
+    Merge Join 的总代价**可以小于两个子节点代价之和**。og5 上实测过：
+    203706.53 < 132100.42 + 79262.15。不折算就会高估，而高估的幅度取决于
+    两侧键值范围重合多少，猜不出来。比例由 selectivity.merge_scan_fractions
+    从两侧直方图算，og5 上三个用例总代价 0.0000% 吻合。
+
+    **startup 的拆分不精确**（实测 11.68，本式给 8.58），但 total 精确。
+    校准闸比的是 total，所以够用；要拿 startup 做判断的话得先补齐
+    outer_skip_rows 那一项。
+    """
+    if fractions is None:
+        raise ModelError(
+            "拿不到两侧连接键的数值直方图，算不出归并的扫描比例。"
+            "退化成「两边都全扫」会在键值范围不重合时高估代价，"
+            "而高估多少取决于数据 —— 所以判为未建模。")
+    for name in ("outer_start", "outer_end", "inner_start", "inner_end"):
+        _require_range(name, getattr(fractions, name), 0.0, 1.0)
+
+    outer_run = outer_total - outer_startup
+    inner_run = inner_total - inner_startup
+
+    startup = (outer_startup + outer_run * fractions.outer_start
+               + inner_startup + inner_run * fractions.inner_start)
+    run = (outer_run * (fractions.outer_end - fractions.outer_start)
+           + inner_run * (fractions.inner_end - fractions.inner_start))
+
+    scanned_outer = clamp_row_est(outer_rows * fractions.outer_end)
+    scanned_inner = clamp_row_est(inner_rows * fractions.inner_end)
+    merge_qual = cost.cpu_operator_cost * num_merge_clauses
+    compare = merge_qual * (scanned_outer + scanned_inner)
+    emit = (cost.cpu_tuple_cost
+            + cost.cpu_operator_cost * join_quals) * output_rows
+
+    return Estimate(
+        node_type="Merge Join",
+        startup_cost=startup,
+        total_cost=startup + run + compare + emit,
+        terms=[
+            Term("外层扫描（折算 %.4f）" % fractions.outer_end,
+                 "%.4f × %.4f" % (outer_run, fractions.outer_end),
+                 outer_startup + outer_run * fractions.outer_end),
+            Term("内层扫描（折算 %.4f）" % fractions.inner_end,
+                 "%.4f × %.4f" % (inner_run, fractions.inner_end),
+                 inner_startup + inner_run * fractions.inner_end),
+            Term("归并比较",
+                 "%.15g × (%.15g + %.15g)" % (merge_qual, scanned_outer,
+                                              scanned_inner),
+                 compare),
+            Term("输出行 CPU",
+                 "%.15g × %.15g" % (cost.cpu_tuple_cost, output_rows), emit),
+        ],
+    )
+
+
 def relation_byte_size(tuples: float, width: int) -> float:
     """关系在内存里占多少字节。costsize.c 同名函数。
 

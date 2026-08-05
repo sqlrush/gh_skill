@@ -186,6 +186,85 @@ def index_probe(stat: ColumnStats, ntuples: float) -> float:
     return _clamp((1.0 - stat.null_frac) / stat.distinct_count(ntuples))
 
 
+# --- 直方图 ------------------------------------------------------------------
+
+def numeric_histogram(stat: ColumnStats) -> List[float]:
+    """把直方图边界解析成数值。非数值列返回空列表。
+
+    只处理数值型：字符串、日期的比较要走各自的排序规则，拿 float() 硬转会
+    悄悄得到一个错的顺序。返回空让调用方拒绝，比转出个错的强。
+    """
+    out = []
+    for item in stat.histogram:
+        try:
+            out.append(float(item))
+        except (TypeError, ValueError):
+            return []
+    return out
+
+
+def fraction_le(histogram: List[float], value: float) -> Optional[float]:
+    """直方图里取值 ≤ value 的行占多少。selfuncs.c: ineq_histogram_selectivity。
+
+    直方图是**等频**的：N+1 个边界划出 N 个桶，每桶各占 1/N 的行。所以
+    位置就是比例，桶内按线性插值。
+
+    边界不足两个时返回 None —— 一个点画不出分布，不能当成「全在这一边」。
+    """
+    if len(histogram) < 2:
+        return None
+    buckets = len(histogram) - 1
+    if value <= histogram[0]:
+        return 0.0
+    if value >= histogram[-1]:
+        return 1.0
+    for i in range(buckets):
+        if value < histogram[i + 1]:
+            span = histogram[i + 1] - histogram[i]
+            within = (value - histogram[i]) / span if span else 0.0
+            return _clamp((i + within) / buckets)
+    return 1.0
+
+
+@dataclass(frozen=True)
+class MergeScanFractions:
+    """归并连接两侧各自要扫到多少 —— selfuncs.c: mergejoinscansel。
+
+    归并一边耗尽就停，所以两侧都不一定扫完。**这是父节点代价可能小于
+    子节点代价之和的原因**，也是复现 Merge Join 代价绕不过去的一步。
+    """
+    outer_start: float
+    outer_end: float
+    inner_start: float
+    inner_end: float
+
+
+def merge_scan_fractions(outer: ColumnStats, inner: ColumnStats
+                         ) -> Optional[MergeScanFractions]:
+    """两侧连接键的直方图 → 各自的起止扫描比例。
+
+        外层扫到  = 外层中 ≤ 内层最大值 的比例
+        外层跳过  = 外层中 <  内层最小值 的比例
+        内层同理，两边互换
+
+    任一侧拿不到可用的数值直方图就返回 None —— 调用方应当判为未建模，
+    而不是退化成「两边都全扫」：那会在键值范围不重合时高估代价，
+    且高估的幅度取决于数据，无法预估。
+    """
+    ho = numeric_histogram(outer)
+    hi = numeric_histogram(inner)
+    if len(ho) < 2 or len(hi) < 2:
+        return None
+    outer_end = fraction_le(ho, hi[-1])
+    inner_end = fraction_le(hi, ho[-1])
+    outer_start = fraction_le(ho, hi[0])
+    inner_start = fraction_le(hi, ho[0])
+    if None in (outer_end, inner_end, outer_start, inner_start):
+        return None
+    return MergeScanFractions(outer_start=outer_start, outer_end=outer_end,
+                              inner_start=inner_start, inner_end=inner_end)
+
+
 def _clamp(value: float) -> float:
     if value != value:      # NaN
         raise SelectivityError("选择率算出 NaN")
