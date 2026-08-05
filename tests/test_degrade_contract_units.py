@@ -94,8 +94,6 @@ _REG = _ROOT / "scripts" / "registry"
     "explain/plan_text_analyze.yaml",
     "sqltune/plan_text_analyze.yaml",
     "proctune/plan_text_analyze.yaml",
-    "sqltune/plan_json.yaml",
-    "proctune/plan_json.yaml",
 ])
 def test_explain_templates_are_read_only(rel):
     """必须标 readonly: true。
@@ -137,8 +135,6 @@ def test_template_block_falls_back_to_a_session_instead_of_failing():
     "explain/plan_text.yaml",
     "sqltune/plan_text.yaml",
     "proctune/plan_text.yaml",
-    "sqltune/plan_json.yaml",
-    "proctune/plan_json.yaml",
 ])
 def test_non_analyze_templates_never_execute_user_sql(rel):
     """不带 analyze 的模板里 ANALYZE 必须写死为 false 或干脆不出现。

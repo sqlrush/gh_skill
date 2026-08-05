@@ -114,6 +114,11 @@ def main(argv: Sequence[str] = None) -> int:
         help="导出时连「没有任何 skill 调用」的脚本一起带上。默认拒绝导出。",
     )
     parser.add_argument(
+        "--exclude-unused",
+        action="store_true",
+        help="导出时剔掉「没有任何 skill 调用」的脚本。交付通常用这个。",
+    )
+    parser.add_argument(
         "--user",
         default=os.environ.get("GRMP_REGISTER_USER", "grmp-register"),
         help="写入 create_user/last_modify_user。交付给客户的 DML 应填真实工号。",
@@ -147,7 +152,7 @@ def main(argv: Sequence[str] = None) -> int:
     else:
         print("风险标注：无")
 
-    if args.dml_out and not args.include_unused:
+    if args.dml_out and not (args.include_unused or args.exclude_unused):
         unused = scripts_no_skill_calls(registry)
         if unused:
             print(
@@ -188,7 +193,16 @@ def main(argv: Sequence[str] = None) -> int:
     if args.dml_out:
         out = pathlib.Path(args.dml_out).expanduser()
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(dml.script_file(stored), encoding="utf-8")
+        shipped = stored
+        if args.exclude_unused:
+            drop = set(scripts_no_skill_calls(registry))
+            shipped = [r for r in stored if r.script_name not in drop]
+            # 剔掉了什么必须逐条说出来 —— 静默少几条，客户那边就表现成
+            # 「某个 skill 突然报脚本不存在」，而发布记录上看不出少了谁
+            print("\n已剔除 %d 条无人调用的脚本（未进交付 DML）：" % len(drop))
+            for n in sorted(drop):
+                print("  - %s" % n)
+        out.write_text(dml.script_file(shipped), encoding="utf-8")
         print("\n交付 DML 已写出：%s" % out)
         print("  注意：create_user 当前为 %r，交付前应改成真实工号。" % args.user)
 
