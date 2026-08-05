@@ -170,34 +170,41 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not sql_text.strip():
         ap.error("empty SQL on stdin")
 
-    # DML 的 EXPLAIN ANALYZE 要把语句包在回滚事务里真执行 —— 模板做不到
-    # （多语句回滚包装实测可被一个 `--` 注释绕过），只能走直连的原始会话。
-    needs_rollback = args.analyze and is_dml(sql_text)
-
+    # 先看这条 SQL 能不能走注册模板。模板只受理单条只读语句 —— 它是文本替换，
+    # 参数位就是注入面，多语句和写语句一律挡在外面。
+    #
+    # 走不通**不等于做不了**：直连有原始会话，`EXPLAIN UPDATE ...` 一直是能出
+    # 计划的（不带 --analyze 时 DML 根本不执行）。所以这里回落到直连，而不是
+    # 直接失败 —— 把模板的限制当成 skill 的限制，会砍掉直连本来就有的能力。
     try:
-        ensure_explainable(sql_text, analyze=args.analyze and not needs_rollback)
+        ensure_explainable(sql_text, analyze=args.analyze)
+        template_blocked = None
     except ExplainNotAllowed as exc:
-        if not needs_rollback:
-            print(f"error: {exc}", file=sys.stderr)
-            return 2
+        template_blocked = exc
 
     db = None
     try:
-        if needs_rollback:
-            # 走原始会话。中间件给不了，会在这里明确报错而不是静默降级 ——
-            # 降级成「不 analyze」会让用户拿到估算计划却以为是实际计划，
-            # 实测两者能差 2.3 倍。
-            db = access.connection_for(args.conn, read_only=False)
+        if template_blocked is None:
+            runner = access.for_conn(args.conn, timeout=args.timeout)
+            plan = explain_via_script(runner, sql_text, args.analyze)
+        else:
+            # 回落到原始会话。中间件给不了，connection_for 会在这里明确报错
+            # 而不是静默降级 —— 降级成「不 analyze」会让用户拿到估算计划却
+            # 以为是实际计划，实测两者能差 2.3 倍。
+            db = access.connection_for(args.conn, read_only=not args.analyze)
             db.set_statement_timeout(
                 args.timeout if args.timeout is not None
                 else access.DEFAULT_SKILL_TIMEOUT_SECONDS)
-            plan = explain(db, sql_text, True)
-        else:
-            runner = access.for_conn(args.conn, timeout=args.timeout)
-            plan = explain_via_script(runner, sql_text, args.analyze)
+            plan = explain(db, sql_text, args.analyze)
     except (common.ConfigError, common.CredentialError, common.DBError,
             access.AccessError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        # 回落到直连又失败时，把「模板为什么走不通」一并说出来。只报后半句
+        # （「白名单只执行预注册脚本」）会让人以为是配置问题，而真正的原因是
+        # 这条 SQL 的形态本身就进不了模板。
+        if template_blocked is not None:
+            print(f"error: {template_blocked}\n{exc}", file=sys.stderr)
+        else:
+            print(f"error: {exc}", file=sys.stderr)
         return 2
     except (ValueError, access.QueryError) as exc:
         print(f"error: {exc}", file=sys.stderr)

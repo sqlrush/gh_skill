@@ -109,6 +109,30 @@ def test_explain_templates_are_read_only(rel):
     assert rec.readonly is True, "%s 不是只读脚本 —— 注入面失去数据库侧兜底" % rel
 
 
+# ===========================================================================
+# 模板的限制不能变成 skill 的限制 —— 实际发生过的回归
+# ===========================================================================
+
+def test_template_block_falls_back_to_a_session_instead_of_failing():
+    """模板受理不了的 SQL，要回落到直连会话，不能直接失败。
+
+    真实回归:我把注入守卫无条件加在所有路径上，把直连也一起拒了 ——
+    `EXPLAIN UPDATE ...`（不带 --analyze，DML 根本不执行）改动前一直能出计划，
+    改完变成退出 2。用新写的测试发现不了，因为新测试是照着新行为写的；
+    是把旧版本取出来逐项对照才看到的。
+
+    这条钉的是源码结构:模板走不通时必须还有一条回落路径。
+    """
+    src = (_ROOT / "skills" / "gaussdb-explain" / "scripts"
+           / "explain.py").read_text(encoding="utf-8")
+    assert "template_blocked" in src, "模板受阻的分支没了"
+    assert "connection_for" in src, "没有回落到原始会话的路径"
+    # 回落不能只在 analyze 时发生 —— 那正是当初判错的地方
+    assert "needs_rollback" not in src, (
+        "又把回落条件收窄成「只有 analyze 才回落」了 —— "
+        "不带 analyze 的 DML 同样过不了只读模板，但直连能跑")
+
+
 @pytest.mark.parametrize("rel", [
     "explain/plan_text.yaml",
     "sqltune/plan_text.yaml",
