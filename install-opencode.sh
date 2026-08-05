@@ -56,6 +56,17 @@ echo "  → common/ (shared connection layer)"
 run "rm -rf \"$DEST/common\""
 run "cp -R \"$SRC/common\" \"$DEST/common\""
 
+# The whitelist scripts the skills actually execute. **This was missing** —
+# the installer shipped skill code but not scripts/registry/, so the two drifted:
+# an install had 89 scripts while the repo had 90, and sqltune died with
+# KeyError 'curpages' because the deployed tables.yaml predated that column.
+# That failure was at least loud; a changed SQL *body* would have been silent —
+# the skill would keep running the old query and nobody would know.
+echo "  → scripts/registry/ (whitelist scripts the skills execute)"
+run "mkdir -p \"$DEST/scripts\""
+run "rm -rf \"$DEST/scripts/registry\""
+run "cp -R \"$SRC/scripts/registry\" \"$DEST/scripts/registry\""
+
 count=0
 for d in "$SRC"/skills/*/; do
   [ -f "${d}SKILL.md" ] || continue
