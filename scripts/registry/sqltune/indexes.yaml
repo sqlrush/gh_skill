@@ -12,6 +12,11 @@
 #
 # 注意布尔列：协议把布尔渲染成 t/f（或 true/false）字符串，bool("f") 是 True，
 # 取值代码必须按字符串判断，不能直接 bool()。
+# **改动四：补 index_relpages / index_reltuples（代价推演的输入）。**
+# 索引扫描的代价里有两块要用索引自身的规模：树高（≈ log(条目数)/log(扇出)，
+# 决定每次探测的随机 IO 次数）与按选择率折算的索引页数。取自 pg_class 里
+# **索引那一行**（i.relpages/i.reltuples），不是表那一行 —— 两者差着数量级，
+# 取错了算出来的树高会小得离谱，而结果依然是个像模像样的数字。
 name: sqltune.indexes
 description: SQL 涉及的表上已有的索引（证据包 ## Indexes）
 sql: |
@@ -19,6 +24,8 @@ sql: |
          i.relname AS index_name,
          ix.indisunique,
          ix.indisprimary,
+         i.relpages AS index_relpages,
+         i.reltuples::bigint AS index_reltuples,
          pg_get_indexdef(ix.indexrelid) AS index_def
   FROM pg_class t
   JOIN pg_index ix ON t.oid = ix.indrelid

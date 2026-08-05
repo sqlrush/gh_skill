@@ -41,6 +41,8 @@ TABLES_SCRIPT = "sqltune.tables"
 INDEXES_SCRIPT = "sqltune.indexes"
 COLUMN_STATS_SCRIPT = "sqltune.column_stats"
 KEY_GUCS_SCRIPT = "sqltune.key_gucs"
+STATS_FRESHNESS_SCRIPT = "sqltune.stats_freshness"
+PLAN_JSON_SCRIPT = "sqltune.plan_json"
 
 
 # --- 协议取值：所有列值都是字符串，NULL 是空串 ------------------------------
@@ -151,6 +153,34 @@ def explain_via_script(runner, sql_text: str, analyze: bool) -> str:
     return "\n".join(str(next(iter(r.values()), "")) for r in rows)
 
 
+def explain_json_via_script(runner, sql_text: str):
+    """JSON 计划，走已注册模板 —— 中间件路径。给代价推演的校准闸用。
+
+    **只有 ANALYZE false 一种。** 推演比对的是*估算*代价（规划器算出来的那个
+    数），ANALYZE 会真执行用户 SQL 拿实际耗时，与要比对的东西不是一回事。
+    调用前同样要过 ensure_explainable()：参数位是注入面。
+    """
+    rows = runner.run(PLAN_JSON_SCRIPT, {"sql": sql_text})
+    return "\n".join(str(next(iter(r.values()), "")) for r in rows)
+
+
+def explain_json(db, sql_text: str):
+    """JSON 计划，走原始会话 —— 直连路径。
+
+    返回值可能是字符串，也可能是 pg8000 已经解码好的 list/dict；两种都直接
+    交给 plantree.parse()，由它统一处理。这里**不做归一化**：把已解码的对象
+    再 str() 回去会得到 Python 的单引号写法，json.loads 解不动。
+    """
+    _, rows = db.query(
+        "EXPLAIN (ANALYZE false, BUFFERS false, FORMAT JSON) " + sql_text)
+    if not rows:
+        return ""
+    first = rows[0][0]
+    if isinstance(first, (list, dict)):
+        return first
+    return "\n".join(str(r[0]) for r in rows)
+
+
 def explain(db, sql_text: str, analyze: bool) -> str:
     """EXPLAIN in TEXT format; analyze executes (DML wrapped in rollback).
 
@@ -222,6 +252,8 @@ class IndexInfo:
     name: str
     is_unique: bool
     is_primary: bool
+    pages: int      # 索引自身的页数（pg_class 里索引那一行，不是表那一行）
+    tuples: int     # 索引条目数
     definition: str
 
 
@@ -240,6 +272,27 @@ class GUC:
     name: str
     setting: str
     unit: str
+
+
+@dataclass(frozen=True)
+class StatsFreshness:
+    """统计信息新鲜度的**原始观测**，不含判定。
+
+    判定要拿 live_tuples 和 TableInfo.tuples（pg_class.reltuples）比，跨两个
+    采集结果，放在推演层（derive.py）做 —— 这里只负责如实带回观测值。
+
+    last_analyze / last_autoanalyze 是已格式化的字符串，'never' 表示该表
+    从未被 ANALYZE 过。空串意味着协议层出了问题（脚本里已 COALESCE 兜住 NULL），
+    不该当成 'never' 处理。
+    """
+    schema: str
+    table: str
+    live_tuples: int
+    dead_tuples: int
+    last_analyze: str
+    last_autoanalyze: str
+    analyze_count: int
+    autoanalyze_count: int
 
 
 def _quoted_list(names: list[str]) -> str:
@@ -268,8 +321,10 @@ def collect_indexes(runner, names: list[str]) -> list[IndexInfo]:
         return []
     rows = runner.run(INDEXES_SCRIPT, {"names": _quoted_list(names)})
     # bool("f") 是 True —— 直接 bool() 会把每个索引都报成 UNIQUE/PRIMARY
+    # index_relpages 同样是 double precision（"128.0"），走 _pages 截断
     return [IndexInfo(r["table_name"], r["index_name"], as_bool(r["indisunique"]),
-                      as_bool(r["indisprimary"]), r["index_def"])
+                      as_bool(r["indisprimary"]), _pages(r["index_relpages"]),
+                      as_int(r["index_reltuples"]), r["index_def"])
             for r in rows]
 
 
@@ -291,6 +346,18 @@ def collect_gucs(runner) -> list[GUC]:
     return [GUC(r["name"], r["setting"], r["unit"]) for r in rows]
 
 
+def collect_stats_freshness(runner, names: list[str]) -> list[StatsFreshness]:
+    if not names:
+        return []
+    rows = runner.run(STATS_FRESHNESS_SCRIPT, {"names": _quoted_list(names)})
+    # n_live_tup/n_dead_tup 在 openGauss 里是 bigint，不像 relpages 那样带小数
+    return [StatsFreshness(r["schemaname"], r["relname"],
+                           as_int(r["n_live_tup"]), as_int(r["n_dead_tup"]),
+                           r["last_analyze"], r["last_autoanalyze"],
+                           as_int(r["analyze_count"]), as_int(r["autoanalyze_count"]))
+            for r in rows]
+
+
 # --- evidence orchestration (port of collect.go) -----------------------------
 
 @dataclass(frozen=True)
@@ -304,6 +371,7 @@ class Evidence:
     columns: list = field(default_factory=list)
     gucs: list = field(default_factory=list)
     findings: list = field(default_factory=list)
+    freshness: list = field(default_factory=list)
 
 
 def collect(runner, db, sql_text: str, do_analyze: bool) -> Evidence:
@@ -330,6 +398,7 @@ def collect(runner, db, sql_text: str, do_analyze: bool) -> Evidence:
         indexes=collect_indexes(runner, names),
         columns=collect_column_stats(runner, names),
         gucs=collect_gucs(runner),
+        freshness=collect_stats_freshness(runner, names),
     )
 
 
@@ -353,10 +422,20 @@ def evidence_report(ev: Evidence) -> str:
     out += "\n## Tables\n\n" + render.table(
         ["SCHEMA", "TABLE", "PAGES", "TUPLES", "KIND", "SIZE_MB"], t_rows)
 
+    # 紧跟在 Tables 后面：上面那张表里的 PAGES/TUPLES 是上次 ANALYZE 的快照，
+    # 这一节给的是「那是多久以前」。分开看容易把冻结值当现值。
+    f_rows = [[fr.schema, fr.table, str(fr.live_tuples), str(fr.dead_tuples),
+               fr.last_analyze, fr.last_autoanalyze,
+               str(fr.analyze_count + fr.autoanalyze_count)] for fr in ev.freshness]
+    out += "\n## Statistics Freshness\n\n" + render.table(
+        ["SCHEMA", "TABLE", "LIVE_TUP", "DEAD_TUP", "LAST_ANALYZE",
+         "LAST_AUTOANALYZE", "ANALYZE_CNT"], f_rows)
+
     i_rows = [[ix.table, ix.name, str(ix.is_unique).lower(), str(ix.is_primary).lower(),
+               str(ix.pages), str(ix.tuples),
                render.truncate(ix.definition, 120)] for ix in ev.indexes]
     out += "\n## Indexes\n\n" + render.table(
-        ["TABLE", "INDEX", "UNIQUE", "PRIMARY", "DEF"], i_rows)
+        ["TABLE", "INDEX", "UNIQUE", "PRIMARY", "PAGES", "TUPLES", "DEF"], i_rows)
 
     c_rows = []
     for c in ev.columns:
