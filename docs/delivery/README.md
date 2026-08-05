@@ -20,3 +20,10 @@
 - **连接/驱动细节**(gsql/pg8000、`GSDB_HOME`、已知差异) → 见 [../connection-drivers.md](../connection-drivers.md)
 
 > 说明:连接配置目录由环境变量 `GSDB_HOME` 指定(任意名/路径,默认 `$GSDB_HOME`,;双后端 gsql(默认)/ pg8000,连接级自动兜底。gsql 是 openGauss 的 Linux 客户端,macOS 上会自动回退 pg8000。gsql/pg8000 的类型 parity 差异标注为"待验证"(未在 Linux+gsql 真库实证)。
+
+补充：
+
+| 文档 | 内容 |
+|---|---|
+| [06-白名单清单](whitelist.md) | 89 条脚本的 id/参数/SQL 全文 |
+| [07-调用链路](07-调用链路.md) | 逻辑名 → id → 执行的全过程，附真实报文 |
