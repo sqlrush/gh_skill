@@ -9,6 +9,11 @@
 
 **门二：统计信息陈旧。** 推演的全部输入都是上次 ANALYZE 时冻结的快照。
 表在那之后翻了十倍，这些数不会报错，只会让推演算出一个精确的错数。
+
+门二的判据**只用不会被独立重置的信号**（relpages vs curpages，以及 pg_stats
+里有没有行），不用 pg_stat_user_tables 的 last_analyze / n_live_tup ——
+后两者会被 pg_stat_reset() 清掉，而 ANALYZE 的成果存在 pg_statistic 里不受影响。
+用它们当门会把统计完好的表判成「从未分析」。og5 上实测过，见 freshness()。
 """
 from __future__ import annotations
 
@@ -20,8 +25,8 @@ class CatalogError(Exception):
     """目录不足以支撑推演。调用方必须停止，不能退化成「尽量算」。"""
 
 
-# 冻结值与近实时值偏离多少算陈旧。10% 是个工程判断：再小会被 autovacuum 的
-# 正常滞后频繁触发，再大就失去意义。这个阈值必须**写进报告**，否则读的人
+# 冻结页数与实时页数偏离多少算陈旧。10% 是个工程判断：再小会被日常写入的
+# 正常增长频繁触发，再大就失去意义。这个阈值必须**写进报告**，否则读的人
 # 无从判断「陈旧」是按什么标准说的。
 STALE_DRIFT_THRESHOLD = 0.10
 
@@ -31,10 +36,13 @@ class FreshnessVerdict:
     table: str
     fresh: bool
     reason: str
-    reltuples: float          # pg_class 里的冻结值
-    live_tuples: float        # 统计收集器的近实时值
-    drift: Optional[float]    # 相对偏离，无法计算时 None
-    last_analyze: str
+    relpages: float           # pg_class 冻结的页数
+    cur_pages: float          # 存储层的实时页数
+    drift: Optional[float]    # 页数相对偏离，无法计算时 None
+    stat_columns: int         # pg_stats 里这张表有几列有统计信息
+    reltuples: float
+    live_tuples: float        # 统计收集器的值，**仅供参考**
+    last_analyze: str         # 同上
     last_autoanalyze: str
 
 
@@ -87,58 +95,67 @@ class Catalog:
     # --- 门二 -------------------------------------------------------------
 
     def freshness(self, name: str) -> FreshnessVerdict:
+        """判据只用**不会被独立重置**的信号。
+
+        原先拿 pg_stat_user_tables 的 last_analyze / n_live_tup 当门，og5 上
+        实测发现它会误判：gsbench.fact_sales 报 last_analyze=never、n_live_tup=0，
+        但 pg_stats 里实实在在有 8 列统计信息 —— 计数器被 pg_stat_reset() 清过，
+        或统计收集器的数据在重启时没落盘。**统计完好的表被判成从未分析，
+        整个推演白做。**
+
+        改用 relpages（pg_class 冻结值）与 curpages（存储层实时值）比：两者都
+        不受统计收集器影响，而且这正是规划器换算行数用的那个比值 ——
+        页数没变，规划器用的行数就等于 reltuples，冻结快照就是当前现实。
+
+        统计收集器那两个值降级为**参考信息**，照样呈现，但不参与判定。
+        """
         table = self.table(name)
         row = self._freshness.get(_norm(name))
-        if row is None:
-            return FreshnessVerdict(
-                table=name, fresh=False,
-                reason="pg_stat_user_tables 里没有这张表的行 —— 可能是系统表或"
-                       "从未被访问过。拿不到近实时行数，无法判断快照有多旧，"
-                       "按「不确定」处理，即不通过。",
-                reltuples=float(table.tuples), live_tuples=0.0, drift=None,
-                last_analyze="", last_autoanalyze="")
+        stat_columns = sum(1 for (t, _c) in self._columns if t == _norm(name))
 
-        if row.last_analyze == "never" and row.last_autoanalyze == "never":
+        def verdict(fresh, reason, drift=None):
             return FreshnessVerdict(
-                table=name, fresh=False,
-                reason="从未 ANALYZE 过（last_analyze 与 last_autoanalyze 均为 "
-                       "never）。此时 pg_class.reltuples 多半是建表时的估值，"
-                       "推演的每一个输入都不可信。",
-                reltuples=float(table.tuples), live_tuples=float(row.live_tuples),
-                drift=None, last_analyze=row.last_analyze,
-                last_autoanalyze=row.last_autoanalyze)
+                table=name, fresh=fresh, reason=reason,
+                relpages=float(table.pages), cur_pages=float(table.cur_pages),
+                drift=drift, stat_columns=stat_columns,
+                reltuples=float(table.tuples),
+                live_tuples=float(getattr(row, "live_tuples", 0) or 0),
+                last_analyze=getattr(row, "last_analyze", "") or "",
+                last_autoanalyze=getattr(row, "last_autoanalyze", "") or "")
 
-        frozen = float(table.tuples)
-        live = float(row.live_tuples)
-        if frozen <= 0:
-            return FreshnessVerdict(
-                table=name, fresh=False,
-                reason="pg_class.reltuples 为 %g —— 冻结值本身就是空的，"
-                       "没有可比对的基准。" % frozen,
-                reltuples=frozen, live_tuples=live, drift=None,
-                last_analyze=row.last_analyze,
-                last_autoanalyze=row.last_autoanalyze)
+        if stat_columns == 0:
+            return verdict(False,
+                           "pg_stats 里这张表一列统计信息都没有 —— 它确实从未被 "
+                           "ANALYZE 覆盖（或统计被删过）。此时 n_distinct、"
+                           "correlation 全都取不到，推演无从做起。")
 
-        drift = abs(live - frozen) / frozen
+        frozen_pages = float(table.pages)
+        if frozen_pages <= 0:
+            return verdict(False,
+                           "pg_class.relpages 为 0 —— 没有冻结基准可比，"
+                           "无法判断快照有多旧。")
+
+        drift = abs(float(table.cur_pages) - frozen_pages) / frozen_pages
+        aged = ("（统计收集器记录的上次 ANALYZE：%s；该计数器可被 pg_stat_reset "
+                "清除，仅供参考，不参与判定）"
+                % (getattr(row, "last_analyze", "") or "无记录"))
+
         if drift > STALE_DRIFT_THRESHOLD:
-            return FreshnessVerdict(
-                table=name, fresh=False,
-                reason="冻结值 %g 行与近实时 %g 行相差 %.1f%%，超过阈值 %.0f%% "
-                       "—— 上次 ANALYZE（%s）之后数据变化太大，"
-                       "推演要用的那份统计已经不代表现状。"
-                       % (frozen, live, drift * 100.0,
-                          STALE_DRIFT_THRESHOLD * 100.0, row.last_analyze),
-                reltuples=frozen, live_tuples=live, drift=drift,
-                last_analyze=row.last_analyze,
-                last_autoanalyze=row.last_autoanalyze)
+            return verdict(False,
+                           "冻结页数 %.0f 与实时页数 %.0f 相差 %.1f%%，超过阈值 "
+                           "%.0f%% —— 表在上次 ANALYZE 之后长大了，规划器会按 "
+                           "reltuples/relpages 的密度把行数放大，而 n_distinct 与 "
+                           "correlation 不会跟着更新。%s"
+                           % (frozen_pages, table.cur_pages, drift * 100.0,
+                              STALE_DRIFT_THRESHOLD * 100.0, aged),
+                           drift)
 
-        return FreshnessVerdict(
-            table=name, fresh=True,
-            reason="冻结值 %g 行与近实时 %g 行相差 %.1f%%，在阈值 %.0f%% 之内"
-                   % (frozen, live, drift * 100.0, STALE_DRIFT_THRESHOLD * 100.0),
-            reltuples=frozen, live_tuples=live, drift=drift,
-            last_analyze=row.last_analyze,
-            last_autoanalyze=row.last_autoanalyze)
+        return verdict(True,
+                       "冻结页数 %.0f 与实时页数 %.0f 相差 %.1f%%，在阈值 %.0f%% "
+                       "之内；pg_stats 有 %d 列统计信息。%s"
+                       % (frozen_pages, table.cur_pages, drift * 100.0,
+                          STALE_DRIFT_THRESHOLD * 100.0, stat_columns, aged),
+                       drift)
 
     def freshness_report(self, names: Sequence[str]) -> List[FreshnessVerdict]:
         return [self.freshness(n) for n in names]

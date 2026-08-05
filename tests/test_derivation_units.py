@@ -40,11 +40,12 @@ ROOT = plantree.parse(_PLAN)
 def _fresh(table="big", ok=True):
     return types.SimpleNamespace(
         table=table, fresh=ok,
-        reason="冻结值 100 行与近实时 100 行相差 0.0%" if ok
-               else "冻结值 100 行与近实时 900 行相差 800.0%，超过阈值 10%",
-        reltuples=100.0, live_tuples=100.0 if ok else 900.0,
-        drift=0.0 if ok else 8.0, last_analyze="2026-08-01 03:12:44",
-        last_autoanalyze="never")
+        reason="冻结页数 100 与实时页数 100 相差 0.0%" if ok
+               else "冻结页数 100 与实时页数 900 相差 800.0%，超过阈值 10%",
+        relpages=100.0, cur_pages=100.0 if ok else 900.0,
+        drift=0.0 if ok else 8.0, stat_columns=6,
+        reltuples=1000.0, live_tuples=1000.0,
+        last_analyze="2026-08-01 03:12:44", last_autoanalyze="never")
 
 
 def _calibration(passed=True, with_unmodeled=True):
@@ -136,13 +137,99 @@ def test_report_lists_actual_cost_constants():
     assert "不使用任何默认值" in report
 
 
-def test_freshness_table_shows_both_numbers():
+def test_freshness_table_shows_both_page_counts():
     report = derivation.render_report(_calibration(), COST, [_fresh(ok=False)])
-    assert "冻结行数" in report and "近实时行数" in report
+    assert "冻结页数" in report and "实时页数" in report
     assert "**不通过**" in report
+
+
+def test_freshness_section_says_why_last_analyze_is_only_advisory():
+    """last_analyze 可被 pg_stat_reset 清掉 —— 报告要说清它为什么不是判据，
+    否则读的人看到「last_analyze: 无记录」却判定通过，会以为报告出错了。"""
+    report = derivation.render_report(_calibration(), COST, [_fresh()])
+    assert "pg_stat_reset" in report
+    assert "仅供参考" in report or "仅供\n参考" in report
 
 
 def test_report_includes_sql_when_given():
     report = derivation.render_report(_calibration(), COST, [_fresh()],
                                       sql="SELECT 1")
     assert "SELECT 1" in report
+
+
+# --- 第 3 节：假设路径 -------------------------------------------------------
+
+import whatif  # noqa: E402
+
+
+def _proposal(baseline=200.0, hypothetical=20.0, unmodeled=()):
+    scan = costmodel.Estimate(
+        node_type="Index Scan（假设）", startup_cost=0.4, total_cost=hypothetical,
+        terms=[costmodel.Term("索引读页", "1.1 × 3", 3.3)],
+        approximate=True,
+        notes=["索引尚不存在，页数是按列宽估算的 —— 估小了会低估索引扫描 IO。",
+               "选择率来自统计信息估算，不是实测。"])
+    rec = whatif.Recomputed(root_total=hypothetical, estimates=[],
+                            unmodeled=list(unmodeled))
+    return whatif.Proposal(ddl="CREATE INDEX i ON t(c)", table="t", column="c",
+                           baseline_total=baseline,
+                           hypothetical_total=hypothetical,
+                           scan_estimate=scan, recomputed=rec)
+
+
+def test_no_proposals_says_so():
+    report = derivation.render_report(_calibration(), COST, [_fresh()])
+    assert "本次没有待评估的索引建议" in report
+
+
+def test_proposals_are_not_computed_when_gates_fail():
+    """**不算，而不是算了标成不可信。**
+
+    数字一旦印出来就会被读，旁边那行免责声明拦不住。所以门没过时
+    连数都不出，只把待评估的 DDL 列出来。
+    """
+    report = derivation.render_report(_calibration(), COST, [_fresh(ok=False)],
+                                      proposals=[_proposal()])
+    assert "**不计算。**" in report
+    assert "CREATE INDEX i ON t(c)" in report
+    assert "20.00" not in report          # 假设代价不能出现
+
+
+def test_proposal_marks_baseline_and_hypothetical_as_different_kinds():
+    """一个是 EXPLAIN 实测，一个是估算 —— 不能并排同等呈现。"""
+    report = derivation.render_report(_calibration(), COST, [_fresh()],
+                                      proposals=[_proposal()])
+    assert "EXPLAIN 实测" in report
+    assert "**估算**" in report
+    assert "两者不同源，比值也是估算" in report
+    assert "10.00×" in report             # 200 / 20
+
+
+def test_proposal_lists_what_was_estimated():
+    report = derivation.render_report(_calibration(), COST, [_fresh()],
+                                      proposals=[_proposal()])
+    assert "这条建议里哪些是估的" in report
+    assert "索引尚不存在" in report
+    assert "选择率" in report
+
+
+def test_unmodeled_ancestor_is_disclosed_as_conservative():
+    """上层没重算的话总数偏保守 —— 不说破，读的人会以为算全了。"""
+    node = types.SimpleNamespace(node_type="Merge Join")
+    report = derivation.render_report(_calibration(), COST, [_fresh()],
+                                      proposals=[_proposal(unmodeled=[node])])
+    assert "Merge Join 未建模" in report
+    assert "偏保守" in report
+
+
+def test_verdict_separates_calibrated_from_estimated():
+    report = derivation.render_report(_calibration(), COST, [_fresh()],
+                                      proposals=[_proposal()])
+    assert "基线是复算并校准过的；假设路径是估算的" in report
+    assert "hypopg 实测一次" in report
+
+
+def test_verdict_section_is_numbered_four():
+    report = derivation.render_report(_calibration(), COST, [_fresh()])
+    assert "## 4. 结论" in report
+    assert "## 3. 假设路径" in report

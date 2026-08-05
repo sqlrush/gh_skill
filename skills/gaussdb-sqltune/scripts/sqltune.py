@@ -54,6 +54,7 @@ import costconst  # noqa: E402
 import derivation  # noqa: E402
 import plantree  # noqa: E402
 import resolve  # noqa: E402
+import whatif  # noqa: E402
 
 # 本 skill 的取数分两条口子（见 evidence.py 模块头）：
 #
@@ -139,7 +140,45 @@ def _derivation_report(runner, db, sql_text: str, ev) -> str:
     cal = calibrate.calibrate_best_variant(
         root, lambda v: resolve.make_resolver(cat, cost, v))
     verdicts = cat.freshness_report([t.name for t in ev.tables])
-    return "\n" + derivation.render_report(cal, cost, verdicts)
+
+    proposals = _index_proposals(root, cat, cost, cal, verdicts)
+    return "\n" + derivation.render_report(cal, cost, verdicts,
+                                           proposals=proposals)
+
+
+def _index_proposals(root, cat, cost, cal, verdicts) -> list:
+    """算候选索引的假设代价。
+
+    **门没过就一条都不算。** 不是算了再标成不可信 —— 数字一旦印出来就会被读，
+    旁边那行免责声明拦不住。这个判断在这里做一次，报告里再做一次，两处都做
+    是有意的：将来有人直接调 render_report 传进 proposals，也拦得住。
+    """
+    ok, _ = derivation.may_emit_advice(cal, verdicts)
+    if not ok:
+        return []
+
+    resolver = resolve.make_resolver(cat, cost, cal.variant)
+    out = []
+    for cand in whatif.propose_from_plan(root, cat, cost, plantree.walk):
+        stat = cand["stat"]
+        if stat.avg_width <= 0 or stat.correlation is None:
+            continue
+        try:
+            scan = whatif.hypothetical_index_scan(
+                cand["table"], stat, cand["selectivity"], cost,
+                cat.total_table_pages(), stat.avg_width,
+                # propose_from_plan 的选择率来自该节点的 Plan Rows，是实测反推
+                selectivity_from_plan=True)
+            rec = whatif.recompute_with_override(root, resolver, cand["node"],
+                                                 scan)
+        except Exception:
+            # 假设路径算不出来不该影响已经校准好的基线报告
+            continue
+        out.append(whatif.Proposal(
+            ddl=cand["ddl"], table=cand["table"].name, column=cand["column"],
+            baseline_total=root.total_cost, hypothetical_total=rec.root_total,
+            scan_estimate=scan, recomputed=rec))
+    return out
 
 
 def _guard_sql(sql_text: str, analyze: bool) -> None:

@@ -102,64 +102,86 @@ def test_duplicate_index_name_refuses():
 
 # --- 门二：统计新鲜度 --------------------------------------------------------
 
-def test_fresh_when_drift_within_threshold():
+def test_fresh_when_page_drift_within_threshold():
     v = _catalog().freshness("customers")
     assert v.fresh is True
     assert v.drift == pytest.approx(0.0)
 
 
-def test_stale_when_drift_exceeds_threshold():
-    """冻结 10 万行 vs 近实时 20 万行 = 偏离 100%。"""
-    cat = _catalog(freshness=[_fresh("customers", live=200000),
-                              _fresh("orders", live=50000)])
+def test_stale_when_page_drift_exceeds_threshold():
+    """冻结 1000 页 vs 实时 2000 页 = 偏离 100%。"""
+    cat = _catalog(tables=[_table("customers", cur_pages=2000), _table("orders")])
     v = cat.freshness("customers")
     assert v.fresh is False
     assert v.drift == pytest.approx(1.0)
 
 
-def test_stale_reason_carries_both_numbers_and_the_threshold():
-    """只说「统计陈旧」没用 —— 要能看出凭哪两个数、差多少、阈值多少。"""
-    cat = _catalog(freshness=[_fresh("customers", live=200000),
-                              _fresh("orders", live=50000)])
-    reason = cat.freshness("customers").reason
-    assert "100000" in reason and "200000" in reason
-    assert "100.0%" in reason
-    assert "10%" in reason
-    assert "2026-08-01 03:12:44" in reason
-
-
-def test_never_analyzed_is_not_fresh():
-    cat = _catalog(freshness=[_fresh("customers", last="never", auto="never"),
-                              _fresh("orders", live=50000)])
-    v = cat.freshness("customers")
-    assert v.fresh is False
-    assert "从未 ANALYZE" in v.reason
-
-
-def test_autoanalyze_alone_still_counts_as_analyzed():
-    cat = _catalog(freshness=[_fresh("customers", last="never",
-                                     auto="2026-08-01 03:12:44"),
-                              _fresh("orders", live=50000)])
+def test_small_growth_stays_fresh():
+    """4.9% 的自然增长不该把整个推演拦掉 —— og5 上 orders 就是这个量级。"""
+    cat = _catalog(tables=[_table("customers", cur_pages=1049), _table("orders")])
     assert cat.freshness("customers").fresh is True
 
 
-def test_missing_stat_row_is_treated_as_failure_not_success():
-    """「不确定」当「失败」处理 —— 拿不到近实时行数就无从判断快照多旧。"""
-    cat = _catalog(freshness=[_fresh("orders", live=50000)])
+def test_stale_reason_carries_both_numbers_and_the_threshold():
+    """只说「统计陈旧」没用 —— 要能看出凭哪两个数、差多少、阈值多少。"""
+    cat = _catalog(tables=[_table("customers", cur_pages=2000), _table("orders")])
+    reason = cat.freshness("customers").reason
+    assert "1000" in reason and "2000" in reason
+    assert "100.0%" in reason
+    assert "10%" in reason
+
+
+def test_reset_stat_counters_do_not_make_a_good_table_stale():
+    """**这条是回归测试。**
+
+    og5 上 gsbench.fact_sales 报 last_analyze=never、n_live_tup=0，但 pg_stats
+    里实实在在有 8 列统计信息 —— 计数器被 pg_stat_reset() 清过。原先拿
+    last_analyze 当门，把统计完好的表判成「从未分析」，整个推演白做。
+    现在计数器只作参考，判据用不会被重置的信号。
+    """
+    cat = _catalog(freshness=[_fresh("customers", live=0, last="never",
+                                     auto="never"),
+                              _fresh("orders", live=50000)])
+    v = cat.freshness("customers")
+    assert v.fresh is True
+    assert v.stat_columns == 1        # pg_stats 里确实有行
+    assert "仅供参考" in v.reason
+
+
+def test_no_pg_stats_rows_is_genuinely_never_analyzed():
+    """pg_stats 一列都没有 —— 这才是真的从未分析，n_distinct 全取不到。"""
+    cat = _catalog(columns=[])
     v = cat.freshness("customers")
     assert v.fresh is False
-    assert "不确定" in v.reason
+    assert v.stat_columns == 0
+    assert "一列统计信息都没有" in v.reason
 
 
-def test_zero_reltuples_is_not_fresh():
-    cat = _catalog(tables=[_table("customers", tuples=0), _table("orders")],
-                   freshness=[_fresh("customers"), _fresh("orders")])
+def test_missing_stat_collector_row_does_not_block_when_pages_agree():
+    """统计收集器没这张表的行，不影响判定 —— 它本来就只是参考信息。"""
+    cat = _catalog(freshness=[_fresh("orders", live=50000)])
+    assert cat.freshness("customers").fresh is True
+
+
+def test_zero_relpages_is_not_fresh():
+    cat = _catalog(tables=[_table("customers", pages=0, cur_pages=0),
+                           _table("orders")])
     v = cat.freshness("customers")
     assert v.fresh is False
     assert v.drift is None
+    assert "没有冻结基准" in v.reason
 
 
 def test_freshness_report_covers_every_named_table():
-    verdicts = _catalog().freshness_report(["customers", "orders"])
+    cat = _catalog(columns=[_column("customers", "id"), _column("orders", "id")])
+    verdicts = cat.freshness_report(["customers", "orders"])
     assert [v.table for v in verdicts] == ["customers", "orders"]
     assert all(v.fresh for v in verdicts)
+
+
+def test_freshness_is_per_table_not_global():
+    """一张表没统计信息，不该把另一张也拖下水。"""
+    cat = _catalog(columns=[_column("customers", "id")])
+    by_table = {v.table: v.fresh for v in
+                cat.freshness_report(["customers", "orders"])}
+    assert by_table == {"customers": True, "orders": False}

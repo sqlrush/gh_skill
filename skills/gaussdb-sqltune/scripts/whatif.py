@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -115,6 +116,29 @@ class _Shim:
 
 
 @dataclass(frozen=True)
+class Proposal:
+    """一条待评估的索引建议，连同它的推演结果。
+
+    baseline_total 取的是**实测**根节点代价，hypothetical_total 是重算值 ——
+    两者不同源，这一点必须在报告里说清楚：一个是数据库自己报的，一个是我们
+    算的。拿它们相除得到的「快多少倍」因此也是估算，不是测量。
+    """
+    ddl: str
+    table: str
+    column: str
+    baseline_total: float
+    hypothetical_total: float
+    scan_estimate: object            # costmodel.Estimate，假设的索引扫描
+    recomputed: object               # Recomputed，祖先重算结果
+
+    @property
+    def ratio(self) -> Optional[float]:
+        if self.hypothetical_total <= 0:
+            return None
+        return self.baseline_total / self.hypothetical_total
+
+
+@dataclass(frozen=True)
 class Recomputed:
     root_total: float
     estimates: list          # [(节点, Estimate)]，自底向上
@@ -179,9 +203,90 @@ def recompute_with_override(root, resolver, target, replacement: Estimate
                       unmodeled=unmodeled)
 
 
+_FILTER_COLUMN_RE = re.compile(
+    r"\(?\s*(?:[A-Za-z_][A-Za-z0-9_]*\.)?([A-Za-z_][A-Za-z0-9_]*)\s*"
+    r"(?:>=|<=|<>|!=|=|>|<)")
+
+
+def filter_columns(filter_text: str) -> List[str]:
+    """从 Filter 文本里取出被比较的列名，保持出现顺序、去重。
+
+    只认「标识符 紧跟 比较运算符」这一种形态。函数调用（lower(name) = 'x'）、
+    表达式（a + b > 1）都取不到 —— **这是有意的**：那些情况要建的是表达式
+    索引，与本模块能估算的普通 btree 不是一回事，猜一个列名出来会给出一条
+    建了也不会被用的索引建议。
+    """
+    if not filter_text:
+        return []
+    cleaned = re.sub(r"'[^']*'", "''", filter_text)
+    out, seen = [], set()
+    for name in _FILTER_COLUMN_RE.findall(cleaned):
+        low = name.lower()
+        if low in seen:
+            continue
+        seen.add(low)
+        out.append(low)
+    return out
+
+
+def propose_from_plan(root, catalog, cost, walk) -> List[dict]:
+    """从基线计划里找出「顺序扫描 + 有过滤条件」的地方，提出候选索引。
+
+    **选择率不用估。** 索引建在已经在过滤的那一列上时，选择率就是规划器
+    自己对这个过滤条件的估算 —— 它已经体现在该节点的 Plan Rows 里：
+
+        选择率 = Plan Rows ÷ 规划器用的表行数
+
+    所以这一类建议只剩「索引大小」一处估算。这是刻意选的切入点：能拿实测
+    值的地方绝不自己估。
+
+    返回的是待评估项（还没算代价），由调用方决定要不要算 —— 前置门没过时
+    根本不该算。
+    """
+    out = []
+    for node in walk(root):
+        if node.node_type != "Seq Scan" or not node.relation:
+            continue
+        filter_text = node.raw.get("Filter", "")
+        columns = filter_columns(filter_text)
+        if not columns:
+            continue
+        try:
+            table = catalog.table(node.relation)
+        except Exception:
+            continue
+        if table.planner_tuples <= 0:
+            continue
+        selectivity = node.plan_rows / table.planner_tuples
+        if selectivity >= 1.0:
+            # 过滤没滤掉什么 —— 建索引不会让它变快，规划器也不会用
+            continue
+        for column in columns[:1]:      # 先只提单列，多列组合是另一个问题
+            try:
+                stat = catalog.column(table.name, column)
+            except Exception:
+                continue
+            out.append({"table": table, "column": column, "stat": stat,
+                        "selectivity": min(1.0, max(0.0, selectivity)),
+                        "node": node,
+                        "ddl": "CREATE INDEX ON %s.%s (%s)"
+                               % (table.schema, table.name, column)})
+    return out
+
+
+SEL_FROM_PLAN_ROWS = (
+    "选择率 %.6g 是从**实测**计划里反推的（该扫描节点的 Plan Rows ÷ 规划器"
+    "用的表行数）—— 索引建在已经在过滤的那一列上，规划器对这个条件的选择率"
+    "估算已经体现在 Plan Rows 里，不需要我们再估一次。")
+SEL_ESTIMATED = (
+    "选择率 %.6g 来自统计信息估算，不是实测 —— 这一步没有可反推的实测值，"
+    "统计信息偏了它就跟着偏。")
+
+
 def hypothetical_index_scan(table, column_stat, selectivity: float,
                             cost, total_table_pages: float,
-                            avg_width: int) -> Estimate:
+                            avg_width: int,
+                            selectivity_from_plan: bool = False) -> Estimate:
     """假设在某列上建了索引之后，这一步的索引扫描代价。
 
     索引大小是估的（estimate_index_size），选择率也是估的 —— 两者都会让
@@ -208,8 +313,8 @@ def hypothetical_index_scan(table, column_stat, selectivity: float,
         "对齐、NULL 位图、重复值前缀有出入 —— 估小了会低估索引扫描 IO，"
         "让建议显得更划算。"
         % (size.pages, avg_width, size.entries_per_page, size.entry_bytes),
-        "选择率 %.6g 来自统计信息估算，不是实测 —— 基线的选择率能从 "
-        "Plan Rows 反推，假设路径没有可反推的实测值。" % selectivity,
+        (SEL_FROM_PLAN_ROWS if selectivity_from_plan else SEL_ESTIMATED)
+        % selectivity,
     ]
     return Estimate(node_type="Index Scan（假设）",
                     startup_cost=est.startup_cost, total_cost=est.total_cost,

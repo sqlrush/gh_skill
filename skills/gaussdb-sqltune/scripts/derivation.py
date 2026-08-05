@@ -5,7 +5,10 @@
     0  统计信息新鲜度   不新鲜 → 输入本身不可信，整段作废
     1  代价常数         本实例实际值，让人看出哪些被调过
     2  复算基线（校准） 用公式重算 EXPLAIN 已给出的计划，逐节点比对
-    3  结论             只有 0 和 2 都通过才允许出现
+    3  假设路径         只有 0 和 2 都通过才计算 —— **不通过就不算**，
+                        不是「算了再标成不可信」。数字一旦印出来就会被读，
+                        旁边那行免责声明拦不住。
+    4  结论             基线与假设的可靠性不同，必须说破
 
 **这份报告存在的意义不是把话说长，是让每个数字可被独立复核。** 所以每个
 算子都摊开成逐项算式（代入了实际数值），每一项都能拿计算器验。
@@ -17,7 +20,7 @@
 """
 from __future__ import annotations
 
-from typing import List, Optional, Sequence
+from typing import Optional, Sequence
 
 import calibrate as _cal
 import render
@@ -30,7 +33,8 @@ COST_IS_NOT_TIME = (
 
 
 def render_report(calibration, constants, freshness: Sequence,
-                  sql: str = "", plan_text: str = "") -> str:
+                  sql: str = "", plan_text: str = "",
+                  proposals: Optional[Sequence] = None) -> str:
     out = ["# 代价推演\n"]
     if sql:
         out.append("## 被分析的 SQL\n\n" + render.code_block("sql", sql))
@@ -38,7 +42,8 @@ def render_report(calibration, constants, freshness: Sequence,
     out.append(_section_freshness(freshness))
     out.append(_section_constants(constants))
     out.append(_section_calibration(calibration))
-    out.append(_section_verdict(calibration, freshness))
+    out.append(_section_proposals(calibration, freshness, proposals or []))
+    out.append(_section_verdict(calibration, freshness, proposals or []))
     return "\n".join(out)
 
 
@@ -66,7 +71,12 @@ def _section_freshness(freshness: Sequence) -> str:
     out = ["## 0. 统计信息新鲜度\n",
            "推演的全部输入（页数、行数、n_distinct、correlation）都是上次 "
            "ANALYZE 时冻结的快照。表在那之后变化太大，这些数不会报错，"
-           "只会让推演算出一个**精确的错数**。所以先判新鲜度。\n"]
+           "只会让推演算出一个**精确的错数**。所以先判新鲜度。\n",
+           "判据是**冻结页数 vs 实时页数**，以及 pg_stats 里有没有统计行 —— "
+           "这两个信号不受 `pg_stat_reset()` 影响。`last_analyze` 那一列仅供"
+           "参考：它是统计收集器的计数器，可以被单独清掉，而 ANALYZE 的成果"
+           "存在 pg_statistic 里不受影响，拿它当判据会把统计完好的表误判成"
+           "「从未分析」。\n"]
     if not freshness:
         out.append("> 没有拿到任何表的新鲜度数据 —— 无法判断，按不通过处理。\n")
         return "\n".join(out)
@@ -74,11 +84,12 @@ def _section_freshness(freshness: Sequence) -> str:
     rows = []
     for f in freshness:
         drift = "n/a" if f.drift is None else "%.1f%%" % (f.drift * 100.0)
-        rows.append([f.table, "%.0f" % f.reltuples, "%.0f" % f.live_tuples,
-                     drift, f.last_analyze,
+        rows.append([f.table, "%.0f" % f.relpages, "%.0f" % f.cur_pages, drift,
+                     str(f.stat_columns), f.last_analyze or "无记录",
                      "通过" if f.fresh else "**不通过**"])
     out.append(render.table(
-        ["表", "冻结行数", "近实时行数", "偏离", "上次 ANALYZE", "判定"], rows))
+        ["表", "冻结页数", "实时页数", "页偏离", "统计列数",
+         "last_analyze（参考）", "判定"], rows))
 
     for f in freshness:
         if not f.fresh:
@@ -169,9 +180,66 @@ def _section_calibration(calibration) -> str:
     return "\n".join(out)
 
 
-def _section_verdict(calibration, freshness: Sequence) -> str:
+def _section_proposals(calibration, freshness: Sequence,
+                       proposals: Sequence) -> str:
+    out = ["## 3. 假设路径\n"]
+    if not proposals:
+        out.append("本次没有待评估的索引建议。\n")
+        return "\n".join(out)
+
     ok, reason = may_emit_advice(calibration, freshness)
-    out = ["## 3. 结论\n"]
+    if not ok:
+        # **不算，而不是算了标成不可信。** 数字一旦印出来就会被读，
+        # 旁边那行免责声明拦不住。
+        out.append("**不计算。** 前置条件不成立：%s\n" % reason)
+        out.append("> 待评估的建议：%s\n"
+                   % "；".join("`%s`" % p.ddl for p in proposals))
+        return "\n".join(out)
+
+    out.append("下面的数字与第 2 节**性质不同**，不要并排看待：\n")
+    out.append("- 第 2 节的复算值有实测答案可对，对上了才走到这里；\n"
+               "- 这一节没有答案可对。索引还不存在，它的大小是估的；"
+               "选择率也没有可反推的实测值，是按统计信息算的。\n")
+    out.append("**所以这一节的每个数都是估算值。**\n")
+
+    for i, p in enumerate(proposals, 1):
+        out.append("\n### 3.%d `%s`\n" % (i, p.ddl))
+        ratio = "n/a" if p.ratio is None else "%.2f×" % p.ratio
+        out.append(render.table(
+            ["", "代价", "来源"],
+            [["基线（当前计划）", "%.2f" % p.baseline_total, "EXPLAIN 实测"],
+             ["假设（建索引后）", "%.2f" % p.hypothetical_total, "**估算**"],
+             ["比值", ratio, "两者不同源，比值也是估算"]]))
+
+        terms = getattr(p.scan_estimate, "terms", []) or []
+        if terms:
+            width = max(len(t.label) for t in terms)
+            body = ["%-*s  %-34s = %16.4f" % (width, t.label, t.formula, t.value)
+                    for t in terms]
+            body.append("─" * (width + 56))
+            body.append("%-*s  %-34s = %16.4f"
+                        % (width, "假设的索引扫描", "",
+                           p.scan_estimate.total_cost))
+            out.append("\n**假设的索引扫描，逐项：**\n")
+            out.append(render.code_block("", "\n".join(body)))
+
+        notes = list(getattr(p.scan_estimate, "notes", []) or [])
+        for node in getattr(p.recomputed, "unmodeled", []) or []:
+            notes.append(
+                "上层的 %s 未建模，代价沿用实测值 —— 换了下层路径之后它本该"
+                "变化，这里没算，所以总数偏保守。" % node.node_type)
+        if notes:
+            out.append("\n**这条建议里哪些是估的：**\n")
+            for note in notes:
+                out.append("- %s" % note)
+            out.append("")
+    return "\n".join(out)
+
+
+def _section_verdict(calibration, freshness: Sequence,
+                     proposals: Sequence = ()) -> str:
+    ok, reason = may_emit_advice(calibration, freshness)
+    out = ["## 4. 结论\n"]
     if not ok:
         out.append("**不出代价结论。**\n")
         out.append("%s\n" % reason)
@@ -180,4 +248,10 @@ def _section_verdict(calibration, freshness: Sequence) -> str:
         return "\n".join(out)
     out.append("%s\n" % reason)
     out.append("%s\n" % COST_IS_NOT_TIME)
+    if proposals:
+        out.append(
+            "\n**基线是复算并校准过的；假设路径是估算的。** 前者说「当前这个"
+            "代价是这么来的」，有实测背书；后者说「改了会变成多少」，没有。"
+            "把两者当成同等可靠会高估这条建议的确定性 —— 真要背书，"
+            "在直连通道上用 hypopg 实测一次。\n")
     return "\n".join(out)

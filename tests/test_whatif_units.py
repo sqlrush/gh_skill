@@ -180,6 +180,40 @@ def test_hypothetical_scan_declares_both_estimated_inputs():
     assert "选择率" in joined and "不是实测" in joined
 
 
+def test_selectivity_from_plan_rows_is_not_called_an_estimate():
+    """**别把已有的严谨性说没了。**
+
+    索引建在已经在过滤的那一列上时，选择率是从实测 Plan Rows 反推的，不是估的。
+    把它标成「估算」会让读的人以为这里也有不确定性，而实际上没有 —— 反过来
+    夸大不确定性同样是不准确，只是方向安全而已。
+    """
+    est = whatif.hypothetical_index_scan(_Table(), _Stat(), 1e-6, COST,
+                                         200000.0, 8,
+                                         selectivity_from_plan=True)
+    joined = "\n".join(est.notes)
+    assert "从**实测**计划里反推" in joined
+    assert "不是实测" not in joined
+
+
+# --- 从计划里提候选 ----------------------------------------------------------
+
+@pytest.mark.parametrize("text,expected", [
+    ("(id > 1000)", ["id"]),
+    ("(b.product_id = 4447)", ["product_id"]),
+    ("((a > 1) AND (b = 2))", ["a", "b"]),
+    ("((a > 1) AND (a < 9))", ["a"]),            # 去重
+    ("", []),
+])
+def test_filter_columns(text, expected):
+    assert whatif.filter_columns(text) == expected
+
+
+def test_expression_filter_yields_no_candidate():
+    """lower(name) = 'x' 要建的是表达式索引 —— 与本模块能估的普通 btree 不是
+    一回事。猜一个列名出来会给出一条建了也不会被用的索引建议。"""
+    assert whatif.filter_columns("(lower(name) = 'x')") == []
+
+
 def test_missing_correlation_refuses():
     class _NoCorr:
         column = "id"
