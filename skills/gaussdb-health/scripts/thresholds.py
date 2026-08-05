@@ -61,8 +61,16 @@ class Thresholds:
     active_conc_floor: int = 5      # 活跃总数下限才判集中
     repl_lag_notice: int = 16 << 20  # 复制 replay 延迟字节
     repl_lag_warn: int = 64 << 20
-    index_unused_bytes: int = 10 << 20  # 无用索引大小下限
-    stale_min_rows: int = 10000     # 统计陈旧只看 >N 行的表
+    index_unused_bytes: int = 10 << 20  # 索引大小下限（小索引删了不值当）
+    # idx_scan=0 至少要观测多久才算证据。统计重置或实例重启后窗口很短，
+    # 此时全库索引都是 0 —— 不设这道门，报告会把整库索引点名建议删掉。
+    # 3 天是个工程判断：短于此的窗口盖不住日/周级的批量作业。
+    index_unused_min_window_s: int = 3 * 86400
+    stale_min_rows: int = 10000     # 统计新鲜度只看 >N 行的表
+    # 冻结页数与实时页数偏离多少算陈旧。判据用页数而不是 last_analyze：
+    # 后者会被 pg_stat_reset() 清掉，而 ANALYZE 的成果存在 pg_statistic 里
+    # 不受影响 —— 拿它当判据会把统计完好的表判成「从未分析」。
+    stale_page_drift: float = 0.10
     rollback_pct: float = 10        # 回滚率 >%
     rollback_floor: int = 1000      # 事务总数下限
 

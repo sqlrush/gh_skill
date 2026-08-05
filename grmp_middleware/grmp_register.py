@@ -171,6 +171,19 @@ def main(argv: Sequence[str] = None) -> int:
             return 1
 
     if args.dry_run:
+        if args.dml_out:
+            # 原先这里直接 return 0，**而 --dml-out 的导出代码在下面** ——
+            # 于是 `--dry-run --dml-out X` 静默什么都不做还返回 0，调用方以为
+            # 生成好了。实测被它骗过一次：交付 DML 明明没更新，命令却成功了。
+            print(
+                "\n--dry-run 不能与 --dml-out 同用：DML 里的 id 来自脚本库"
+                "（每条 INSERT 都要带 id），不写库就分配不出 id。\n"
+                "要生成交付 DML，去掉 --dry-run：\n"
+                "  python3 -m grmp_middleware.grmp_register --registry %s \\\n"
+                "      --db ~/.gdaa/grmp/script_config.db --replace \\\n"
+                "      --exclude-unused --dml-out %s"
+                % (args.registry, args.dml_out), file=sys.stderr)
+            return 2
         print("\n--dry-run：未写库")
         return 0
 
