@@ -110,11 +110,22 @@ def ensure_explainable(sql: str, analyze: bool = False) -> None:
             % len(statements)
         )
 
-    if not is_read_only(statements[0]):
+    # 只有注释/空白时 split_statements 仍会给回一项，但它没有可执行内容。
+    # 这道检查以前是被「非只读」那条顺手拦住的 —— 放宽只读要求后就漏了，
+    # 得显式判。递一段纯注释进模板会拼出 `EXPLAIN (...) -- xxx`，
+    # EXPLAIN 后面空无一物，报的是看不出所以然的语法错。
+    if not leading_keyword(statements[0]):
+        raise ExplainNotAllowed("SQL 里没有可执行的语句（只有注释或空白）。")
+
+    # 只在 analyze 时才要求只读。EXPLAIN 不带 ANALYZE **根本不执行**语句 ——
+    # 实测 `EXPLAIN UPDATE ...` 走只读模板能正常出计划(4 行)，拒掉它是
+    # 平白砍能力。带 ANALYZE 就不一样了:语句会真跑，只读会话当场拦下，
+    # 但要在这里先说清原因，而不是让用户看一句数据库的只读事务报错。
+    if analyze and not is_read_only(statements[0]):
         raise ExplainNotAllowed(
-            "只受理只读语句，本次是 %s。\n"
-            "EXPLAIN 一条写语句需要把它包在回滚事务里真执行，而回滚包装"
-            "实测可被注释绕过，那条通道等于开放写权限。\n"
-            "写语句的执行计划请走直连（driver: pg8000）。"
+            "EXPLAIN ANALYZE 只受理只读语句，本次是 %s。\n"
+            "带 ANALYZE 时语句会**真执行**。写语句要包在回滚事务里跑，"
+            "而回滚包装实测可被一个 `--` 注释绕过，那条通道等于开放写权限。\n"
+            "写语句的实际执行计划请走直连（driver: pg8000）。"
             % (leading_keyword(statements[0]).upper() or "非查询语句")
         )

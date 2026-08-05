@@ -71,21 +71,41 @@ def test_multiple_statements_are_rejected(sql):
     "DROP TABLE t",
     "TRUNCATE t",
 ])
-def test_write_statements_are_rejected(sql):
-    with pytest.raises(ExplainNotAllowed) as ei:
-        ensure_explainable(sql)
-    assert "只读" in str(ei.value)
+def test_write_statements_pass_when_not_analyzing(sql):
+    """不带 ANALYZE 的写语句要放行 —— EXPLAIN 根本不执行它。
+
+    这里曾经一律拒掉，是判错了：实测 `EXPLAIN UPDATE ...` 走只读模板能正常
+    出计划（4 行）。拒掉它是平白砍掉一个安全且有用的能力，而且与按 sql_id
+    取 SQL 那条入口不一致 —— 那条从库里取回来的常常就是 DML。
+
+    真正的兜底在数据库侧：脚本标了 readonly，写操作到不了那一步。
+    """
+    ensure_explainable(sql)
 
 
-def test_write_statement_still_rejected_when_analyze_requested():
-    """DML 的 EXPLAIN ANALYZE 在白名单下不可用 —— 不是「降级成不 analyze」。
+@pytest.mark.parametrize("sql", [
+    "UPDATE t SET a = 1",
+    "DELETE FROM t",
+    "INSERT INTO t VALUES (1)",
+])
+def test_write_statements_are_rejected_when_analyze_requested(sql):
+    """带 ANALYZE 就不一样了：语句会**真执行**。
 
-    静默降级会让用户以为拿到的是实际执行的计划,而实际是估算计划。
-    实测过两者能差 2.3 倍(cost 1046000 vs 2448304)。
+    只读会话当场会拦（实测 SQLSTATE 25006），但要在这里先说清原因，
+    而不是让用户看一句数据库的只读事务报错。
+
+    也不能静默降级成「不 analyze」—— 那会让用户以为拿到的是实际执行的计划，
+    而实际是估算计划，实测两者能差 2.3 倍（cost 1046000 vs 2448304）。
     """
     with pytest.raises(ExplainNotAllowed) as ei:
-        ensure_explainable("UPDATE t SET a = 1", analyze=True)
+        ensure_explainable(sql, analyze=True)
     assert "只读" in str(ei.value)
+
+
+def test_multi_statement_is_rejected_even_without_analyze():
+    """多语句在哪种情况下都拒 —— 那是注入面，与 analyze 无关。"""
+    with pytest.raises(ExplainNotAllowed):
+        ensure_explainable("SELECT 1; DROP TABLE t")
 
 
 def test_read_only_statement_allowed_with_analyze():

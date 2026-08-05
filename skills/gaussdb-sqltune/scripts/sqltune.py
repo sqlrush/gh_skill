@@ -104,6 +104,10 @@ def _guard_sql(sql_text: str, analyze: bool) -> None:
 def _tune(runner, db, *, original_sql: str, binds: list[str], do_analyze: bool,
           sql_id: str = "", source: str = "", schema: str = "") -> TuneResult:
     sub = substitute(original_sql, binds)
+    if db is None:
+        # 没有会话时 SQL 要递进 EXPLAIN 模板 —— 无论它从哪来都得过守卫。
+        # 按 sql_id 取的 SQL 走的是另一条入口，早先漏了这一道。
+        _guard_sql(sub.sql, do_analyze)
     ev = collect(runner, db, sub.sql, do_analyze)
 
     verified: list[IndexCandidate] = []
@@ -244,6 +248,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             # 没有会话不等于什么都做不了：证据与执行计划照采，
             # 只是索引建议拿不到 hypopg 背书。降级的事实写进报告，不隐瞒。
             db = None
+            # 按 sql_id 取的 SQL 此刻还没到手，守卫挪到取回之后（_tune 里）。
+            # 直接给的 SQL 现在就能校验，早报错早收工。
             if not has_id:
                 _guard_sql(sql_text, args.analyze)
     except (common.ConfigError, common.CredentialError, common.DBError,
