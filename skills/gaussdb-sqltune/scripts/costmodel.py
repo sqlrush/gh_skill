@@ -361,6 +361,137 @@ def index_scan(inp: IndexScanInput, cost, loop_count: float = 1.0,
     )
 
 
+# --- Join 算子 ---------------------------------------------------------------
+#
+# **join 复算一律拿子节点的实测 cost 当输入**，不拿我自己复算的子节点值。
+# 两个理由：
+#   1. 误差不累积。用复算值的话，扫描层偏 1%，join 层跟着偏，再上一层再偏，
+#      最后只知道「总数对不上」，不知道是哪一层的公式错了。
+#   2. 这样每个节点检验的是**它自己那条公式**，正是逐节点校准的意义。
+
+def nested_loop(outer_total: float, outer_startup: float,
+                inner_total: float, inner_startup: float,
+                outer_rows: float, inner_rows: float, cost,
+                join_quals: int = 0) -> Estimate:
+    """嵌套循环。costsize.c: cost_nestloop（内层无 Materialize 的常规情形）。
+
+    展开后是很直观的一句话：**外层代价 + 外层行数 × 内层代价**。
+
+        startup = 外.startup + 内.startup
+        total   = 外.total + 外行数 × 内.total
+                + (cpu_tuple_cost + cpu_operator_cost×连接条件数) × 外行数×内行数
+
+    内层重扫的代价按「与首次相同」计（cost_rescan 对索引扫描就是这么算的）。
+    内层若是 Materialize，重扫会便宜得多，此处未建模 —— 遇到那种计划应当
+    判为未建模，而不是拿这条公式硬套。
+    """
+    if outer_rows < 0 or inner_rows < 0:
+        raise ModelError("行数不能为负：%r / %r" % (outer_rows, inner_rows))
+
+    startup = outer_startup + inner_startup
+    source = outer_total + outer_rows * inner_total
+    pairs = outer_rows * inner_rows
+    cpu_per_pair = cost.cpu_tuple_cost + cost.cpu_operator_cost * join_quals
+    cpu = cpu_per_pair * pairs
+
+    return Estimate(
+        node_type="Nested Loop",
+        startup_cost=startup,
+        total_cost=source + cpu,
+        terms=[
+            Term("外层扫描", "%g" % outer_total, outer_total),
+            Term("内层重复 %g 次" % outer_rows,
+                 "%g × %g" % (outer_rows, inner_total),
+                 outer_rows * inner_total),
+            Term("配对 CPU",
+                 "(%g + %g×%d) × %g×%g" % (cost.cpu_tuple_cost,
+                                           cost.cpu_operator_cost, join_quals,
+                                           outer_rows, inner_rows),
+                 cpu),
+        ],
+    )
+
+
+def hash_join(outer_total: float, outer_startup: float,
+              inner_total: float, inner_rows: float, inner_width: int,
+              outer_rows: float, output_rows: float, cost,
+              num_hashclauses: int = 1, join_quals: int = 0) -> Estimate:
+    """哈希连接（**单批次**）。costsize.c: initial_cost_hashjoin + final_cost_hashjoin。
+
+        startup = 外.startup + 内.total                      ← 内表必须先全建完
+                + (cpu_operator_cost×哈希列数 + cpu_tuple_cost) × 内行数
+        run     = (外.total − 外.startup)
+                + cpu_operator_cost×哈希列数 × 外行数         ← 探测时算哈希
+                + 桶内比较 + cpu_tuple_cost × 输出行数
+
+    **内表放不下 work_mem 时直接拒绝建模，不猜批次数。** 多批次要按
+    ExecChooseHashTableSize 的规则算批数，还要加内外表各自的落盘读写；
+    批数猜错一档，代价差一个量级。宁可报「未建模」也不给一个像模像样的错数。
+
+    桶内比较那一项按均匀分布近似（每桶约 1 条），真值要 MCV 分布才算得准，
+    所以整个结果置 approximate。倾斜列上这一项会被低估。
+    """
+    if inner_rows < 0 or outer_rows < 0 or output_rows < 0:
+        raise ModelError("行数不能为负")
+    if inner_width < 0:
+        raise ModelError("行宽不能为负：%r" % inner_width)
+
+    inner_bytes = relation_byte_size(inner_rows, inner_width)
+    if inner_bytes > cost.work_mem:
+        raise ModelError(
+            "内表约 %.1f MB，超过 work_mem %.1f MB —— 会走多批次哈希，"
+            "批数与落盘 IO 本实现未建模。批数猜错一档代价差一个量级，"
+            "所以判为未建模，不给近似值。"
+            % (inner_bytes / 1048576.0, cost.work_mem / 1048576.0))
+
+    hash_cost = cost.cpu_operator_cost * num_hashclauses
+    build = (hash_cost + cost.cpu_tuple_cost) * inner_rows
+    startup = outer_startup + inner_total + build
+    probe_hash = hash_cost * outer_rows
+    # 桶内比较：均匀分布下每桶约 1 条，costsize.c 的 ×0.5 是「平均比到一半」
+    bucket = hash_cost * outer_rows * 1.0 * 0.5
+    out_cpu = (cost.cpu_tuple_cost + cost.cpu_operator_cost * join_quals) * output_rows
+
+    return Estimate(
+        node_type="Hash Join",
+        startup_cost=startup,
+        total_cost=(outer_total - outer_startup) + startup
+                   + probe_hash + bucket + out_cpu,
+        terms=[
+            Term("内表建哈希表（含其扫描）",
+                 "%g + (%g+%g)×%g" % (inner_total, hash_cost,
+                                      cost.cpu_tuple_cost, inner_rows),
+                 inner_total + build),
+            Term("外表扫描", "%g" % outer_total, outer_total),
+            Term("探测算哈希", "%g × %g" % (hash_cost, outer_rows), probe_hash),
+            Term("桶内比较（均匀分布近似）",
+                 "%g × %g × 0.5" % (hash_cost, outer_rows), bucket),
+            Term("输出行 CPU", "%g × %g" % (cost.cpu_tuple_cost, output_rows),
+                 out_cpu),
+        ],
+        approximate=True,
+        notes=["桶内比较按均匀分布近似（每桶约 1 条）。真值要 MCV 分布，"
+               "倾斜列上这一项会被低估。"],
+    )
+
+
+def relation_byte_size(tuples: float, width: int) -> float:
+    """关系在内存里占多少字节。costsize.c 同名函数。
+
+    每行除了数据还有 24 字节的元组头（SizeofHeapTupleHeader 对齐到 8）。
+    漏掉它会让「内表装不装得下 work_mem」在临界处判反 —— 而判反的后果是
+    把多批次哈希当成单批次，少算掉全部落盘 IO。
+    """
+    return tuples * (_maxalign(width) + _HEAP_TUPLE_HEADER)
+
+
+_HEAP_TUPLE_HEADER = 24
+
+
+def _maxalign(width: int) -> int:
+    return (int(width) + 7) & ~7
+
+
 def _require_range(name: str, value: float, low: float, high: float) -> None:
     if value is None or value != value or not (low <= value <= high):
         raise ModelError("%s 应在 [%g, %g] 内，取到 %r" % (name, low, high, value))
