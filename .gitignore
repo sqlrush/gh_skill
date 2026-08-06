@@ -3,3 +3,24 @@
 common/__pycache__/
 **/__pycache__/
 *.pyc
+.venv/
+
+# 本地开发时 kbimport 的知识库落点(客户规范不入库)
+/kb/
+
+# grmp-mock 的本地状态与交付产物(可能含客户工号/dataIp,不入库)
+/docs/delivery/
+*.db
+.preferences
+.arts/continuous-build.json
+.arts/settings.json
+.jlsp/debugger/breakpoints.json
+.jlsp/debugger/expressions.json
+.jlsp/debugger/type_renderers.json
+.jlsp/debugger/views_state.json
+.jlsp/debugger/watches.json
+.vscode/settings.json
+.vscode/tags-34.wecode-db
+.vscode/tags-34.wecode-db-shm
+.vscode/tags-34.wecode-db-wal
+.vscode/tags-34.wecode-lock

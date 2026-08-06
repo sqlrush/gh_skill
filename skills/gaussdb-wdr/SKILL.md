@@ -48,11 +48,11 @@ metadata:
 
    只读产固定小节证据包 + `## Deterministic Findings`（严重度/Code/指标/值/阈值/证据/sql_id）+ `## Collection Notes`。`--top N` 调列表条数；`--save-html <path>` 留底原生 WDR；`--format json` 取结构化。**不要**为单一维度多跑命令。
 
-5. **加载方法论。** 阅读 `{baseDir}/references/wdr-methodology.md`，逐维度按检查清单解读，阈值口径查 `wdr-thresholds.md`。
+4. **加载方法论。** 阅读 `{baseDir}/references/wdr-methodology.md`，逐维度按检查清单解读，阈值口径查 `wdr-thresholds.md`。
 
-6. **逐维度判断，优先定位高风险，并把每条问题闭环到"引发请求 + 怎么优化"。** 对每个维度解读 delta、**先看 severity ≥ 🟠 的发现**、定根因、跨维关联。**报告不能只列问题**——每条发现必须落到：① **哪些请求引发**（按 `references/wdr-methodology.md` 的「问题归因纪律」表，从 Top SQL 的对应列定位：temp 溢出→`spill_MB`、DB time/CPU→`elapsed_s`/`cpu_s`、IO→物理读、锁/死锁→`cpu_s`≈0 被阻塞语句 + 死锁表的 DML）；② **该请求如何优化**（带 sql_id 的先 `sqltune` 实证；阻塞/睡眠类给事务并发层建议）。注意 temp/IO/锁的元凶请求往往不是同一条，别一锅烩。每条结论引用证据包里某个真实数字。
+5. **逐维度判断，优先定位高风险，并把每条问题闭环到"引发请求 + 怎么优化"。** 对每个维度解读 delta、**先看 severity ≥ 🟠 的发现**、定根因、跨维关联。**报告不能只列问题**——每条发现必须落到：① **哪些请求引发**（按 `references/wdr-methodology.md` 的「问题归因纪律」表，从 Top SQL 的对应列定位：temp 溢出→`spill_MB`、DB time/CPU→`elapsed_s`/`cpu_s`、IO→物理读、锁/死锁→`cpu_s`≈0 被阻塞语句 + 死锁表的 DML）；② **该请求如何优化**（带 sql_id 的先 `sqltune` 实证；阻塞/睡眠类给事务并发层建议）。注意 temp/IO/锁的元凶请求往往不是同一条，别一锅烩。每条结论引用证据包里某个真实数字。
 
-7. **交叉验证门（核心，出建议前必须做）。**
+6. **交叉验证门（核心，出建议前必须做）。**
    - **证据锚定**：每条结论/建议必须引用一个真实越界指标/发现（按 Code）；无指标支撑的移入「未证实想法」，不进正式发现。
    - **红线不漏**：每条 🟠/🔴 确定性发现都必须被处理；漏掉的标 `⚠ 模型遗漏：<Code>`。
    - **严重度一致**：你的严重度必须与确定性带一致；不一致标 `⚠ 严重度不符`，以确定性为准。总体状态 = 确定性最差 severity，**你不得下调**。
@@ -64,7 +64,7 @@ metadata:
 
      采纳其 `## Verified Index Candidates` / 改写验证里**已通过**的方案（带真实倍数，如 `6602→2.47, 2672×`）；**验证未通过/未达标的建议不要写进报告**。
 
-8. **写判断 → 渲染报告。** 把交叉验证过的判断写成 `interp.json`（schema 见下），再让脚本确定性渲染：
+7. **写判断 → 渲染报告。** 把交叉验证过的判断写成 `interp.json`（schema 见下），再让脚本确定性渲染：
 
    ```bash
    python3 {baseDir}/scripts/wdr.py collect -c <conn> --begin <B> --end <E> --format json > /tmp/wdr_ev.json   # 若 step4 未存则补存

@@ -19,8 +19,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 _HERE = pathlib.Path(__file__).resolve()
-sys.path.insert(0, str(_HERE.parent))          # sibling modules
-for _anc in _HERE.parents:                      # locate common/ (repo root or install dir)
+sys.path.insert(0, str(_HERE.parent))  # sibling modules
+for _anc in _HERE.parents:  # locate common/ (repo root or install dir)
     if (_anc / "common" / "__init__.py").exists():
         sys.path.insert(0, str(_anc))
         break
@@ -60,7 +60,7 @@ def require_direct_sql_path(conn_name: str) -> None:
 
     **刻意不用 access.session_for()**：那个口子除了白名单型驱动，还会拒掉
     provides_session=False 的 gsql（每条语句起独立子进程）。而 explain
-    根本不需要跨语句会话 —— 单条 EXPLAIN，DML 的 ANALYZE 也是在一次
+    根本不需要跨语句会话 —— 单条 EXPLAIN 的 ANALYZE 也是在一次
     调用里 BEGIN/ROLLBACK 包住的，gsql 今天跑得好好的。用会话守卫会把
     一批能用的连接一并拒掉，属于借来的约束。这里只判它真正的边界：
     能不能执行未注册的 SQL。
@@ -68,7 +68,7 @@ def require_direct_sql_path(conn_name: str) -> None:
     判断本身交给连接模块 —— skill 里不该出现 driver 名字，否则客户再换
     一种白名单型中间件，这句判断会静默放行。
     """
-    common.find(conn_name)                             # ConfigError 由调用方接
+    common.find(conn_name)  # ConfigError 由调用方接
     try:
         access.require_unregistered_sql(conn_name)
     except access.UnregisteredSqlUnsupported as exc:
@@ -78,6 +78,14 @@ def require_direct_sql_path(conn_name: str) -> None:
 _DML_RE = re.compile(r"(?i)^\s*(insert|update|delete|merge)\b")
 _CTE_RE = re.compile(r"(?i)^\s*with\b")
 _CTE_DML_RE = re.compile(r"(?i)\b(insert|update|delete|merge)\b")
+_DDL_RE = re.compile(
+    r'\b(?:'
+    r'CREATE\s+OR\s+REPLACE|'
+    r'CREATE|ALTER|DROP|TRUNCATE|'
+    r'RENAME|COMMENT|REINDEX'
+    r')\b',
+    re.IGNORECASE
+)
 
 
 @dataclass(frozen=True)
@@ -92,6 +100,10 @@ def is_dml(sql_text: str) -> bool:
     if _DML_RE.search(sql_text):
         return True
     return bool(_CTE_RE.search(sql_text) and _CTE_DML_RE.search(sql_text))
+
+
+def is_ddl(sql_text: str) -> bool:
+    return _DDL_RE.search(sql_text)
 
 
 def explain_via_script(runner, sql_text: str, analyze: bool) -> str:
@@ -126,20 +138,20 @@ def scan_plan(plan_text: str) -> list[Finding]:
         detail = orig_lines[i].strip()
         if trimmed.startswith("seq scan"):
             out.append(Finding("seq_scan", "warn", detail,
-                "Full table scan; consider an index on the Filter columns if "
-                "the table is large and selectivity is high."))
+                               "Full table scan; consider an index on the Filter columns if "
+                               "the table is large and selectivity is high."))
         elif trimmed.startswith("sort"):
             out.append(Finding("sort", "warn", detail,
-                "Explicit sort; an index matching ORDER BY may remove it. "
-                "Check work_mem if the sort spills to disk."))
+                               "Explicit sort; an index matching ORDER BY may remove it. "
+                               "Check work_mem if the sort spills to disk."))
     if "nested loop" in lower and "seq scan" in lower:
         out.append(Finding("nestloop_seqscan", "warn",
-            "Nested Loop combined with Seq Scan",
-            "Inner-side full scans inside a nested loop multiply cost; "
-            "consider an index on the join key."))
+                           "Nested Loop combined with Seq Scan",
+                           "Inner-side full scans inside a nested loop multiply cost; "
+                           "consider an index on the join key."))
     if "hash join" in lower:
         out.append(Finding("hash_join", "info", "Hash Join present",
-            "Usually fine for large joins; verify hash memory fits work_mem."))
+                           "Usually fine for large joins; verify hash memory fits work_mem."))
     return out
 
 
@@ -206,21 +218,46 @@ def main(argv: Optional[list[str]] = None) -> int:
         else:
             print(f"error: {exc}", file=sys.stderr)
         return 2
-    except (ValueError, access.QueryError) as exc:
+    try:
+        db.set_statement_timeout(args.timeout)
+        # 校验一：存在ANALYZE关键字，则不执行
+        # if _ANALYZE_RE.search(sql_text):
+        #    print("The EXPLAIN execution plan should not contain the ANALYZE keyword.")
+        #    return 1
+
+        # 校验二：存在DML，则不执行
+        if is_dml(sql_text):
+            print("DML keywords (INSERT/UPDATE/DELETE) detected in SQL statement.")
+            return 1
+
+            # 校验二：存在DDL，则不执行
+        if is_ddl(sql_text):
+            print("DDL keywords (CREATE/REPLACE/ALTER/DROP/TRUNCATE/RENAME/COMMENT/REINDEX) detected in SQL statement.")
+            return 1
+        # 校验三：存在多SQL,则不执行。 检测 SQL 中是否存在多个分号（排除字符串和注释中的分号）
+        sql_cleaned = re.sub(r"'.*?'", "''", sql_text, flags=re.DOTALL)  #
+        sql_cleaned = re.sub(r'".*?"', '""', sql_cleaned, flags=re.DOTALL)  #
+        sql_cleaned = re.sub(r'--.*?$', '', sql_cleaned, flags=re.MULTILINE)  #
+        sql_cleaned = re.sub(r'/\*.*?\*/', '', sql_cleaned, flags=re.DOTALL)  #
+        semicolon_count = sql_cleaned.count(';')
+        if semicolon_count > 1:
+            print(
+                "Multiple semicolons (;) detected, suspected of containing multiple SQL statements. Please review and modify before executing.")
+            return 1
+        plan = explain(db, sql_text, args.analyze)
+        findings = scan_plan(plan)
+        if args.format == "json":
+            print(json.dumps({"sql": sql_text, "plan": plan,
+                              "findings": [f.__dict__ for f in findings]},
+                             ensure_ascii=False, indent=2))
+        else:
+            print(explain_report(sql_text, plan, findings), end="")
+        return 0
+    except (ValueError, common.DBError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     finally:
-        if db is not None:
-            db.close()
-
-    findings = scan_plan(plan)
-    if args.format == "json":
-        print(json.dumps({"sql": sql_text, "plan": plan,
-                          "findings": [f.__dict__ for f in findings]},
-                         ensure_ascii=False, indent=2))
-    else:
-        print(explain_report(sql_text, plan, findings), end="")
-    return 0
+        db.close()
 
 
 if __name__ == "__main__":
