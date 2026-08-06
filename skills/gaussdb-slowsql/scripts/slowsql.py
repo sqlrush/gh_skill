@@ -98,16 +98,26 @@ def slow_sql(runner, threshold_ms: int, limit: int, begin_time: str, export: boo
             headers = ['unique_sql_id', 'query', 'calls', 'avg_ms', 'total_sec',
                        'cpu_sec', 'rows']
 
-            # 写入 CSV 文件
+            # 写入 CSV 文件。
+            #
+            # **G_EXPORT_DIR 必须先转成 Path。** os.environ.get 给的是 str，
+            # 而后面还要 `/ "csv"` —— str / str 直接 TypeError，也就是说这个
+            # 环境变量一旦设置，导出必崩。实测确认过。
             g_export_dir = os.environ.get('G_EXPORT_DIR')
-            csv_dir = (g_export_dir if g_export_dir else _HERE.parents[3] / "tmp") / "csv"
-            if not csv_dir.exists():
-                try:
-                    csv_dir.mkdir(parents=True, exist_ok=True)
-                except PermissionError as e:
-                    print(f"权限不足: {e}")
-                except OSError as e:
-                    print(f"创建目录失败: {e}")
+            base = pathlib.Path(g_export_dir) if g_export_dir else _HERE.parents[3] / "tmp"
+            csv_dir = base / "csv"
+            try:
+                csv_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                # 建不出目录就**不要往下走**。原先只 print 一句再继续 open()，
+                # 报出来的是「No such file or directory: .../xxx.csv」，
+                # 看着像取数失败，而真正的原因（目录建不了）已经被那句 print
+                # 冲到几十行之前去了。
+                print(f"导出目录 {csv_dir} 建不出来：{e}；本次不导出 CSV。",
+                      file=sys.stderr)
+                return [StmtRow(r[0], r[1], as_int(r[2]), as_float(r[3]),
+                                as_float(r[4]), as_float(r[5]), as_int(r[6]))
+                        for r in rows[:min(SLOWSQL_MAX_ROWS, len(rows), 5)]]
 
             csv_filename = csv_dir / f"slow_sql_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
             with open(csv_filename, 'w', newline='', encoding='utf-8') as f:
