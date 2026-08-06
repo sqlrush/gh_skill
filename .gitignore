@@ -19,3 +19,8 @@ common/__pycache__/
 .jlsp/debugger/type_renderers.json
 .jlsp/debugger/views_state.json
 .jlsp/debugger/watches.json
+.vscode/settings.json
+.vscode/tags-34.wecode-db
+.vscode/tags-34.wecode-db-shm
+.vscode/tags-34.wecode-db-wal
+.vscode/tags-34.wecode-lock
