@@ -23,6 +23,7 @@ description: 游标 SQL 涉及的表的页数/行数/大小（证据包 ## Table
 sql: |
   SELECT n.nspname, c.relname, c.relpages,
          c.reltuples::bigint AS reltuples,
+         pg_relation_size(c.oid) / current_setting('block_size')::bigint AS curpages,
          c.relkind,
          pg_total_relation_size(c.oid) / 1024.0 / 1024.0 AS size_mb
   FROM pg_class c

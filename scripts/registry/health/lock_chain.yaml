@@ -1,30 +1,47 @@
-# SQL 取自 common/sql.py 的 skill_health_007。
-# **改动：末尾三列加了别名 state / xact_age_s / state_age_s。**
-# 原来 COALESCE(a.state,'') 叫 coalesce，两个 EXTRACT(...) 都叫 date_part ——
-# 两个 date_part 重名，走中间件后只剩一个。
+# 锁等待的**逐条明细** —— 不是只给「根阻塞 pid / 链深 / 被阻数」三个数。
+#
+# 原先这条用 pg_locks 递归自连接，输出聚合到根节点：
+#     根阻塞pid | 链深 | 被阻数 | 根状态 | 时长
+# 三层堆积、十几个会话，报告里只剩一行三个数字。看的人无从判断该找谁、
+# 该处理哪个会话、等的是什么锁、锁在哪张表上。
+#
+# **改用 openGauss 的 pg_thread_wait_status。** 它直接给出 block_sessionid
+# （谁在阻塞我）、lockmode（等的什么锁）、locktag（锁在什么对象上），不必
+# 自己去 pg_locks 里递归拼阻塞关系 —— 那个拼法还容易在 locktag 的某个字段
+# 上匹配错，把不相干的两个会话连成一条链，而连错之后依然是一条看着合理的链。
+#
+# 链的深度由 collectors.py 顺着 block_sessionid 逐级追上去算：要的是「谁是
+# 最终的根」，而不只是「有多深」。
+#
+# **一条必须写在这里的限制：这是快照，锁散了就查不到了。** openGauss 的
+# statement_history 只记 lock_wait_time 的总量，不记当时是谁阻塞的 ——
+# 所以「事后追查某条 SQL 被谁阻塞」在这个内核上做不到，只能在阻塞发生时抓。
+# 实测验证过：sqlid 870461000 等锁 35.4 秒（占其 DB time 的 100%），
+# 事后已无法定位阻塞者。
 name: health.lock_chain
-description: 锁等待链（递归展开阻塞关系）
+description: 锁等待明细（等待者、锁模式、锁对象、阻塞者及其正在执行的语句）
 sql: |
-  WITH RECURSIVE waits AS (
-    SELECT w.pid AS waiter, h.pid AS holder
-    FROM pg_locks w
-    JOIN pg_locks h ON h.granted AND NOT w.granted
-       AND h.locktype=w.locktype AND h.database IS NOT DISTINCT FROM w.database
-       AND h.relation IS NOT DISTINCT FROM w.relation
-       AND h.transactionid IS NOT DISTINCT FROM w.transactionid
-       AND h.pid<>w.pid),
-  chain AS (
-    SELECT holder AS root, waiter, 1 AS depth FROM waits
-    UNION ALL
-    SELECT c.root, w.waiter, c.depth+1 FROM chain c JOIN waits w ON w.holder=c.waiter
-    WHERE c.depth < 20)
-  SELECT c.root, max(c.depth) AS depth, count(DISTINCT c.waiter) AS waiters,
-         COALESCE(a.state,'') AS state,
-         EXTRACT(EPOCH FROM (now()-a.xact_start))   AS xact_age_s,
-         EXTRACT(EPOCH FROM (now()-a.state_change)) AS state_age_s
-  FROM chain c LEFT JOIN pg_stat_activity a ON a.pid=c.root
-  GROUP BY c.root, a.state, a.xact_start, a.state_change
-  ORDER BY depth DESC, waiters DESC
+  SELECT w.sessionid AS waiter_session,
+         w.tid AS waiter_tid,
+         COALESCE(w.wait_status, '') AS wait_status,
+         COALESCE(w.wait_event, '') AS wait_event,
+         COALESCE(w.lockmode, '') AS lockmode,
+         COALESCE(w.locktag, '') AS locktag,
+         w.block_sessionid AS blocker_session,
+         COALESCE(b.state, '') AS blocker_state,
+         COALESCE(b.usename, '') AS blocker_user,
+         COALESCE(b.application_name, '') AS blocker_app,
+         COALESCE(EXTRACT(EPOCH FROM (now() - b.xact_start)), 0) AS blocker_xact_age_s,
+         COALESCE(EXTRACT(EPOCH FROM (now() - b.state_change)), 0) AS blocker_state_age_s,
+         COALESCE(substr(b.query, 1, 200), '') AS blocker_query,
+         COALESCE(substr(a.query, 1, 200), '') AS waiter_query
+  FROM pg_thread_wait_status w
+  LEFT JOIN pg_stat_activity b ON b.sessionid = w.block_sessionid
+  LEFT JOIN pg_stat_activity a ON a.sessionid = w.sessionid
+  WHERE w.block_sessionid IS NOT NULL
+    AND w.block_sessionid <> 0
+    AND w.block_sessionid <> w.sessionid
+  ORDER BY blocker_xact_age_s DESC
   LIMIT {{limit}};
 params:
   - key: limit

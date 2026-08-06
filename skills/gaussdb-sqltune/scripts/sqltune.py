@@ -36,10 +36,25 @@ from common.grmp.statement import (  # noqa: E402
     ensure_explainable,
 )
 import render  # noqa: E402
-from evidence import Evidence, collect, evidence_report  # noqa: E402
+from evidence import (  # noqa: E402
+    Evidence,
+    collect,
+    evidence_report,
+    explain_json,
+    explain_json_via_script,
+)
 from hypoindex import MIN_SPEEDUP, IndexCandidate, verify_indexes  # noqa: E402
 from placeholder import SubstituteResult, substitute  # noqa: E402
 from sqlfetch import sql_fetch  # noqa: E402
+
+# 代价推演。hypopg 走不通时它是唯一的定量证据来源 —— 见 _derivation_report。
+import calibrate  # noqa: E402
+import catalog  # noqa: E402
+import costconst  # noqa: E402
+import derivation  # noqa: E402
+import plantree  # noqa: E402
+import resolve  # noqa: E402
+import whatif  # noqa: E402
 
 # 本 skill 的取数分两条口子（见 evidence.py 模块头）：
 #
@@ -81,15 +96,89 @@ class TuneResult:
     schema: str = ""
     verified_indexes: list = field(default_factory=list)
     index_verify_note: str = ""
+    derivation_report: str = ""
 
 
 _NO_HYPOPG_NOTE = (
-    "**索引建议未经验证。** 本次连接不提供跨语句的持久会话（中间件的白名单模型，"
-    "或每条语句起独立子进程的 gsql），而 hypopg 虚拟索引必须与随后的 EXPLAIN "
-    "落在同一条连接里 —— 跨调用会不报错地得出「加这个索引没用」的错误结论。\n"
-    "下面的索引建议来自表/列统计与执行计划的推断，**加索引前请人工验证**；"
-    "需要验证背书请改用 driver: pg8000 的连接重跑。"
+    "**hypopg 虚拟索引验证在本次连接下不可用。** 中间件的白名单模型（以及每条"
+    "语句起独立子进程的 gsql）不提供跨语句的持久会话，而虚拟索引必须与随后的 "
+    "EXPLAIN 落在同一条连接里 —— 跨调用会不报错地得出「加这个索引没用」的"
+    "错误结论。\n"
+    "**替代证据见下面的「代价推演」一节**：它用规划器自己的公式复算当前计划的"
+    "每一个节点并与 EXPLAIN 实测逐节点比对，通过了才说明模型在这个实例上可信。\n"
+    "注意两者的区别，别混为一谈：hypopg 是**实测**加了索引之后的计划；"
+    "代价推演校准的是**基线**，即「当前这个代价是怎么算出来的」。\n"
+    "所以下面的索引建议依然**未经验证** —— 推演没有回答「加了这条索引会变成"
+    "多少」，加索引前请**人工验证**；需要 hypopg 背书请改用 driver: pg8000 "
+    "的连接重跑。"
 )
+
+
+def _derivation_report(runner, db, sql_text: str, ev) -> str:
+    """跑一遍代价推演，返回报告正文。
+
+    **任何一步失败都返回一段说明，不抛异常。** 推演是附加证据，拿不到不该让
+    整条调优命令失败。但失败原因必须落到报告里 —— 静默省略这一节，读的人会
+    以为「没有推演」而不是「推演没做成」，而这两件事对结论可信度的影响不同。
+    """
+    header = "\n## 代价推演\n\n"
+    try:
+        cost = costconst.from_gucs(ev.gucs)
+    except costconst.MissingConstant as exc:
+        return header + "未进行：代价常数不全 —— %s\n" % exc
+    try:
+        cat = catalog.from_evidence(ev)
+    except catalog.CatalogError as exc:
+        return header + "未进行：%s\n" % exc
+    try:
+        raw = (explain_json(db, sql_text) if db is not None
+               else explain_json_via_script(runner, sql_text))
+        root = plantree.parse(raw)
+    except Exception as exc:            # 取计划失败的形态太多，统一兜住
+        return header + "未进行：拿不到 JSON 格式的执行计划 —— %s\n" % exc
+
+    cal = calibrate.calibrate_best_variant(
+        root, lambda v: resolve.make_resolver(cat, cost, v))
+    verdicts = cat.freshness_report([t.name for t in ev.tables])
+
+    proposals = _index_proposals(root, cat, cost, cal, verdicts)
+    return "\n" + derivation.render_report(cal, cost, verdicts,
+                                           proposals=proposals)
+
+
+def _index_proposals(root, cat, cost, cal, verdicts) -> list:
+    """算候选索引的假设代价。
+
+    **门没过就一条都不算。** 不是算了再标成不可信 —— 数字一旦印出来就会被读，
+    旁边那行免责声明拦不住。这个判断在这里做一次，报告里再做一次，两处都做
+    是有意的：将来有人直接调 render_report 传进 proposals，也拦得住。
+    """
+    ok, _ = derivation.may_emit_advice(cal, verdicts)
+    if not ok:
+        return []
+
+    resolver = resolve.make_resolver(cat, cost, cal.variant)
+    out = []
+    for cand in whatif.propose_from_plan(root, cat, cost, plantree.walk):
+        stat = cand["stat"]
+        if stat.avg_width <= 0 or stat.correlation is None:
+            continue
+        try:
+            scan = whatif.hypothetical_index_scan(
+                cand["table"], stat, cand["selectivity"], cost,
+                cat.total_table_pages(), stat.avg_width,
+                # propose_from_plan 的选择率来自该节点的 Plan Rows，是实测反推
+                selectivity_from_plan=True)
+            rec = whatif.recompute_with_override(root, resolver, cand["node"],
+                                                 scan)
+        except Exception:
+            # 假设路径算不出来不该影响已经校准好的基线报告
+            continue
+        out.append(whatif.Proposal(
+            ddl=cand["ddl"], table=cand["table"].name, column=cand["column"],
+            baseline_total=root.total_cost, hypothetical_total=rec.root_total,
+            scan_estimate=scan, recomputed=rec))
+    return out
 
 
 def _guard_sql(sql_text: str, analyze: bool) -> None:
@@ -124,9 +213,14 @@ def _tune(runner, db, *, original_sql: str, binds: list[str], do_analyze: bool,
             note = ("索引验证不可用（OpenGauss hypopg/gs_index_advise 未启用或不支持）："
                     + str(exc))
 
+    # 推演两条路径都跑：直连路径也要它。hypopg 只回答「加了索引之后代价多少」，
+    # 回答不了「当前这个代价是怎么来的」—— 后者才是让人能复核结论的那部分。
+    deriv = _derivation_report(runner, db, sub.sql, ev)
+
     return TuneResult(original_sql=original_sql, substitution=sub, evidence=ev,
                       sql_id=sql_id, source=source, schema=schema,
-                      verified_indexes=verified, index_verify_note=note)
+                      verified_indexes=verified, index_verify_note=note,
+                      derivation_report=deriv)
 
 
 def tune_by_id(runner, db, raw_id: str, binds: list[str], do_analyze: bool) -> TuneResult:
@@ -183,6 +277,9 @@ def sqltune_report(tr: TuneResult) -> str:
         out += render.table(["#", "Index DDL", "Orig Cost", "Hypo Cost", "Speedup", "Used"], rows)
         out += ("\n> These indexes were verified with hypothetical (virtual) indexes — "
                 "costs are real EXPLAIN comparisons, no index was actually built.\n")
+
+    if tr.derivation_report:
+        out += tr.derivation_report
     return out
 
 
@@ -209,6 +306,7 @@ def _to_jsonable(tr: TuneResult) -> dict:
         },
         "verified_indexes": [c.__dict__ for c in tr.verified_indexes],
         "index_verify_note": tr.index_verify_note,
+        "derivation_report": tr.derivation_report,
     }
 
 

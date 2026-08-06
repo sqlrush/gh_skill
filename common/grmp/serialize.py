@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, Iterable, List, Sequence
 
 from .settings import Settings
@@ -30,6 +31,15 @@ def render_cell(value: Any, settings: Settings) -> str:
         return true_text if value else false_text
     if isinstance(value, str):
         return value
+    if isinstance(value, (list, dict)):
+        # **驱动已经把 json/jsonb 列解码成了 Python 对象。**
+        # 这里若走下面的 str()，产出的是 Python repr（单引号），
+        # 任何消费方都解析不了：
+        #     str([{"Plan": {...}}])  ->  "[{'Plan': {...}}]"
+        # 实测踩到过：sqltune 走中间件取 EXPLAIN (FORMAT JSON) 时，
+        # json.loads 在第 3 个字符就失败。数据库那边本来就是 JSON 文本，
+        # 中间件不该把它变成一个别的语言的字面量。
+        return json.dumps(value, ensure_ascii=False)
     return str(value)
 
 

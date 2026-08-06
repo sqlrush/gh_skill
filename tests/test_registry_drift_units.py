@@ -80,10 +80,6 @@ _GROUPS = {
         "sqltune/plan_text_analyze.yaml",
         "proctune/plan_text_analyze.yaml",
     ],
-    "执行计划 JSON": [
-        "sqltune/plan_json.yaml",
-        "proctune/plan_json.yaml",
-    ],
 }
 
 

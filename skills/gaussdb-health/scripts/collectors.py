@@ -307,37 +307,103 @@ def collect_lwlock(runner, th: Thresholds, top: int) -> DimResult:
 
 
 
+def _chain_depth(session, blocked_by: dict, limit: int = 32) -> int:
+    """从某个等待者往上追到根，返回它上面压着几层。
+
+    带环保护：真实现场出现过互相等待（虽然内核会检测死锁并中断其中一方，
+    但快照可能正好抓在检测之前）。没有 seen 集合的话这里会死循环，
+    而健康检查挂住比报错更难排查。
+    """
+    depth, seen, cur = 0, {session}, blocked_by.get(session)
+    while cur is not None and cur not in seen and depth < limit:
+        depth += 1
+        seen.add(cur)
+        cur = blocked_by.get(cur)
+    return depth
+
+
 def collect_locks(runner, th: Thresholds, top: int) -> DimResult:
+    """锁等待的逐条明细 + 阻塞链结构。
+
+    原先只输出「根阻塞 pid / 链深 / 被阻数 / 状态 / 时长」五个数 —— 三层堆积、
+    十几个会话在报告里只剩一行。要能据此行动，至少得知道：等的是什么锁、
+    锁在哪个对象上、阻塞者是谁、它在跑什么、开着事务多久了。
+    """
     try:
-        rows = runner.run("health.lock_chain", {"limit": top})
+        rows = runner.run("health.lock_chain", {"limit": max(top, 50)})
     except access.QueryError as exc:
         return degraded(DIM_LOCKS, summarize_err(exc))
+
     d = DimResult(dimension=DIM_LOCKS, available=True,
-                  headers=["根阻塞pid", "链深", "被阻数", "根状态", "时长(s)"])
-    worst_sev = Severity.OK
-    worst_line = ""
+                  headers=["等待会话", "锁模式", "锁对象", "阻塞会话",
+                           "阻塞方状态", "事务时长(s)", "阻塞方语句"])
+    if not rows:
+        d.headline = "无阻塞"
+        return d
+
+    blocked_by, by_waiter = {}, {}
     for row in rows:
-        root, depth, waiters = (as_int(row["root"]), as_int(row["depth"]),
-                                as_int(row["waiters"]))
-        state = row["state"]
-        secs = (_f(row["state_age_s"]) if state == "idle in transaction"
-                else _f(row["xact_age_s"]))
+        waiter = as_int(row["waiter_session"])
+        blocked_by[waiter] = as_int(row["blocker_session"])
+        by_waiter[waiter] = row
+
+    # 根 = 阻塞了别人、自己却没被阻塞的会话
+    roots = {b for b in blocked_by.values() if b not in blocked_by}
+    waiters_of = {r: 0 for r in roots}
+    depth_of = {r: 0 for r in roots}
+    for waiter in blocked_by:
+        cur, hops = waiter, 0
+        seen = {waiter}
+        while cur in blocked_by and blocked_by[cur] not in seen and hops < 32:
+            cur = blocked_by[cur]
+            seen.add(cur)
+            hops += 1
+        if cur in waiters_of:
+            waiters_of[cur] += 1
+            depth_of[cur] = max(depth_of[cur], _chain_depth(waiter, blocked_by))
+
+    worst_sev, worst_line = Severity.OK, ""
+    for waiter, row in sorted(by_waiter.items(),
+                              key=lambda kv: -_f(kv[1]["blocker_xact_age_s"])):
+        blocker = as_int(row["blocker_session"])
+        state = row["blocker_state"]
+        secs = (_f(row["blocker_state_age_s"]) if state == "idle in transaction"
+                else _f(row["blocker_xact_age_s"]))
+        d.rows.append([i64(waiter), row["lockmode"] or "?",
+                       (row["locktag"] or "?")[:28], i64(blocker),
+                       state or "?", f"{secs:.0f}",
+                       (row["blocker_query"] or "").replace("\n", " ")[:70]])
+
+    for root in sorted(roots, key=lambda r: -waiters_of.get(r, 0)):
+        row = next((r for r in by_waiter.values()
+                    if as_int(r["blocker_session"]) == root), None)
+        if row is None:
+            continue
+        state = row["blocker_state"]
+        secs = (_f(row["blocker_state_age_s"]) if state == "idle in transaction"
+                else _f(row["blocker_xact_age_s"]))
+        depth, n_waiters = depth_of.get(root, 1), waiters_of.get(root, 1)
         sev = sev_by_duration(secs, th.block_notice, th.block_warn, th.block_crit)
         if depth > th.block_chain_warn_depth and sev < Severity.WARN:
             sev = Severity.WARN
         if state == "idle in transaction":
+            # 事务开着却什么都不干 —— 阻塞纯属占着不放，比正在执行的更该处理
             sev = escalate(sev)
-        d.rows.append([i64(root), i64(depth), i64(waiters), state, f"{secs:.0f}"])
-        if sev != Severity.OK:
-            d.findings.append(Finding(DIM_LOCKS, "LOCK_BLOCKING_CHAIN", sev,
-                                      f"根阻塞 pid {root}",
-                                      f"链深{depth} 阻{waiters} {secs:.0f}s",
-                                      ">阻塞时长/链深阈值",
-                                      f"pg_locks/pg_stat_activity root={root} state={state}"))
-            if sev > worst_sev:
-                worst_sev = sev
-                worst_line = f"根阻塞 pid {root}({state}), 链深 {depth}, 阻 {waiters}"
-    d.headline = worst_line if worst_line else "无阻塞"
+        if sev == Severity.OK:
+            continue
+        query = (row["blocker_query"] or "").replace("\n", " ")[:120]
+        d.findings.append(Finding(
+            DIM_LOCKS, "LOCK_BLOCKING_CHAIN", sev,
+            f"阻塞源 session {root}（{state or '状态未知'}）",
+            f"{n_waiters} 个会话被阻，链深 {depth}，事务已开 {secs:.0f}s",
+            ">阻塞时长/链深阈值",
+            f"锁模式 {row['lockmode'] or '?'}，对象 {row['locktag'] or '?'}；"
+            f"阻塞方语句：{query or '(取不到)'}"))
+        if sev > worst_sev:
+            worst_sev = sev
+            worst_line = (f"阻塞源 session {root}({state})，"
+                          f"{n_waiters} 个会话被阻，链深 {depth}，{secs:.0f}s")
+    d.headline = worst_line if worst_line else f"{len(rows)} 处等待，均未达阈值"
     return d
 
 
@@ -495,13 +561,52 @@ def collect_schema(runner, th: Thresholds, top: int) -> DimResult:
                            "schema_filter": _SCHEMA_SYS_FILTER, "limit": top})
     except access.QueryError as exc:
         return degraded(DIM_SCHEMA, summarize_err(exc))
+    # 观测窗口：idx_scan 是**自上次统计重置以来**的累计值，不知道「以来」
+    # 是多久，等于 0 什么都说明不了。统计刚重置时全库索引都是 0。
+    window_text, window_seconds = "无法确定", -1.0
+    try:
+        wrows = runner.run("health.stats_window")
+        if wrows:
+            window_seconds = _f(wrows[0]["window_seconds"])
+            reset = wrows[0]["stats_reset"]
+            window_text = (f"自 {reset} 起 {window_seconds / 86400.0:.1f} 天"
+                           if window_seconds >= 0 else "统计从未重置过")
+    except access.QueryError:
+        pass
+    d.rows.append(["观测窗口", "pg_stat_database.stats_reset", window_text])
+
     for row in rows:
         name, sz = row["idx_name"], as_int(row["idx_bytes"])
-        d.rows.append(["无用索引", name, human_bytes(sz)])
-        d.findings.append(Finding(DIM_SCHEMA, "INDEX_UNUSED", Severity.NOTICE,
-                                  "无用索引 " + name, human_bytes(sz) + " idx_scan=0",
-                                  ">" + human_bytes(th.index_unused_bytes), "pg_stat_user_indexes"))
+        scans = as_int(row["idx_scan"])
+        constraint = as_bool(row["indisprimary"]) or as_bool(row["indisunique"])
+        table_idx = as_int(row["table_idx_scan"])
+        table_seq = as_int(row["table_seq_scan"])
+        kind = "约束索引" if constraint else "普通索引"
+        d.rows.append([kind, name,
+                       f"{human_bytes(sz)} 扫描 {scans} 次"
+                       f"（该表索引扫描共 {table_idx}、顺扫 {table_seq}）"])
+        if scans > 0:
+            continue
+        if constraint:
+            # 主键/唯一约束背书的索引，不论用量都不能删 —— 列出来只为让人
+            # 看到这张表上还有什么，不产生任何建议。
+            continue
+        if window_seconds >= 0 and window_seconds < th.index_unused_min_window_s:
+            # 窗口太短，0 次不构成证据。**不出这条结论**，而不是出了再加个警告。
+            continue
         n_unused += 1
+        context = (f"该表其他索引共被扫描 {table_idx} 次"
+                   if table_idx > 0 else "该表所有索引在本窗口内均未被扫描")
+        d.findings.append(Finding(
+            DIM_SCHEMA, "INDEX_UNUSED", Severity.NOTICE,
+            # 措辞不能写死成「无用」：只是**这个观测窗口内**没被用到。
+            f"{name} 在当前统计窗口内未被使用",
+            f"{human_bytes(sz)}，idx_scan=0，窗口 {window_text}",
+            f">{human_bytes(th.index_unused_bytes)} 且窗口内 0 次扫描",
+            f"pg_stat_user_indexes.idx_scan=0；{context}。"
+            f"反例需排除后再决定是否删除：统计重置或实例重启会让计数归零；"
+            f"月度/季度/年终报表用的索引可以数周为 0；"
+            f"主备分离时备机上的使用不计入本机计数器。"))
     # 2) invalid indexes (best-effort)
     try:
         _iv = runner.run("health.invalid_index")
@@ -521,13 +626,47 @@ def collect_schema(runner, th: Thresholds, top: int) -> DimResult:
         srows = []
     for row in srows:
         name = row["tbl_name"]
-        d.rows.append(["统计陈旧", name, "数据已变更未 analyze"])
-        d.findings.append(Finding(DIM_SCHEMA, "STALE_STATS", Severity.NOTICE,
-                                  "统计陈旧 " + name, "last_analyze 落后于数据变更",
-                                  f"行>{th.stale_min_rows}",
-                                  "pg_stat_user_tables last_analyze/last_data_changed"))
+        frozen_pages = _f(row["frozen_pages"])
+        cur_pages = _f(row["cur_pages"])
+        stat_columns = as_int(row["stat_columns"])
+        last_analyze = row["last_analyze"]
+        drift = (abs(cur_pages - frozen_pages) / frozen_pages
+                 if frozen_pages > 0 else None)
+        drift_text = "无法计算" if drift is None else f"{drift * 100:.1f}%"
+        d.rows.append(["统计新鲜度", name,
+                       f"冻结 {frozen_pages:.0f} 页 / 实时 {cur_pages:.0f} 页"
+                       f"（偏离 {drift_text}），pg_stats {stat_columns} 列，"
+                       f"上次 ANALYZE {last_analyze}"])
+
+        # 判据只用不会被 pg_stat_reset() 清掉的信号。og5 实测过：
+        # gsbench.fact_sales 报 last_analyze=never、n_live_tup=0，但 pg_stats
+        # 里有 8 列统计信息 —— 拿 last_analyze 当判据会把好表判成从未分析。
+        if stat_columns == 0:
+            reason = ("pg_stats 里一列统计信息都没有 —— 该表确实从未被 ANALYZE "
+                      "覆盖（或统计被删过），规划器只能靠默认估算。")
+        elif drift is None:
+            reason = "pg_class.relpages 为 0，没有可比对的冻结基准。"
+        elif drift > th.stale_page_drift:
+            reason = (f"冻结页数 {frozen_pages:.0f} 与实时页数 {cur_pages:.0f} "
+                      f"相差 {drift_text}，超过阈值 {th.stale_page_drift * 100:.0f}% "
+                      f"—— 表在上次 ANALYZE 之后长大了，而 n_distinct、"
+                      f"correlation 不会跟着更新。")
+        else:
+            continue
         n_stale += 1
-    d.headline = f"无用索引 {n_unused}、失效索引 {invalid}、统计陈旧 {n_stale}"
+        d.findings.append(Finding(
+            DIM_SCHEMA, "STALE_STATS", Severity.NOTICE,
+            f"{name} 的统计信息不足以支撑计划估算", reason,
+            f"页偏离>{th.stale_page_drift * 100:.0f}% 或无统计列",
+            f"pg_class.relpages={frozen_pages:.0f}，实时页数={cur_pages:.0f}，"
+            f"pg_stats 统计列数={stat_columns}，reltuples={as_int(row['frozen_tuples'])}，"
+            f"n_live_tup={as_int(row['live_tuples'])}。"
+            f"（last_analyze={last_analyze} 仅供参考：该计数器可被 pg_stat_reset "
+            f"清除，而 ANALYZE 的成果存在 pg_statistic 里不受影响，"
+            f"所以它不参与本判定。）"))
+    # 措辞不写「无用索引」：那是个关于未来的断言，而我们只观测到了一个窗口。
+    d.headline = (f"窗口内未使用的索引 {n_unused}、失效索引 {invalid}、"
+                  f"统计不足以支撑估算的表 {n_stale}（观测窗口 {window_text}）")
     return d
 
 

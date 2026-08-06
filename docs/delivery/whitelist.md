@@ -12,8 +12,8 @@ python3 -m grmp_middleware.dump_whitelist
 
 | 项 | 值 |
 |---|---|
-| 脚本总数 | 89 |
-| id 范围 | 1 ~ 89 |
+| 脚本总数 | 91 |
+| id 范围 | 1 ~ 91 |
 
 > `id` 是**环境相关数据，不是契约**。skill 从不持有它 —— 运行时调
 > 接口一按 `cmd_name` 现查。客户环境重新发布后 id 会不同，属正常。
@@ -23,7 +23,7 @@ python3 -m grmp_middleware.dump_whitelist
 | 命名空间 | 条数 | 脚本 |
 |---|---|---|
 | **explain** | 2 | `plan_text`, `plan_text_analyze` |
-| **health** | 18 | `archive_mode`, `bgwriter`, `bloat`, `conn_concentration`, `conn_states`, `db_concurrency`, `db_info`, `invalid_index`, `lock_chain`, `long_xact`, `lwlock`, `overview`, `prepared_xacts`, `replication`, `slow_sql`, `stale_stats`, `unused_index`, `waits` |
+| **health** | 19 | `archive_mode`, `bgwriter`, `bloat`, `conn_concentration`, `conn_states`, `db_concurrency`, `db_info`, `invalid_index`, `lock_chain`, `long_xact`, `lwlock`, `overview`, `prepared_xacts`, `replication`, `slow_sql`, `stale_stats`, `unused_index`, `waits`, `stats_window` |
 | **memanalyze** | 11 | `activity`, `cols_bare`, `cols_qualified`, `context`, `gucs`, `instance`, `session`, `wlm_operator`, `wlm_operator_hist`, `wlm_sql`, `wlm_sql_hist` |
 | **perf** | 9 | `bgwriter`, `db_stat`, `instance_time`, `locks`, `memory`, `sessions`, `table_stat`, `wait_events`, `wait_status` |
 | **procinfo** | 2 | `key_gucs`, `proc_def` |
@@ -32,7 +32,7 @@ python3 -m grmp_middleware.dump_whitelist
 | **slowsql** | 1 | `slow_sql` |
 | **sqlfetch** | 2 | `from_history`, `from_statement` |
 | **sqlreview** | 5 | `from_history`, `from_statement`, `indexes`, `tables`, `top_sql` |
-| **sqltune** | 10 | `column_stats`, `from_history`, `from_statement`, `indexes`, `key_gucs`, `plan_json`, `plan_text`, `plan_text_analyze`, `tables`, `version` |
+| **sqltune** | 11 | `column_stats`, `from_history`, `from_statement`, `indexes`, `key_gucs`, `plan_json`, `plan_text`, `plan_text_analyze`, `tables`, `version`, `stats_freshness` |
 | **topproc** | 1 | `top_procs` |
 | **topsql** | 1 | `top_sql` |
 | **wdr** | 13 | `cache`, `checkpoint`, `db_stat`, `db_summary`, `file_io`, `load_profile`, `native_report`, `node_name`, `snapshots`, `top_sql`, `waits`, `wdr_enabled`, `window` |
@@ -173,26 +173,27 @@ SELECT count(*) AS cnt FROM pg_index WHERE NOT indisvalid;
 | `limit` | INTEGER |
 
 ```sql
-WITH RECURSIVE waits AS (
-  SELECT w.pid AS waiter, h.pid AS holder
-  FROM pg_locks w
-  JOIN pg_locks h ON h.granted AND NOT w.granted
-     AND h.locktype=w.locktype AND h.database IS NOT DISTINCT FROM w.database
-     AND h.relation IS NOT DISTINCT FROM w.relation
-     AND h.transactionid IS NOT DISTINCT FROM w.transactionid
-     AND h.pid<>w.pid),
-chain AS (
-  SELECT holder AS root, waiter, 1 AS depth FROM waits
-  UNION ALL
-  SELECT c.root, w.waiter, c.depth+1 FROM chain c JOIN waits w ON w.holder=c.waiter
-  WHERE c.depth < 20)
-SELECT c.root, max(c.depth) AS depth, count(DISTINCT c.waiter) AS waiters,
-       COALESCE(a.state,'') AS state,
-       EXTRACT(EPOCH FROM (now()-a.xact_start))   AS xact_age_s,
-       EXTRACT(EPOCH FROM (now()-a.state_change)) AS state_age_s
-FROM chain c LEFT JOIN pg_stat_activity a ON a.pid=c.root
-GROUP BY c.root, a.state, a.xact_start, a.state_change
-ORDER BY depth DESC, waiters DESC
+SELECT w.sessionid AS waiter_session,
+       w.tid AS waiter_tid,
+       COALESCE(w.wait_status, '') AS wait_status,
+       COALESCE(w.wait_event, '') AS wait_event,
+       COALESCE(w.lockmode, '') AS lockmode,
+       COALESCE(w.locktag, '') AS locktag,
+       w.block_sessionid AS blocker_session,
+       COALESCE(b.state, '') AS blocker_state,
+       COALESCE(b.usename, '') AS blocker_user,
+       COALESCE(b.application_name, '') AS blocker_app,
+       COALESCE(EXTRACT(EPOCH FROM (now() - b.xact_start)), 0) AS blocker_xact_age_s,
+       COALESCE(EXTRACT(EPOCH FROM (now() - b.state_change)), 0) AS blocker_state_age_s,
+       COALESCE(substr(b.query, 1, 200), '') AS blocker_query,
+       COALESCE(substr(a.query, 1, 200), '') AS waiter_query
+FROM pg_thread_wait_status w
+LEFT JOIN pg_stat_activity b ON b.sessionid = w.block_sessionid
+LEFT JOIN pg_stat_activity a ON a.sessionid = w.sessionid
+WHERE w.block_sessionid IS NOT NULL
+  AND w.block_sessionid <> 0
+  AND w.block_sessionid <> w.sessionid
+ORDER BY blocker_xact_age_s DESC
 LIMIT {{limit}};
 ```
 
@@ -315,11 +316,21 @@ LIMIT {{limit}};
 | `limit` | INTEGER |
 
 ```sql
-SELECT schemaname||'.'||relname AS tbl_name
-FROM pg_stat_user_tables
-WHERE n_live_tup > {{min_rows}} AND schemaname NOT IN {{schema_filter}}
-  AND (last_analyze IS NULL OR (last_data_changed IS NOT NULL AND last_data_changed > last_analyze))
-ORDER BY n_live_tup DESC LIMIT {{limit}};
+SELECT n.nspname || '.' || c.relname AS tbl_name,
+       c.relpages AS frozen_pages,
+       pg_relation_size(c.oid) / current_setting('block_size')::bigint AS cur_pages,
+       c.reltuples::bigint AS frozen_tuples,
+       COALESCE(t.n_live_tup, 0) AS live_tuples,
+       (SELECT count(*) FROM pg_stats s
+         WHERE s.schemaname = n.nspname AND s.tablename = c.relname) AS stat_columns,
+       COALESCE(to_char(t.last_analyze, 'YYYY-MM-DD HH24:MI:SS'), 'never') AS last_analyze,
+       COALESCE(to_char(t.last_autoanalyze, 'YYYY-MM-DD HH24:MI:SS'), 'never') AS last_autoanalyze
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+LEFT JOIN pg_stat_user_tables t ON t.relid = c.oid
+WHERE c.relkind = 'r' AND n.nspname NOT IN {{schema_filter}}
+  AND c.reltuples > {{min_rows}}
+ORDER BY c.relpages DESC LIMIT {{limit}};
 ```
 
 ### `health.unused_index`
@@ -334,13 +345,22 @@ ORDER BY n_live_tup DESC LIMIT {{limit}};
 
 ```sql
 SELECT s.schemaname||'.'||s.indexrelname AS idx_name,
-       pg_relation_size(s.indexrelid) AS idx_bytes
+       s.relname AS table_name,
+       s.idx_scan,
+       s.idx_tup_read,
+       s.idx_tup_fetch,
+       pg_relation_size(s.indexrelid) AS idx_bytes,
+       i.indisprimary,
+       i.indisunique,
+       COALESCE(ts.seq_scan, 0) AS table_seq_scan,
+       COALESCE(ts.idx_scan, 0) AS table_idx_scan
 FROM pg_stat_user_indexes s
 JOIN pg_index i ON i.indexrelid = s.indexrelid
-WHERE s.idx_scan=0 AND pg_relation_size(s.indexrelid) > {{min_bytes}}
-  AND NOT i.indisprimary AND NOT i.indisunique
+LEFT JOIN pg_stat_user_tables ts ON ts.relid = s.relid
+WHERE pg_relation_size(s.indexrelid) > {{min_bytes}}
   AND s.schemaname NOT IN {{schema_filter}}
-ORDER BY pg_relation_size(s.indexrelid) DESC LIMIT {{limit}};
+ORDER BY s.idx_scan ASC, pg_relation_size(s.indexrelid) DESC
+LIMIT {{limit}};
 ```
 
 ### `health.waits`
@@ -674,6 +694,8 @@ FROM pg_settings
 WHERE name IN (
   'work_mem', 'maintenance_work_mem', 'shared_buffers',
   'effective_cache_size', 'random_page_cost', 'seq_page_cost',
+  'cpu_tuple_cost', 'cpu_index_tuple_cost', 'cpu_operator_cost', 'block_size',
+  'query_dop',
   'max_parallel_workers_per_gather', 'from_collapse_limit',
   'join_collapse_limit', 'geqo_threshold', 'default_statistics_target')
 ORDER BY name;
@@ -708,7 +730,10 @@ LIMIT 1;
 | `names` | STRING |
 
 ```sql
-SELECT tablename, attname, n_distinct, null_frac, avg_width, correlation
+SELECT tablename, attname, n_distinct, null_frac, avg_width, correlation,
+       COALESCE(most_common_vals::text, '') AS most_common_vals,
+       COALESCE(most_common_freqs::text, '') AS most_common_freqs,
+       COALESCE(histogram_bounds::text, '') AS histogram_bounds
 FROM pg_stats
 WHERE tablename IN ({{names}});
 ```
@@ -753,6 +778,8 @@ FROM pg_settings
 WHERE name IN (
   'work_mem', 'maintenance_work_mem', 'shared_buffers',
   'effective_cache_size', 'random_page_cost', 'seq_page_cost',
+  'cpu_tuple_cost', 'cpu_index_tuple_cost', 'cpu_operator_cost', 'block_size',
+  'query_dop',
   'max_parallel_workers_per_gather', 'from_collapse_limit',
   'join_collapse_limit', 'geqo_threshold', 'default_statistics_target')
 ORDER BY name;
@@ -858,6 +885,7 @@ LIMIT 1;
 ```sql
 SELECT n.nspname, c.relname, c.relpages,
        c.reltuples::bigint AS reltuples,
+       pg_relation_size(c.oid) / current_setting('block_size')::bigint AS curpages,
        c.relkind,
        pg_total_relation_size(c.oid) / 1024.0 / 1024.0 AS size_mb
 FROM pg_class c
@@ -1093,7 +1121,10 @@ LIMIT {{limit}};
 | `names` | STRING |
 
 ```sql
-SELECT tablename, attname, n_distinct, null_frac, avg_width, correlation
+SELECT tablename, attname, n_distinct, null_frac, avg_width, correlation,
+       COALESCE(most_common_vals::text, '') AS most_common_vals,
+       COALESCE(most_common_freqs::text, '') AS most_common_freqs,
+       COALESCE(histogram_bounds::text, '') AS histogram_bounds
 FROM pg_stats
 WHERE tablename IN ({{names}});
 ```
@@ -1144,6 +1175,8 @@ SELECT t.relname AS table_name,
        i.relname AS index_name,
        ix.indisunique,
        ix.indisprimary,
+       i.relpages AS index_relpages,
+       i.reltuples::bigint AS index_reltuples,
        pg_get_indexdef(ix.indexrelid) AS index_def
 FROM pg_class t
 JOIN pg_index ix ON t.oid = ix.indrelid
@@ -1163,6 +1196,8 @@ FROM pg_settings
 WHERE name IN (
   'work_mem', 'maintenance_work_mem', 'shared_buffers',
   'effective_cache_size', 'random_page_cost', 'seq_page_cost',
+  'cpu_tuple_cost', 'cpu_index_tuple_cost', 'cpu_operator_cost', 'block_size',
+  'query_dop',
   'max_parallel_workers_per_gather', 'from_collapse_limit',
   'join_collapse_limit', 'geqo_threshold', 'default_statistics_target')
 ORDER BY name;
@@ -1177,7 +1212,7 @@ ORDER BY name;
 | `sql` | STRING |
 
 ```sql
-EXPLAIN (FORMAT JSON, COSTS TRUE) {{sql}}
+EXPLAIN (ANALYZE false, BUFFERS false, FORMAT JSON) {{sql}}
 ```
 
 ### `sqltune.plan_text`
@@ -1215,6 +1250,7 @@ EXPLAIN (ANALYZE true, BUFFERS true, FORMAT TEXT) {{sql}}
 ```sql
 SELECT n.nspname, c.relname, c.relpages,
        c.reltuples::bigint AS reltuples,
+       pg_relation_size(c.oid) / current_setting('block_size')::bigint AS curpages,
        c.relkind,
        pg_total_relation_size(c.oid) / 1024.0 / 1024.0 AS size_mb
 FROM pg_class c
@@ -1529,5 +1565,36 @@ SELECT to_char(b.start_ts,'YYYY-MM-DD HH24:MI') AS b_start,
        round(EXTRACT(EPOCH FROM (e.start_ts-b.start_ts))/60)::bigint AS dur
 FROM (SELECT start_ts FROM snapshot.snapshot WHERE snapshot_id={{begin}}) b,
      (SELECT start_ts FROM snapshot.snapshot WHERE snapshot_id={{end}}) e;
+```
+
+### `health.stats_window`
+
+- id `90` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+无参数
+
+```sql
+SELECT COALESCE(to_char(stats_reset, 'YYYY-MM-DD HH24:MI:SS'), 'never') AS stats_reset,
+       COALESCE(EXTRACT(EPOCH FROM (now() - stats_reset)), -1) AS window_seconds
+FROM pg_stat_database
+WHERE datname = current_database();
+```
+
+### `sqltune.stats_freshness`
+
+- id `91` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `names` | STRING |
+
+```sql
+SELECT schemaname, relname,
+       n_live_tup, n_dead_tup,
+       COALESCE(to_char(last_analyze, 'YYYY-MM-DD HH24:MI:SS'), 'never') AS last_analyze,
+       COALESCE(to_char(last_autoanalyze, 'YYYY-MM-DD HH24:MI:SS'), 'never') AS last_autoanalyze,
+       analyze_count, autoanalyze_count
+FROM pg_stat_user_tables
+WHERE relname IN ({{names}});
 ```
 
