@@ -175,6 +175,16 @@ class GrmpRunner:
         self._client = client
 
     @property
+    def client(self) -> GrmpClient:
+        """底层 HTTP 客户端。
+
+        gaussdb-login 要用它做连通性验证 —— 调接口一（取命令清单）就能一次
+        验掉端点可达、令牌有效、dataIp 被受理三件事，而且不依赖任何一条具体
+        脚本是否注册过。留个公开访问器，好过让调用方去摸 _client。
+        """
+        return self._client
+
+    @property
     def data_ip(self) -> str:
         return self._client.data_ip
 

@@ -99,7 +99,7 @@ def stmt_table(title: str, rows: list[StmtRow]) -> str:
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="topsql.py",
                                  description="Top resource-consuming statements")
-    ap.add_argument("-c", "--conn", required=True, help="connection name")
+    ap.add_argument("-c", "--conn", default="", help="连接名（省略则用 gaussdb-login 建立的会话）")
     ap.add_argument("--by", choices=SORT_KEYS, default="time", help="sort key")
     ap.add_argument("--limit", type=int, default=10, help="max rows")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")

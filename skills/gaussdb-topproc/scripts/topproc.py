@@ -103,7 +103,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(
         prog="topproc.py",
         description="Top resource-consuming stored procedures/functions")
-    ap.add_argument("-c", "--conn", required=True, help="connection name")
+    ap.add_argument("-c", "--conn", default="", help="连接名（省略则用 gaussdb-login 建立的会话）")
     ap.add_argument("--by", choices=SORT_KEYS, default="time", help="sort key")
     ap.add_argument("--limit", type=int, default=20, help="max rows")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")

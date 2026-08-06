@@ -135,7 +135,7 @@ def stmt_table(title: str, rows: list[StmtRow]) -> str:
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="slowsql.py",
                                  description="List statements slower than --threshold (avg ms)")
-    ap.add_argument("-c", "--conn", required=True, help="connection name")
+    ap.add_argument("-c", "--conn", default="", help="连接名（省略则用 gaussdb-login 建立的会话）")
     seven_days_ago = datetime.now() - timedelta(days=7)
     begin_time_str = seven_days_ago.strftime('%Y-%m-%d %H:%M:%S')
     ap.add_argument("--threshold", type=int, default=1000, help="avg elapsed threshold (ms)")

@@ -1,13 +1,74 @@
 # 这是**示例**，不是生效的配置。
 # 真实配置在 $GSDB_HOME/config.yaml（默认 ~/.gdaa/config.yaml）——
 # 代码只读那一个（common/config.py: state_dir() / "config.yaml"）。
-# 原先这个文件叫 config.yaml，12 个 SKILL.md 指着它让模型找连接名，
-# 于是模型看到的是下面这条根本不存在的 og-test。
-connections:
-  - name: og-test
-    type: opengauss
-    host: 127.0.0.1
-    port: 5432
-    database: db
-    user: gaussdb
-    driver: gsql 
+
+# ── 首行决定所有 skill 怎么连数据库 ──────────────────────────────────────
+#   gsql  直连，连接在下面 db_connections 里按应用分组预先配好
+#   api   走 GRMP 中间件，连接由 gaussdb-login 按用户给的库名现场构造
+#
+# gaussdb-login 按它决定交互方式：gsql 列菜单让用户挑，api 问用户要连哪个库。
+connection_mode: gsql
+
+# ── connection_mode: api 时用这个 ────────────────────────────────────────
+api_connection:
+  - host: ucmp-grmp-app-d.sdc.cs.icbc
+    port: 8080
+    # 令牌两种放法，**环境变量优先**：
+    #   token_env: 变量名（推荐）—— 令牌是长期有效、无重放保护的静态凭据，
+    #              放环境变量能少一份落盘副本，也不会随配置进版本库
+    #   token:     直接内联（客户的配置格式如此，支持但不推荐）
+    token_env: GRMP_AUTH_TOKEN
+    # token: 省略
+
+# ── connection_mode: gsql 时用这个 ───────────────────────────────────────
+# 按应用分组。**跨应用不能重名** —— `-c conn1` 无法判断该用哪一个，
+# 取第一个会连到另一个应用的库上，执行成功、结果无关、不报错。
+db_connections:
+  app1:
+    - name: app1-primary
+      type: opengauss
+      host: 127.0.0.1
+      port: 5432
+      database: db
+      user: gaussdb
+      # 口令三种放法，优先级从高到低：
+      #   1. 环境变量 GSDB_PASSWORD（临时覆盖，调试用）
+      #   2. 这里的 password —— encrypted: true 时是 base64 密文，
+      #      与 credentials/ 目录同一把钥匙、同一个 AAD（AAD 是连接名，
+      #      所以密文不能挪到别的连接名下复用）
+      #   3. 都没有时回落到 credentials/<name>.enc（老配置不用改）
+      password: 密文...
+      encrypted: true
+      driver: pg8000
+    - name: app1-standby
+      type: gaussdb
+      host: 127.0.0.1
+      port: 5432
+      database: db
+      user: gaussdb
+      password: 密文...
+      encrypted: true
+      driver: gsql
+
+  app2:
+    - name: app2-primary
+      type: opengauss
+      host: 127.0.0.1
+      port: 5432
+      database: db
+      user: gaussdb
+      password: 密文...
+      encrypted: true
+      driver: pg8000
+
+# ── 旧格式仍然可用 ───────────────────────────────────────────────────────
+# 平铺的 connections: 列表照常解析，与 db_connections 合并。
+# 不强制迁移：老配置不动也能跑，只是没有应用分组。
+#
+# connections:
+#   - name: legacy
+#     type: opengauss
+#     host: 127.0.0.1
+#     port: 5432
+#     database: db
+#     user: gaussdb

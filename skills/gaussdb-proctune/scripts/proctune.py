@@ -363,13 +363,13 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     pc = sub.add_parser("collect", help="advisory evidence for a procedure")
     pc.add_argument("proc", help="schema.proc")
-    pc.add_argument("-c", "--conn", required=True)
+    pc.add_argument("-c", "--conn", default="")
     pc.add_argument("--format", choices=["markdown", "json"], default="markdown")
     pc.add_argument("--timeout", type=int, default=None)
 
     pt = sub.add_parser("tune-cursor", help="tune read-only cursor SELECTs")
     pt.add_argument("proc", help="schema.proc")
-    pt.add_argument("-c", "--conn", required=True)
+    pt.add_argument("-c", "--conn", default="")
     pt.add_argument("--cursor", action="append", default=[],
                     help="only process the named cursor(s) (repeatable)")
     pt.add_argument("--bind", action="append", default=[],

@@ -64,7 +64,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(
         prog="health.py",
         description="Read-only health check across 12 dimensions (deterministic findings)")
-    ap.add_argument("-c", "--conn", required=True, help="connection name")
+    ap.add_argument("-c", "--conn", default="", help="连接名（省略则用 gaussdb-login 建立的会话）")
     ap.add_argument("--include", default="",
                     help="只采集这些维度(逗号分隔: overview,waits,slowsql,xact,bloat,"
                          "lwlock,locks,conn,logs,repl,schema,concurrency)")

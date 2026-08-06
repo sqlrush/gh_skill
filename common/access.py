@@ -16,7 +16,7 @@ import os
 import sys
 from typing import Any, Optional
 
-from .config import Connection, find
+from .config import Connection, find, resolve
 from .grmp.client import GrmpClient, GrmpRunner
 from .grmp.errors import QueryError
 from .grmp.registry import Registry
@@ -107,7 +107,7 @@ def connection_for_conn(conn: Connection, read_only: bool = True):
 
 def connection_for(name: str, read_only: bool = True):
     """按连接名索取能执行任意 SQL 的原始连接。"""
-    return connection_for_conn(find(name), read_only=read_only)
+    return connection_for_conn(resolve(name), read_only=read_only)
 
 
 def session_for_conn(conn: Connection, read_only: bool = True):
@@ -143,7 +143,7 @@ def session_for_conn(conn: Connection, read_only: bool = True):
 
 def session_for(name: str, read_only: bool = True):
     """按连接名索取带持久会话的原始连接。"""
-    return session_for_conn(find(name), read_only=read_only)
+    return session_for_conn(resolve(name), read_only=read_only)
 
 
 def require_unregistered_sql_for_conn(conn: Connection) -> None:
@@ -166,7 +166,7 @@ def require_unregistered_sql_for_conn(conn: Connection) -> None:
 
 def require_unregistered_sql(name: str) -> None:
     """按连接名索取「能执行未注册 SQL」这个能力。"""
-    require_unregistered_sql_for_conn(find(name))
+    require_unregistered_sql_for_conn(resolve(name))
 
 
 def _base_url(conn: Connection) -> str:
@@ -238,5 +238,5 @@ def for_conn(
     timeout: Optional[int] = None,
 ) -> Any:
     """按连接名造 runner。timeout=None 表示不提要求,用默认值。"""
-    return runner_for(find(name), registry=registry, settings=settings,
+    return runner_for(resolve(name), registry=registry, settings=settings,
                       timeout=timeout)

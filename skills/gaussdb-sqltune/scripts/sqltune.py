@@ -314,7 +314,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="sqltune.py",
                                  description="One-shot SQL tuning evidence + hypopg index verification")
     ap.add_argument("sql_id", nargs="?", help="unique_sql_id (integer, may be negative)")
-    ap.add_argument("-c", "--conn", required=True, help="connection name")
+    ap.add_argument("-c", "--conn", default="", help="连接名（省略则用 gaussdb-login 建立的会话）")
     ap.add_argument("--sql-stdin", action="store_true", help="read SQL text from stdin")
     ap.add_argument("--bind", action="append", default=[],
                     help="bind value for placeholder (repeatable, positional order)")
