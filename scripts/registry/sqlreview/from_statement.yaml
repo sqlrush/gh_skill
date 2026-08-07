@@ -6,7 +6,7 @@ sql: |
   SELECT query FROM dbe_perf.statement
   WHERE unique_sql_id = {{sid}}
     AND query IS NOT NULL
-    AND query <> ''
+    AND LENGTH(TRIM(query)) > 0
   LIMIT 1;
 params:
   - key: sid
