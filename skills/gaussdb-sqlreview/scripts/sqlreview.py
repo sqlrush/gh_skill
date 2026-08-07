@@ -30,7 +30,7 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
         break
 
 import common  # noqa: E402
-from common import access  # noqa: E402
+from common import access, session  # noqa: E402
 
 for parent in _HERE.parents:
     if (parent / "common" / "sql.py").exists():
@@ -125,9 +125,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
+    # 要连库的取数源：没给 -c 时回落到 gaussdb-login 建立的会话。
+    #
+    # 这里原先直接要求 -c —— 别的 skill 都改成「省略即用会话」之后，只有它
+    # 还在拦，表现成「明明登录了，sqlreview 却说要指定连接名」。
+    # 两者都没有时由 config.resolve() 报错，那条消息会告诉用户去跑 login。
     needs_db = bool(args.sql_id or args.top or args.schema)
-    if needs_db and not args.conn:
-        print(f"error: {chosen[0]} 需要 -c/--conn 指定连接名", file=sys.stderr)
+    if needs_db and not args.conn and session.current() is None:
+        print(f"error: {chosen[0]} 需要连接：先运行 gaussdb-login 建立会话，"
+              f"或用 -c/--conn 指定连接名", file=sys.stderr)
         return 1
 
     # --- DB-free sources -------------------------------------------------

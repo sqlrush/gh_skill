@@ -194,6 +194,29 @@ def main(argv: Optional[list[str]] = None) -> int:
     except ExplainNotAllowed as exc:
         template_blocked = exc
 
+    # 语句形态校验 —— **纯文本检查，放在连库之前**。
+    #
+    # 这三条原先写在取到计划之后，那时才 return 1：白跑一次 EXPLAIN、白建一次
+    # 连接，而且拒绝理由与「已经拿到计划」同时出现，读起来自相矛盾。
+    if is_dml(sql_text):
+        print("DML keywords (INSERT/UPDATE/DELETE) detected in SQL statement.")
+        return 1
+    if is_ddl(sql_text):
+        print("DDL keywords (CREATE/REPLACE/ALTER/DROP/TRUNCATE/RENAME/"
+              "COMMENT/REINDEX) detected in SQL statement.")
+        return 1
+    # 多语句：先把字符串字面量与注释抹掉，再数分号 —— 否则 SQL 文本里的
+    # 分号（'a;b'、-- 注释里的）会被误判成第二条语句
+    sql_cleaned = re.sub(r"'.*?'", "''", sql_text, flags=re.DOTALL)
+    sql_cleaned = re.sub(r'".*?"', '""', sql_cleaned, flags=re.DOTALL)
+    sql_cleaned = re.sub(r'--.*?$', '', sql_cleaned, flags=re.MULTILINE)
+    sql_cleaned = re.sub(r'/\*.*?\*/', '', sql_cleaned, flags=re.DOTALL)
+    if sql_cleaned.count(';') > 1:
+        print("Multiple semicolons (;) detected, suspected of containing "
+              "multiple SQL statements. Please review and modify before "
+              "executing.")
+        return 1
+
     db = None
     try:
         if template_blocked is None:
@@ -219,32 +242,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
         return 2
     try:
-        db.set_statement_timeout(args.timeout)
-        # 校验一：存在ANALYZE关键字，则不执行
-        # if _ANALYZE_RE.search(sql_text):
-        #    print("The EXPLAIN execution plan should not contain the ANALYZE keyword.")
-        #    return 1
-
-        # 校验二：存在DML，则不执行
-        if is_dml(sql_text):
-            print("DML keywords (INSERT/UPDATE/DELETE) detected in SQL statement.")
-            return 1
-
-            # 校验二：存在DDL，则不执行
-        if is_ddl(sql_text):
-            print("DDL keywords (CREATE/REPLACE/ALTER/DROP/TRUNCATE/RENAME/COMMENT/REINDEX) detected in SQL statement.")
-            return 1
-        # 校验三：存在多SQL,则不执行。 检测 SQL 中是否存在多个分号（排除字符串和注释中的分号）
-        sql_cleaned = re.sub(r"'.*?'", "''", sql_text, flags=re.DOTALL)  #
-        sql_cleaned = re.sub(r'".*?"', '""', sql_cleaned, flags=re.DOTALL)  #
-        sql_cleaned = re.sub(r'--.*?$', '', sql_cleaned, flags=re.MULTILINE)  #
-        sql_cleaned = re.sub(r'/\*.*?\*/', '', sql_cleaned, flags=re.DOTALL)  #
-        semicolon_count = sql_cleaned.count(';')
-        if semicolon_count > 1:
-            print(
-                "Multiple semicolons (;) detected, suspected of containing multiple SQL statements. Please review and modify before executing.")
-            return 1
-        plan = explain(db, sql_text, args.analyze)
+        # plan 已经在上面那段里取到了（模板路径或原始会话路径）。
+        # 原先这里又调了一次 explain(db, ...)：不但把已有结果丢掉重算，
+        # 而且走模板路径时 db 是 None，直接 AttributeError —— 也就是**常规
+        # 路径必崩**。同理下面的 db.close() 也丢了 None 守卫。
         findings = scan_plan(plan)
         if args.format == "json":
             print(json.dumps({"sql": sql_text, "plan": plan,
@@ -257,7 +258,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     finally:
-        db.close()
+        if db is not None:
+            db.close()
 
 
 if __name__ == "__main__":
