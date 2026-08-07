@@ -78,14 +78,17 @@ mkdir -p "$GSDB_HOME" && chmod 700 "$GSDB_HOME"
 
 ```bash
 cat > "$GSDB_HOME/config.yaml" <<'YAML'
-connections:
-  - name: og-dev
-    type: opengauss
-    host: 127.0.0.1
-    port: 15432
-    database: postgres
-    user: gaussdb
-    driver: pg8000
+connection_mode: gsql
+
+db_connections:
+  dev:
+    - name: og-dev
+      type: opengauss
+      host: 127.0.0.1
+      port: 15432
+      database: postgres
+      user: gaussdb
+      driver: pg8000
 YAML
 chmod 600 "$GSDB_HOME/config.yaml"
 ```

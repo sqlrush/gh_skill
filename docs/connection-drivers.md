@@ -8,15 +8,40 @@
 
 ```yaml
 # $GSDB_HOME/config.yaml
-connections:
-  - name: og-pri
-    type: opengauss
-    host: 127.0.0.1
-    port: 5435
-    database: postgres
-    user: gaussdb
-    driver: gsql        # gsql（默认）| pg8000
+#
+# 首行决定所有 skill 怎么连数据库。gaussdb-login 按它决定交互方式：
+#   gsql  直连，连接在 db_connections 下按应用分组预先配好，登录时列菜单让用户挑
+#   api   走 GRMP 中间件，连接由 gaussdb-login 按用户给的库名现场构造
+connection_mode: gsql
+
+db_connections:
+  app1:                       # 应用分组。**跨应用不能重名** —— `-c conn1`
+    - name: og-pri            # 无从判断该用哪一个，取第一个会连到另一个应用
+      type: opengauss         # 的库上，执行成功、结果无关、不报错
+      host: 127.0.0.1
+      port: 5435
+      database: postgres
+      user: gaussdb
+      driver: gsql            # gsql（默认）| pg8000 | grmp
 ```
+
+`connection_mode: api` 时改用 `api_connection`：
+
+```yaml
+connection_mode: api
+
+api_connection:
+  - host: ucmp-grmp-app-d.sdc.cs.icbc
+    port: 8080
+    token_env: GRMP_AUTH_TOKEN   # 推荐；也支持内联 token:，但环境变量优先
+```
+
+> **旧的平铺 `connections:` 列表仍然可用**，与 `db_connections` 合并解析，
+> 只是没有应用分组。不强制迁移。
+
+口令三个来源，优先级从高到低：环境变量 `GSDB_PASSWORD` > 配置里的内联
+`password`（`encrypted: true` 时是 base64 密文，与 `credentials/` 同一把钥匙、
+同一个 AAD）> `credentials/<name>.enc`。
 
 | 值 | 说明 |
 |---|---|
@@ -95,10 +120,11 @@ speedup ≈ 1.0 → 所有候选会被否决。**修复前**这是一个静默�
 
 ```yaml
 # $GSDB_HOME/config.yaml
-connections:
-  - name: og-pri
-    ...
-    driver: pg8000   # 确保 hypopg verify 阶段使用持久连接
+db_connections:
+  app1:
+    - name: og-pri
+      ...
+      driver: pg8000   # 确保 hypopg verify 阶段使用持久连接
 ```
 
 **状态：已修**（commit `6b3e811`）。采用「显式报错」方案：`verify_indexes` 在无持久

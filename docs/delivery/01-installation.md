@@ -190,15 +190,19 @@ $GSDB_HOME/
 
 ```bash
 cat > "$GSDB_HOME/config.yaml" <<'YAML'
-connections:
-  - name: og-prod
-    type: opengauss
-    host: 10.0.0.1
-    port: 5432
-    database: appdb
-    user: tuner
-    sslmode: prefer
-    driver: gsql
+# 首行决定所有 skill 怎么连库：gsql 直连 / api 走 GRMP 中间件
+connection_mode: gsql
+
+db_connections:
+  app1:                    # 应用分组，跨应用不能重名
+    - name: og-prod
+      type: opengauss
+      host: 10.0.0.1
+      port: 5432
+      database: appdb
+      user: tuner
+      sslmode: prefer
+      driver: gsql
 YAML
 chmod 600 "$GSDB_HOME/config.yaml"
 ```
