@@ -19,14 +19,19 @@ sys.path.insert(0, str(_ROOT))
 
 @pytest.fixture()
 def home(tmp_path, monkeypatch):
-    """把 GSDB_HOME 指到临时目录，并重载配置模块让它重新读环境变量。"""
+    """把 GSDB_HOME 指到临时目录。
+
+    **不要 importlib.reload。** state_dir() 是在**调用时**读 os.environ 的，
+    monkeypatch.setenv 就够了；reload 不但多余,还会造出一个新的 ConfigError
+    类 —— 别的测试文件在模块加载时 import 的是旧那个,于是
+    `pytest.raises(ConfigError)` 抓不住 validate() 抛出的新类。
+
+    实测踩到过:单独跑绿、全量跑红，而红的是 test_grmp_access_units 里一条
+    与本文件毫无关系的测试。这类污染极难定位,因为失败的地方看起来完全无辜。
+    """
     monkeypatch.setenv("GSDB_HOME", str(tmp_path))
     monkeypatch.delenv("GSDB_PASSWORD", raising=False)
     monkeypatch.delenv("GDAA_PASSWORD", raising=False)
-    from common import config, credential, session
-    importlib.reload(config)
-    importlib.reload(credential)
-    importlib.reload(session)
     return tmp_path
 
 
@@ -395,3 +400,56 @@ def test_no_password_at_all_is_the_recommended_shape(home):
     write_config(home, {"db_connections": {"app1": [dict(_CONN, name="c1")]}})
     conn = config.find("c1")
     assert conn.password == "" and conn.encrypted is False
+
+
+# --- api 模式：实例 IP + 数据库名 --------------------------------------------
+
+def _login_mod():
+    import importlib.util as _u
+    spec = _u.spec_from_file_location(
+        "login_api_test",
+        _ROOT / "skills" / "gaussdb-login" / "scripts" / "login.py")
+    mod = _u.module_from_spec(spec)
+    sys.path.insert(0, str(_ROOT / "skills" / "gaussdb-login" / "scripts"))
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class _Endpoint:
+    host = "grmp.example"
+    port = 8080
+
+
+def test_api_connection_maps_ip_to_dataip_and_keeps_database():
+    """**IP 进 dataIp，库名进 database。**
+
+    接口一的报文里只有 dataIp 一个定位字段（文档写明是单 IP），没有库名的
+    位置 —— 所以中间件按 IP 找实例。库名仍必须收：它决定取数落在哪个库，
+    也要写进报告抬头，否则同一实例上的多个库，报告事后分不清。
+    """
+    conn = _login_mod()._api_connection("10.0.0.9", "appdb", _Endpoint())
+    assert conn.data_ip == "10.0.0.9"      # 发给中间件的定位键
+    assert conn.database == "appdb"        # 记录 + 报告抬头
+    assert conn.driver == "grmp"
+    assert conn.host == "grmp.example" and conn.port == 8080
+
+
+def test_api_connection_name_carries_both():
+    """连接名同时带上 IP 与库名 —— 同一实例上的多个库要能分辨。"""
+    conn = _login_mod()._api_connection("10.0.0.9", "appdb", _Endpoint())
+    assert conn.name == "10-0-0-9-appdb"
+
+
+def test_same_ip_different_database_are_distinct_connections():
+    """否则第二次登录会覆盖第一次的会话，而用户以为换了库。"""
+    mod = _login_mod()
+    a = mod._api_connection("10.0.0.9", "db_a", _Endpoint())
+    b = mod._api_connection("10.0.0.9", "db_b", _Endpoint())
+    assert a.name != b.name
+
+
+def test_api_connection_passes_validation():
+    """现场构造的连接也要过 validate —— 它会被写进会话文件。"""
+    from common import config
+    config.validate(_login_mod()._api_connection("10.0.0.9", "appdb",
+                                                 _Endpoint()))

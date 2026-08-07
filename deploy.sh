@@ -183,9 +183,13 @@ YAML"
     if [ "$DRY" = 1 ]; then
       run "python3 -m common.credential_cli set \"$CNAME\""
     else
-      ( cd "$SRC" && python3 -m common.credential_cli set "$CNAME" ) \
-        && ok "口令已加密存入 $GHOME/credentials/$CNAME.enc" \
-        || warn "口令未设置，稍后可跑：cd $SRC && python3 -m common.credential_cli set $CNAME"
+      if ( cd "$SRC" && python3 -m common.credential_cli set "$CNAME" ); then
+        ok "口令已加密存入 $GHOME/credentials/$CNAME.enc"
+      else
+        CRED_MISSING=1
+        warn "口令未设置。补上再验连通："
+        say "      cd $SRC && python3 -m common.credential_cli set $CNAME"
+      fi
     fi
   fi
 fi
@@ -224,6 +228,12 @@ from common import config
 e = config.api_endpoint()
 assert e.host and e.port
 print('ok' if e.resolve_token() else 'no-token')"
+elif [ "${CRED_MISSING:-0}" = "1" ]; then
+  # **口令没设成就不要跑连通性测试。** 跑出来的三条红既不是环境问题也不是
+  # 代码问题,是「你还没设口令」—— 但报出来像是连不上,会把人指向错误的方向。
+  warn "跳过连通性测试：口令还没设置，此时连必然失败，报出来的红会误导"
+  say "      设完口令后单独验："
+  say "      python3 $LOGIN --app ${APP:-app1} --conn ${CNAME:-og-prod}"
 else
   check "登录并验证连接" python3 "$LOGIN" --app "${APP:-app1}" --conn "${CNAME:-og-prod}"
   check "取数（topsql）" python3 "$DEST/gaussdb-topsql/scripts/topsql.py" --limit 1

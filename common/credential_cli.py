@@ -36,8 +36,18 @@ def _read_secret(from_stdin: bool, name: str) -> str:
         # 口令**可以**以空格开头或结尾，strip 掉会存下一个错的口令，
         # 而错在哪要等到连库失败才知道。
         return sys.stdin.read().rstrip("\r\n")
-    first = getpass.getpass("连接 %s 的口令（不回显）: " % name)
-    again = getpass.getpass("再输一次确认: ")
+    try:
+        first = getpass.getpass("连接 %s 的口令（不回显）: " % name)
+        again = getpass.getpass("再输一次确认: ")
+    except EOFError:
+        # 非交互环境（管道、CI、被脚本调用）下 getpass 直接抛 EOFError，
+        # 用户看到的是一段 Python 栈。实测在 deploy.sh 被管道喂参数时踩到。
+        raise ConfigError(
+            "当前不是交互终端，读不到口令输入。\n"
+            "在脚本/管道里请改用 --stdin：\n"
+            "    printf '%%s' \"$PASSWORD\" | "
+            "python3 -m common.credential_cli set %s --stdin" % name
+        ) from None
     if first != again:
         raise ConfigError("两次输入不一致，未保存。")
     if not first:
