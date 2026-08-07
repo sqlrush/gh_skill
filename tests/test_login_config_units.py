@@ -298,3 +298,52 @@ def test_resolved_name_does_not_raise_when_unresolvable(home):
     write_config(home, {})
     assert config.resolved_name("nope") == "nope"
     assert config.resolved_name() == ""
+
+
+# --- api 模式：登录要回答两个问题 --------------------------------------------
+
+def test_api_login_answers_both_questions(monkeypatch):
+    """客户环境的流程：对话框里给库名 → 走 api_connection 确认
+
+      1) 这个库在不在（中间件按 dataIp 查实例，查不到就拒）
+      2) 这个库能跑哪些脚本（白名单）
+
+    两问都靠接口一 —— 它同时回答实例存在性与脚本清单，所以登录只需一次调用。
+    """
+    import importlib.util as _u
+    spec = _u.spec_from_file_location(
+        "login_for_test",
+        _ROOT / "skills" / "gaussdb-login" / "scripts" / "login.py")
+    mod = _u.module_from_spec(spec)
+    sys.path.insert(0, str(_ROOT / "skills" / "gaussdb-login" / "scripts"))
+    spec.loader.exec_module(mod)
+
+    # 白名单按 skill 前缀分组呈现：91 条平铺没人看得下去，
+    # 而「哪个能力域有几条」正好回答「这个库支持哪些诊断」
+    grouped = mod._by_skill(["health.overview", "health.bloat", "topsql.top_sql"])
+    assert "health" in grouped and "2" in grouped
+    assert "topsql" in grouped
+
+
+def test_api_target_derives_a_safe_connection_name():
+    """dataIp 常带点（10.0.0.9），而连接名规则不许有点 —— 派生而不是放松规则。
+
+    那个名字还用来拼 credentials/<name>.enc 的路径，放开点和斜杠等于给路径
+    穿越开口子。
+    """
+    import importlib.util as _u
+    spec = _u.spec_from_file_location(
+        "login_for_test2",
+        _ROOT / "skills" / "gaussdb-login" / "scripts" / "login.py")
+    mod = _u.module_from_spec(spec)
+    sys.path.insert(0, str(_ROOT / "skills" / "gaussdb-login" / "scripts"))
+    spec.loader.exec_module(mod)
+
+    from common.config import ConfigError
+
+    assert mod._safe_name("10.0.0.9") == "10-0-0-9"
+    assert mod._safe_name("PROD_DB01") == "prod_db01"
+    # 全是分隔符时**拒绝**，不凑一个名字出来 —— 派生出空名或垃圾名之后，
+    # 后面拼 credentials/<name>.enc 会指向一个谁也没料到的路径
+    with pytest.raises(ConfigError):
+        mod._safe_name("....")

@@ -117,11 +117,41 @@ def _verify(conn: Connection) -> tuple:
             return False, "建立取数通道失败：%s" % exc
         try:
             ops = runner.client.list_operations()
-            return True, "中间件应答正常，可用脚本 %d 条" % len(ops)
         except Exception as exc:
+            # 接口一同时回答两件事：这个库在不在（中间件按 dataIp 查实例），
+            # 以及它能跑哪些脚本。查不到实例时中间件自己会说
+            # 「通过dataIp查询不到对应高斯实例信息」—— 原样带出来，
+            # 不要包装成「连接失败」，那会让人去查网络和令牌。
             return False, ("调用中间件接口一失败：%s\n"
-                           "常见原因：令牌未设置或过期、端点不通、"
-                           "dataIp 不被受理。" % exc)
+                           "常见原因：库名（dataIp）不被受理、令牌未设置或"
+                           "过期、端点不通。" % exc)
+        if not ops:
+            return False, ("中间件应答正常，但这个库的白名单是空的 —— "
+                           "一条脚本都没注册，任何 skill 都取不到数。"
+                           "需要先由发布流程把脚本灌进 script_config。")
+        return True, "中间件应答正常，白名单 %d 条脚本" % len(ops)
+    return _verify_direct(conn)
+
+
+def whitelist(conn: Connection) -> List[str]:
+    """这个库能跑哪些脚本。api 模式下这是登录要回答的第二个问题。"""
+    ops = access.runner_for(conn).client.list_operations()
+    return sorted(str(d.get("cmd_name", "")) for d in ops if d.get("cmd_name"))
+
+
+def _by_skill(names: List[str]) -> str:
+    """按 skill 前缀分组呈现 —— 91 条平铺出来没人看得下去，
+    而「哪个 skill 有几条」正好回答「这个库支持哪些诊断能力」。"""
+    groups: dict = {}
+    for n in names:
+        groups.setdefault(n.split(".", 1)[0], []).append(n)
+    return render.table(
+        ["能力域", "脚本数", "脚本名"],
+        [[k, str(len(v)), render.truncate("、".join(v), 88)]
+         for k, v in sorted(groups.items())])
+
+
+def _verify_direct(conn: Connection) -> tuple:
 
     try:
         db = Database.open(conn, secret_for(conn), read_only=True)
@@ -150,7 +180,20 @@ def _describe(conn: Connection, note: str, path) -> str:
          ["驱动", conn.driver],
          ["验证", note]])
     out += "\n会话已写入 `%s`。\n\n" % path
-    out += ("后续 13 个 skill **不带 `-c` 就会用这条连接**；要临时换一个，"
+
+    if conn.driver == "grmp":
+        # 白名单决定了这个库上**哪些 skill 真的能用** —— 客户环境里各库注册的
+        # 脚本可以不一样，不摆出来的话，某个 skill 报「脚本不存在」时才发现。
+        try:
+            names = whitelist(conn)
+            out += "## 这个库的 SQL 白名单（%d 条）\n\n" % len(names)
+            out += _by_skill(names)
+            out += ("\n> 只有清单里的脚本能执行。某个 skill 需要的脚本没注册时，"
+                    "它会报「脚本 xxx 不存在」——那是发布问题，不是 skill 坏了。\n")
+        except Exception as exc:
+            out += "> 白名单取不到：%s\n" % exc
+
+    out += ("\n后续 13 个 skill **不带 `-c` 就会用这条连接**；要临时换一个，"
             "仍可显式传 `-c <连接名>`。\n")
     if conn.driver == "grmp":
         out += ("\n> 中间件模式下 hypopg 虚拟索引验证不可用（白名单模型没有"
