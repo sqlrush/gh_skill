@@ -97,13 +97,23 @@ def test_export_dir_env_var_is_usable(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("raw", ["false", "False", "0", "no"])
 def test_export_flag_rejects_the_bool_string_trap(raw):
-    """`--export false` 不能被当成「要导出」。
+    """`--export false` **绝不能被当成「要导出」**。
 
     argparse 的 type=bool 就是 bool(str)：非空字符串一律为真，于是
-    `--export false` 打开了导出。与 bool("f") 是同一个坑，只是换了个地方。
+    `--export false` 反而打开了导出。与 bool("f") 是同一个坑，只是换了个地方。
+
+    断言的是**安全性质**而不是某一种实现：
+      · 当前用 action="store_true" —— argparse 直接拒掉多出来的值（SystemExit）
+      · 若哪天改成 type=bool 并正确处理 —— 解析成 False
+    两种都安全；不安全的只有第三种：解析成 True。所以这里只否定那一种。
+
+    （这条曾经因为 build_parser 没拆出来而永远 skip —— 一个结构上跑不起来的
+    守卫，在报告里显示成「跳过」，看着像覆盖，实际什么都不保护。）
     """
-    ap = slowsql.build_parser() if hasattr(slowsql, "build_parser") else None
-    if ap is None:
-        pytest.skip("入口未拆出 build_parser")
-    args = ap.parse_args(["-c", "og", "--export", raw])
-    assert args.export is False
+    ap = slowsql.build_parser()
+    try:
+        args = ap.parse_args(["-c", "og", "--export", raw])
+    except SystemExit:
+        return          # argparse 当场拒绝，安全
+    assert args.export is not True, (
+        "`--export %s` 被解析成了「要导出」—— 用户写的是关掉，实际打开了" % raw)

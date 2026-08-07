@@ -31,6 +31,24 @@ def _available() -> bool:
         return False
 
 
+def _connect_or_skip():
+    """连不上就 skip，不要 fail。
+
+    这几条是 live 测试（pytestmark = live）：跑不跑得起来取决于**本机装没装
+    对应的驱动**，而不是代码对不对。本机没有 gsql 二进制时让它们红，等于把
+    「环境缺件」伪装成「代码有问题」，久了就没人认真看红灯了。
+
+    原先只有参数化那条带守卫，另外两条直接 connect() —— 同一份判断没用全。
+    抽成一个函数，省得下次再漏一处。
+    """
+    if not _available():
+        pytest.skip(f"connection {CONN!r} not configured")
+    try:
+        return common.Database.connect(CONN)
+    except common.DBError as exc:
+        pytest.skip(f"{CONN} 连不上（多半是驱动没装）：{exc}")
+
+
 def test_config_loads():
     conns = {c.name: c for c in common.load()}
     assert CONN in conns
@@ -43,7 +61,7 @@ def test_credential_decrypts():
 
 
 def test_connect_and_read():
-    db = common.Database.connect(CONN)
+    db = _connect_or_skip()
     try:
         ver = db.scalar("select version()")
         assert "openGauss" in ver or "GaussDB" in ver
@@ -74,7 +92,7 @@ def test_connect_and_read_each_driver(driver):
 
 
 def test_read_only_blocks_write():
-    db = common.Database.connect(CONN)
+    db = _connect_or_skip()
     try:
         try:
             db.execute("create temp table _rw_probe (x int)")

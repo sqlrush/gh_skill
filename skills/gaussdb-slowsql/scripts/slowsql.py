@@ -147,7 +147,14 @@ def stmt_table(title: str, rows: list[StmtRow]) -> str:
             "to get the full SQL text.\n")
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """参数解析器单独拆出来，好让测试能直接检验它。
+
+    原先它长在 main() 里，于是 test_export_flag_rejects_the_bool_string_trap
+    只能 skip —— 一个**结构上永远跑不起来**的守卫。那比没有守卫更糟：
+    它在测试报告里显示成「跳过」，看着像覆盖，实际上就算有人把 --export
+    改成 type=bool，它也不会red。
+    """
     ap = argparse.ArgumentParser(prog="slowsql.py",
                                  description="List statements slower than --threshold (avg ms)")
     ap.add_argument("-c", "--conn", default="", help="连接名（省略则用 gaussdb-login 建立的会话）")
@@ -163,7 +170,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
     # 仅直连路径生效：GRMP 协议没有超时字段，走中间件时超时由服务端决定
     ap.add_argument("--timeout", type=int, default=None)
-    args = ap.parse_args(argv)
+    return ap
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    args = build_parser().parse_args(argv)
     try:
         runner = access.for_conn(args.conn, timeout=args.timeout)
     except (common.ConfigError, common.CredentialError, access.AccessError) as exc:
