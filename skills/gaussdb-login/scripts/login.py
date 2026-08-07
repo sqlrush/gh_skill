@@ -82,17 +82,24 @@ def _safe_name(raw: str) -> str:
     return slug if slug[0].isalnum() else "api-" + slug
 
 
-def _api_connection(target: str, endpoint) -> Connection:
-    """按用户给的目标库/实例构造一条走中间件的连接。
+def _api_connection(ip: str, database: str, endpoint) -> Connection:
+    """按用户给的「实例 IP + 数据库名」构造一条走中间件的连接。
 
-    target 原样进 data_ip —— 客户的 GRMP 用 dataIp 定位实例，那个值在他们
-    那边就是实例地址，这里不另造一套映射。连接名由 target 派生（见 _safe_name）。
+    **IP 进 data_ip，库名进 database。** 接口一的报文里只有 `dataIp` 一个
+    定位字段（文档写明是单 IP，mock 也拒绝逗号/空格分隔的多值），没有库名的
+    位置 —— 所以中间件是按 IP 找到实例，库名不参与路由。
+
+    库名仍然必须收：它决定后续取数落在哪个库上，也要写进报告的抬头，
+    否则一份诊断报告事后分不清是同一实例上的哪个库。
+
+    **一个待客户确认的点**：若同一实例上有多个库、而白名单按库区分，
+    仅凭 dataIp 拿到的清单可能不对。协议没给库名的位置，这条要问开发。
     """
     return Connection(
-        name=_safe_name(target), type="gaussdb",
-        host=endpoint.host, port=endpoint.port,
-        database=target, user="grmp", driver="grmp",
-        data_ip=target, app="api",
+        name="%s-%s" % (_safe_name(ip), _safe_name(database)),
+        type="gaussdb", host=endpoint.host, port=endpoint.port,
+        database=database, user="grmp", driver="grmp",
+        data_ip=ip, app="api",
     )
 
 
@@ -176,8 +183,13 @@ def _describe(conn: Connection, note: str, path) -> str:
         [["模式", "api（GRMP 中间件）" if conn.driver == "grmp" else "gsql（直连）"],
          ["应用", conn.app or "—"],
          ["连接名", conn.name],
+         ["中间件端点", "%s:%s" % (conn.host, conn.port)]
+         if conn.driver == "grmp" else
          ["目标", "%s:%s/%s" % (conn.host, conn.port, conn.database)],
+         ["实例 IP（dataIp）", conn.data_ip] if conn.driver == "grmp" else
          ["驱动", conn.driver],
+         ["数据库", conn.database] if conn.driver == "grmp" else
+         ["用户", conn.user],
          ["验证", note]])
     out += "\n会话已写入 `%s`。\n\n" % path
 
@@ -206,7 +218,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         prog="login.py", description="建立本次会话要连的数据库")
     ap.add_argument("--app", help="gsql 模式：应用分组名")
     ap.add_argument("--conn", help="gsql 模式：连接名")
-    ap.add_argument("--database", help="api 模式：要访问的数据库/实例标识")
+    ap.add_argument("--ip", help="api 模式：目标实例 IP（接口一的 dataIp）")
+    ap.add_argument("--database", help="api 模式：要访问的数据库名")
     ap.add_argument("--list", action="store_true", help="只列出可选项，不登录")
     ap.add_argument("--status", action="store_true", help="显示当前会话")
     ap.add_argument("--logout", action="store_true", help="清除当前会话")
@@ -245,16 +258,22 @@ def main(argv: Optional[List[str]] = None) -> int:
             if args.list:
                 print("模式：api（GRMP 中间件）\n端点：%s:%s\n"
                       % (endpoint.host, endpoint.port))
-                print("api 模式没有预置的连接清单 —— 目标库由你指定。\n"
-                      "用 `--database <库名>` 登录。")
+                print("api 模式没有预置的连接清单 —— 目标由你指定。\n"
+                      "用 `--ip <实例IP> --database <库名>` 登录。")
                 return 0
-            if not args.database:
+            missing = [f for f, v in (("--ip", args.ip),
+                                      ("--database", args.database)) if not v]
+            if missing:
                 print("模式：api（GRMP 中间件）")
                 print("端点：%s:%s\n" % (endpoint.host, endpoint.port))
-                print("请提供要访问的数据库（中间件按它路由到目标实例）：")
-                print("    gaussdb-login --database <数据库名>")
+                print("还需要：%s\n" % "、".join(missing))
+                print("请提供**实例 IP** 与**数据库名**：")
+                print("    gaussdb-login --ip <实例IP> --database <数据库名>\n")
+                print("IP 用于中间件定位实例（接口一的 dataIp）；"
+                      "库名决定取数落在哪个库、并写进报告抬头。")
                 return 2
-            conn = _api_connection(args.database.strip(), endpoint)
+            conn = _api_connection(args.ip.strip(), args.database.strip(),
+                                   endpoint)
         else:
             conns = _candidates()
             if not conns:

@@ -85,6 +85,10 @@ python3 {baseDir}/scripts/login.py --logout    # 清除会话
 
 ## 安全红线
 
+- **配置文件里绝不允许出现明文口令。** `config.yaml` 只放连接元数据 —— 它会被 cat、会进备份、会被贴进工单和聊天窗口，而没人会想到里面藏着生产库口令。口令一律加密存放在 `$GSDB_HOME/credentials/*.enc`（AES-256-GCM，AAD 绑定连接名），由脚本自动解密，**你不要去读取或解密它**。
+  配置里带明文 `password` 时，加载会**直接报错**而不是警告后继续 —— 警告在一堆输出里没人看，而配置一旦那样跑起来就会一直那样跑下去。
+  发现用户配置里有明文口令时，提示他改用：`python3 -m common.credential_cli set <连接名>`，然后删掉配置里的 password/encrypted 两行。
+
 - 只通过本 skill 的脚本读配置，**不要**自己去 cat / 解密 `config.yaml`、
   `credentials/`、`key`。
 - 本 skill 只读配置 + 写一个不含凭据的会话文件，不改配置、不存口令、不建库。

@@ -244,11 +244,16 @@ def test_ciphertext_cannot_be_moved_to_another_connection(home):
     assert "AAD" in str(ei.value) or "解开" in str(ei.value)
 
 
-def test_plaintext_password_when_not_encrypted(home):
+def test_credentials_dir_is_the_default_source(home):
+    """推荐形态：配置里没有 password，口令在凭据目录，由脚本自动解密。
+
+    （这条原先测的是「明文 password 能用」—— 那个行为已被禁止，见
+    test_plaintext_password_is_refused。改成测现在该走的路。）
+    """
     from common import config, credential
-    write_config(home, {"db_connections": {"app1": [
-        dict(_CONN, name="c1", password="plain", encrypted=False)]}})
-    assert credential.secret_for(config.find("c1")) == "plain"
+    write_config(home, {"db_connections": {"app1": [dict(_CONN, name="c1")]}})
+    credential.save_secret("c1", "from-store")
+    assert credential.secret_for(config.find("c1")) == "from-store"
 
 
 def test_bad_base64_says_what_to_fix(home):
@@ -261,9 +266,10 @@ def test_bad_base64_says_what_to_fix(home):
 
 
 def test_env_password_overrides_everything(home, monkeypatch):
+    """环境变量优先级最高 —— 调试时临时换口令不必改配置或重存凭据。"""
     from common import config, credential
-    write_config(home, {"db_connections": {"app1": [
-        dict(_CONN, name="c1", password="plain", encrypted=False)]}})
+    write_config(home, {"db_connections": {"app1": [dict(_CONN, name="c1")]}})
+    credential.save_secret("c1", "from-store")
     monkeypatch.setenv("GSDB_PASSWORD", "from-env")
     assert credential.secret_for(config.find("c1")) == "from-env"
 
@@ -347,3 +353,45 @@ def test_api_target_derives_a_safe_connection_name():
     # 后面拼 credentials/<name>.enc 会指向一个谁也没料到的路径
     with pytest.raises(ConfigError):
         mod._safe_name("....")
+
+
+# --- 配置文件不允许明文口令 --------------------------------------------------
+
+def test_plaintext_password_is_refused(home):
+    """**config.yaml 会被 cat、进备份、贴进工单** —— 明文口令不该在这条路径上。
+
+    拒绝而不是「警告后继续」：警告在一堆输出里没人看，而配置一旦带着明文
+    跑起来，它就会一直那样跑下去。
+    """
+    from common import config
+    write_config(home, {"db_connections": {"app1": [
+        dict(_CONN, name="c1", password="hunter2")]}})
+    with pytest.raises(config.ConfigError) as ei:
+        config.load()
+    assert "明文" in str(ei.value)
+    assert "credential_cli" in str(ei.value), "要告诉用户下一步跑什么"
+
+
+def test_plaintext_with_encrypted_false_is_also_refused(home):
+    """显式写 encrypted: false 也不行 —— 那只是把明文说得更明白。"""
+    from common import config
+    write_config(home, {"db_connections": {"app1": [
+        dict(_CONN, name="c1", password="hunter2", encrypted=False)]}})
+    with pytest.raises(config.ConfigError):
+        config.load()
+
+
+def test_encrypted_password_is_accepted(home):
+    from common import config, credential
+    blob = credential.seal_secret("c1", "hunter2")
+    write_config(home, {"db_connections": {"app1": [
+        dict(_CONN, name="c1", password=blob, encrypted=True)]}})
+    assert credential.secret_for(config.find("c1")) == "hunter2"
+
+
+def test_no_password_at_all_is_the_recommended_shape(home):
+    """推荐形态：配置里根本没有 password，口令在凭据目录。"""
+    from common import config
+    write_config(home, {"db_connections": {"app1": [dict(_CONN, name="c1")]}})
+    conn = config.find("c1")
+    assert conn.password == "" and conn.encrypted is False

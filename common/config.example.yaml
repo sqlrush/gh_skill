@@ -31,23 +31,30 @@ db_connections:
       port: 5432
       database: db
       user: gaussdb
-      # 口令三种放法，优先级从高到低：
-      #   1. 环境变量 GSDB_PASSWORD（临时覆盖，调试用）
-      #   2. 这里的 password —— encrypted: true 时是 base64 密文，
-      #      与 credentials/ 目录同一把钥匙、同一个 AAD（AAD 是连接名，
-      #      所以密文不能挪到别的连接名下复用）
-      #   3. 都没有时回落到 credentials/<name>.enc（老配置不用改）
-      password: 密文...
-      encrypted: true
       driver: pg8000
+      # ↑ **这里没有 password —— 配置文件里不允许出现明文口令。**
+      #
+      # 口令加密存放，用：
+      #     python3 -m common.credential_cli set app1-primary
+      # 存到 $GSDB_HOME/credentials/app1-primary.enc（AES-256-GCM，
+      # AAD 绑定连接名，所以密文挪到别的连接名下会解不开）。
+      #
+      # 写了明文 password 会**直接加载失败**，不是警告后继续 ——
+      # 警告在一堆输出里没人看，而配置一旦那样跑起来就会一直那样跑下去。
+      #
+      # 确实需要配置自包含时，可以内联密文（不是明文）：
+      #     python3 -m common.credential_cli seal app1-primary
+      #   password: <上面输出的 base64>
+      #   encrypted: true
+      # 但优先用凭据目录 —— 配置文件被复制的次数远多于凭据目录。
+      #
+      # 临时覆盖（调试用）：环境变量 GSDB_PASSWORD，优先级最高。
     - name: app1-standby
       type: gaussdb
       host: 127.0.0.1
       port: 5432
       database: db
       user: gaussdb
-      password: 密文...
-      encrypted: true
       driver: gsql
 
   app2:
@@ -57,8 +64,6 @@ db_connections:
       port: 5432
       database: db
       user: gaussdb
-      password: 密文...
-      encrypted: true
       driver: pg8000
 
 # ── 旧格式仍然可用 ───────────────────────────────────────────────────────

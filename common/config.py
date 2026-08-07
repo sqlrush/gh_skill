@@ -112,6 +112,24 @@ def validate(conn: Connection) -> None:
             f"connection {conn.name!r}: driver grmp requires data_ip "
             f"(中间件按它路由到目标实例，缺了会在第一次调用时才失败)"
         )
+    if conn.password and not conn.encrypted:
+        # **配置文件里不允许出现明文口令。**
+        #
+        # config.yaml 会被 cat、会进备份、会被贴进工单和聊天窗口，而它本身
+        # 只是「连接元数据」，没人会想到里面藏着生产库口令。加密存放不是
+        # 更安全一点点的问题 —— 是把口令挪出这条随手会被复制的路径。
+        #
+        # 拒绝而不是「警告后继续」：警告在一堆输出里没人看，而配置一旦
+        # 带着明文跑起来，它就会一直那样跑下去。
+        raise ConfigError(
+            f"连接 {conn.name!r} 的 password 是明文（encrypted 不是 true）——"
+            f"配置文件里不允许出现明文口令。\n"
+            f"把它加密后存进凭据目录：\n"
+            f"    python3 -m common.credential_cli set {conn.name}\n"
+            f"然后从 config.yaml 里删掉 password/encrypted 两行。\n"
+            f"（也可以内联密文：encrypted: true + base64 密文，"
+            f"与凭据目录同一把钥匙。）"
+        )
 
 
 def state_dir() -> pathlib.Path:
