@@ -99,7 +99,7 @@ SELECT t.schemaname, t.relname, t.n_live_tup, t.n_dead_tup,
        CASE WHEN 'autovacuum_enabled=false' = ANY(c.reloptions) THEN false ELSE true END AS autovac_enabled
 FROM pg_stat_user_tables t
 JOIN pg_class c ON c.oid = t.relid
-WHERE t.n_dead_tup > 0+
+WHERE t.n_dead_tup > 0
   AND t.schemaname NOT IN ('pg_catalog','information_schema','snapshot','dbe_perf','dbe_pldeveloper','cstore')
 ORDER BY t.n_dead_tup::numeric/GREATEST(t.n_live_tup+t.n_dead_tup,1) DESC
 LIMIT {{limit}};
@@ -870,7 +870,7 @@ LIMIT 1;
 SELECT query FROM dbe_perf.statement
 WHERE unique_sql_id = {{sid}}
   AND query IS NOT NULL
-  AND query <> ''
+  AND LENGTH(TRIM(query)) > 0
 LIMIT 1;
 ```
 
@@ -994,7 +994,7 @@ LIMIT 1;
 SELECT query FROM dbe_perf.statement
 WHERE unique_sql_id = {{sid}}
   AND query IS NOT NULL
-  AND query <> ''
+  AND LENGTH(TRIM(query)) > 0
 LIMIT 1;
 ```
 
@@ -1027,7 +1027,7 @@ LIMIT 1;
 SELECT query FROM dbe_perf.statement
 WHERE unique_sql_id = {{sid}}
   AND query IS NOT NULL
-  AND query <> ''
+  AND LENGTH(TRIM(query)) > 0
 LIMIT 1;
 ```
 
@@ -1158,7 +1158,7 @@ LIMIT 1;
 SELECT query FROM dbe_perf.statement
 WHERE unique_sql_id = {{sid}}
   AND query IS NOT NULL
-  AND query <> ''
+  AND LENGTH(TRIM(query)) > 0
 LIMIT 1;
 ```
 
