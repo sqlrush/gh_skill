@@ -131,7 +131,7 @@ if [ "${SKIP_CFG:-0}" = "0" ]; then
   say "    ${BOLD}2) api${RST}   走 GRMP 中间件（客户生产环境通常是这个）"
   ask "选哪种" "1"; MODE_SEL="$REPLY_VAL"
 
-  if [ "$MODE_SEL" = "2" ]; then
+  if [ "${MODE_SEL:-1}" = "2" ]; then
     ask "中间件 host" "ucmp-grmp-app-d.sdc.cs.icbc"; API_HOST="$REPLY_VAL"
     ask "中间件 port" "8080"; API_PORT="$REPLY_VAL"
     ask "令牌环境变量名" "GRMP_AUTH_TOKEN"; TOK_ENV="$REPLY_VAL"
@@ -222,12 +222,25 @@ print('ok')"
 if [ "${MODE_SEL:-1}" = "2" ]; then
   say "  ${DIM}api 模式需要实例 IP 与库名才能验连通，登录时提供：${RST}"
   say "      python3 $LOGIN --ip <实例IP> --database <库名>"
+  # **令牌缺失必须判失败。**
+  #
+  # 这里原先写成 `print('ok' if e.resolve_token() else 'no-token')` 然后
+  # 无论如何退出 0 —— check 只看退出码，于是令牌根本没设也显示 ✓。
+  # 真跑时抓到的：一个「前置条件没满足却报通过」的检查，比没有这个检查更糟。
   check "中间件端点已配置" python3 -c "
 import sys; sys.path.insert(0, '$DEST')
 from common import config
 e = config.api_endpoint()
-assert e.host and e.port
-print('ok' if e.resolve_token() else 'no-token')"
+assert e.host and e.port, '端点 host/port 不完整'
+print('端点 %s:%s' % (e.host, e.port))"
+
+  check "令牌可读取（${TOK_ENV}）" python3 -c "
+import sys; sys.path.insert(0, '$DEST')
+from common import config
+tok = config.api_endpoint().resolve_token()
+if not tok:
+    raise SystemExit('环境变量 $TOK_ENV 未设置 —— 登录时会在第一次调用中间件时失败')
+print('令牌已就绪（长度 %d，内容不显示）' % len(tok))"
 elif [ "${CRED_MISSING:-0}" = "1" ]; then
   # **口令没设成就不要跑连通性测试。** 跑出来的三条红既不是环境问题也不是
   # 代码问题,是「你还没设口令」—— 但报出来像是连不上,会把人指向错误的方向。
