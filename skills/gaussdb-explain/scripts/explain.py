@@ -231,8 +231,13 @@ def main(argv: Optional[list[str]] = None) -> int:
                 args.timeout if args.timeout is not None
                 else access.DEFAULT_SKILL_TIMEOUT_SECONDS)
             plan = explain(db, sql_text, args.analyze)
+    # access.QueryError 必须在列 —— 它是本项目归一化的「取数失败」类型，
+    # runner.run() 在 SQL 本身执行失败时抛的就是它（打错字、表不存在、
+    # 类型不匹配）。漏掉它的后果不是少一条错误信息，而是**直接吐 Traceback**：
+    # 用户粘了一条有 typo 的 SQL，看到的是 Python 栈而不是
+    # 「syntax error at or near "SELEKT"」。而这是最常见的用户路径之一。
     except (common.ConfigError, common.CredentialError, common.DBError,
-            access.AccessError) as exc:
+            access.AccessError, access.QueryError) as exc:
         # 回落到直连又失败时，把「模板为什么走不通」一并说出来。只报后半句
         # （「白名单只执行预注册脚本」）会让人以为是配置问题，而真正的原因是
         # 这条 SQL 的形态本身就进不了模板。
