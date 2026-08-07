@@ -101,10 +101,10 @@ export GSDB_HOME="$GHOME"
 # ── 3. 安装 skill ────────────────────────────────────────────────────────
 head1 "3/5  安装 skill"
 
+# 快照由 install-opencode.sh 负责（它带保留策略和版本戳）。这里不再自己拷一份，
+# 否则每次部署会留下两个内容相同的快照目录，回滚时不知道该用哪个。
 if [ -d "$DEST" ] && [ "$DRY" = 0 ]; then
-  BAK="${DEST}.bak.$(date +%Y%m%d-%H%M%S)"
-  cp -R "$DEST" "$BAK" && ok "已备份旧安装 → $BAK"
-  say "      ${DIM}回滚：rm -rf $DEST && cp -R $BAK $DEST${RST}"
+  say "      ${DIM}旧安装会先被快照，回滚：bash ${SRC}/install-opencode.sh --rollback${RST}"
 fi
 
 if [ "$DRY" = 1 ]; then
