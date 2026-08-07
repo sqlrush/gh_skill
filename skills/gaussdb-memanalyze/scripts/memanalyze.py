@@ -162,7 +162,7 @@ def _normalize(argv) -> list:
 
 def _parse_args(argv):
     shared = argparse.ArgumentParser(add_help=False)
-    shared.add_argument("-c", "--conn", required=True, help="连接名")
+    shared.add_argument("-c", "--conn", default="", help="连接名（省略则用 gaussdb-login 建立的会话）")
     shared.add_argument("--top", type=int, default=20, help="每层返回行数（默认 20）")
     shared.add_argument("--format", choices=["markdown", "json"], default="markdown")
     shared.add_argument("--timeout", type=int, default=60, help="查询超时（秒）")

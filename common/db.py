@@ -9,8 +9,8 @@ from __future__ import annotations
 from typing import Any, Optional, Sequence
 
 from .backends.base import Backend, DBError  # 再导出
-from .config import find
-from .credential import load_secret
+from .config import find, resolve
+from .credential import load_secret, secret_for
 
 # 不做跨驱动兜底：配置里写的 driver 就是实际使用的 driver。
 #
@@ -57,9 +57,10 @@ class Database:
         return cls(backend, conn)
 
     @classmethod
-    def connect(cls, name: str, read_only: bool = True) -> "Database":
-        conn = find(name)
-        return cls.open(conn, load_secret(conn.name), read_only=read_only)
+    def connect(cls, name: str = "", read_only: bool = True) -> "Database":
+        """name 省略时用 gaussdb-login 建立的会话（见 config.resolve）。"""
+        conn = resolve(name)
+        return cls.open(conn, secret_for(conn), read_only=read_only)
 
     def query(self, sql, params=None):
         return self._backend.query(sql, params)

@@ -169,7 +169,7 @@ def explain_report(sql_text: str, plan: str, findings: list[Finding]) -> str:
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="explain.py",
                                  description="EXPLAIN a statement with risk findings")
-    ap.add_argument("-c", "--conn", required=True, help="connection name")
+    ap.add_argument("-c", "--conn", default="", help="连接名（省略则用 gaussdb-login 建立的会话）")
     ap.add_argument("--sql-stdin", action="store_true", required=True,
                     help="read SQL text from stdin")
     ap.add_argument("--analyze", action="store_true",

@@ -299,7 +299,7 @@ def _to_dict(v) -> dict:
 
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="verify.py", description="Verify a SQL rewrite (cost + equivalence)")
-    ap.add_argument("-c", "--conn", required=True, help="connection name")
+    ap.add_argument("-c", "--conn", default="", help="连接名（省略则用 gaussdb-login 建立的会话）")
     ap.add_argument("--original", required=True, help="original SQL text")
     ap.add_argument("--rewrite", required=True, help="rewritten SQL text")
     ap.add_argument("--no-equiv", action="store_true", help="skip result-set equivalence check")

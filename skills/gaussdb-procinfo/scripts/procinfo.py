@@ -170,7 +170,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         prog="procinfo.py",
         description="Read-only stored-procedure structural diagnostic")
     ap.add_argument("proc", help="schema.proc")
-    ap.add_argument("-c", "--conn", required=True, help="connection name")
+    ap.add_argument("-c", "--conn", default="", help="连接名（省略则用 gaussdb-login 建立的会话）")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
     ap.add_argument("--timeout", type=int, default=None)
     args = ap.parse_args(argv)

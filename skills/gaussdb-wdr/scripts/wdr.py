@@ -110,12 +110,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     ps = sub.add_parser("snaps", help="list WDR snapshots + preflight")
-    ps.add_argument("-c", "--conn", required=True)
+    ps.add_argument("-c", "--conn", default="")
     ps.add_argument("--limit", type=int, default=20, help="列出最近 N 个快照")
     ps.add_argument("--timeout", type=int, default=None)
 
     pc = sub.add_parser("collect", help="collect snapshot-delta evidence + findings")
-    pc.add_argument("-c", "--conn", required=True)
+    pc.add_argument("-c", "--conn", default="")
     pc.add_argument("--begin", type=int, default=0, help="begin snapshot id (required)")
     pc.add_argument("--end", type=int, default=0, help="end snapshot id (required, > begin)")
     pc.add_argument("--scope", default="node", help="cluster | node")

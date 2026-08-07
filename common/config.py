@@ -4,6 +4,7 @@ import os
 import re
 import pathlib
 from dataclasses import dataclass, replace
+from typing import Optional
 
 import yaml
 
@@ -20,6 +21,11 @@ _VALID_TYPES = frozenset({"opengauss", "gaussdb"})
 _VALID_DRIVERS = frozenset({"gsql", "pg8000", "grmp"})
 
 
+MODE_GSQL = "gsql"
+MODE_API = "api"
+_VALID_MODES = frozenset({MODE_GSQL, MODE_API})
+
+
 @dataclass(frozen=True)
 class Connection:
     """One named database target (immutable)."""
@@ -34,10 +40,40 @@ class Connection:
     driver: str = "gsql"
     # 仅 driver=grmp 时使用：中间件按它路由到目标高斯实例
     data_ip: str = ""
+    # 所属应用分组（新格式 db_connections 下的一级键）。旧格式为空。
+    app: str = ""
+    # 内联口令。密文时是 base64，AAD 用连接名，与 credentials/ 目录同一把钥匙。
+    # 两者都没有时回落到 credentials/<name>.enc —— 老配置不用改就能继续用。
+    password: str = ""
+    encrypted: bool = False
+
+    @property
+    def qualified(self) -> str:
+        """带应用前缀的全名，如 app1/conn1。没有分组时就是名字本身。"""
+        return "%s/%s" % (self.app, self.name) if self.app else self.name
 
     def with_sslmode(self, sslmode: str) -> "Connection":
         """Return a new Connection with sslmode replaced (no mutation)."""
         return replace(self, sslmode=sslmode)
+
+
+@dataclass(frozen=True)
+class ApiEndpoint:
+    """connection_mode: api 时的中间件端点。"""
+
+    host: str
+    port: int
+    token: str = ""             # 内联令牌（客户配置格式如此）
+    token_env: str = "GRMP_AUTH_TOKEN"
+
+    def resolve_token(self) -> str:
+        """取令牌：环境变量优先于配置文件里的内联值。
+
+        环境变量优先是有意的：内联令牌会随配置文件进版本库、进备份、被随手
+        cat；而客户环境里它是**长期有效、无重放保护**的静态凭据。支持内联
+        只是因为客户的配置格式就是这样，不代表推荐这么放。
+        """
+        return os.environ.get(self.token_env, "") or self.token
 
 
 class ConfigError(Exception):
@@ -108,44 +144,173 @@ def _config_path() -> pathlib.Path:
     return state_dir() / "config.yaml"
 
 
-def load() -> list[Connection]:
-    """Read config.yaml; a missing file yields an empty list.
-
-    config.yaml is external (user-editable) input, so every connection is
-    validated after parsing.
-    """
+def _read_raw() -> dict:
     path = _config_path()
     if not path.exists():
-        return []
+        return {}
     try:
-        raw = yaml.safe_load(path.read_text()) or {}
+        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except yaml.YAMLError as exc:  # pragma: no cover - defensive
         raise ConfigError(f"parse {path}: {exc}") from exc
 
+
+def mode() -> str:
+    """connection_mode：gsql（直连）还是 api（走 GRMP 中间件）。
+
+    缺省 gsql —— 旧配置没有这一行，而它们全是直连。默认成 api 会让老配置在
+    第一次取数时才失败，且错误表现成「中间件连不上」。
+    """
+    raw = _read_raw()
+    value = str(raw.get("connection_mode", "") or MODE_GSQL).strip().lower()
+    if value not in _VALID_MODES:
+        raise ConfigError(
+            "connection_mode %r 不认识，只能是 %s。"
+            % (value, " 或 ".join(sorted(_VALID_MODES))))
+    return value
+
+
+def api_endpoint() -> ApiEndpoint:
+    """connection_mode: api 时的中间件端点。"""
+    items = _read_raw().get("api_connection") or []
+    if isinstance(items, dict):        # 允许写成单个映射而不是列表
+        items = [items]
+    if not items:
+        raise ConfigError(
+            "connection_mode 是 api，但配置里没有 api_connection —— "
+            "不知道往哪个中间件发请求。")
+    if len(items) > 1:
+        raise ConfigError(
+            "api_connection 配了 %d 个端点，无法判断该用哪一个。"
+            "多环境请分别放在不同的 config.yaml 里。" % len(items))
+    item = items[0]
+    host = str(item.get("host", "") or "").strip()
+    if not host:
+        raise ConfigError("api_connection.host 不能为空")
+    try:
+        port = int(item.get("port", 0))
+    except (TypeError, ValueError):
+        raise ConfigError("api_connection.port %r 不是整数"
+                          % item.get("port")) from None
+    if port < 1 or port > 65535:
+        raise ConfigError("api_connection.port %d 越界" % port)
+    return ApiEndpoint(
+        host=host, port=port,
+        token=str(item.get("token", "") or ""),
+        token_env=str(item.get("token_env", "") or "GRMP_AUTH_TOKEN"),
+    )
+
+
+def _connection_from(item: dict, app: str = "") -> Connection:
+    conn = Connection(
+        name=item.get("name", ""),
+        type=item.get("type", ""),
+        host=item.get("host", ""),
+        port=item.get("port", 0),
+        database=item.get("database", ""),
+        user=item.get("user", ""),
+        sslmode=item.get("sslmode", "") or "",
+        driver=item.get("driver", "gsql") or "gsql",
+        data_ip=item.get("data_ip", "") or "",
+        app=app,
+        password=str(item.get("password", "") or ""),
+        encrypted=bool(item.get("encrypted", False)),
+    )
+    validate(conn)
+    return conn
+
+
+def load() -> list[Connection]:
+    """读 config.yaml，返回全部连接定义。文件不存在时返回空表。
+
+    同时认两种格式：
+
+      新（按应用分组）        旧（平铺）
+      db_connections:         connections:
+        app1:                   - name: og
+          - name: conn1           ...
+      两者可以并存,结果合并。旧格式没有 app 归属。
+
+    **跨应用重名一律拒绝。** app1/conn1 与 app2/conn1 同名时，`-c conn1`
+    该给哪一个？取第一个会连到另一个应用的库上，执行成功、结果无关、不报错
+    —— 这正是本项目一路在防的那类失败。要用同名就必须写全名 app/conn。
+    """
+    raw = _read_raw()
     conns: list[Connection] = []
+
     for item in raw.get("connections", []) or []:
-        conn = Connection(
-            name=item.get("name", ""),
-            type=item.get("type", ""),
-            host=item.get("host", ""),
-            port=item.get("port", 0),
-            database=item.get("database", ""),
-            user=item.get("user", ""),
-            sslmode=item.get("sslmode", "") or "",
-            driver=item.get("driver", "gsql") or "gsql",
-            data_ip=item.get("data_ip", "") or "",
-        )
-        validate(conn)
-        conns.append(conn)
+        conns.append(_connection_from(item))
+
+    groups = raw.get("db_connections") or {}
+    if not isinstance(groups, dict):
+        raise ConfigError("db_connections 应当是「应用名: 连接列表」的映射")
+    for app, items in groups.items():
+        app_name = str(app).strip()
+        if not app_name:
+            raise ConfigError("db_connections 下出现了空的应用名")
+        for item in items or []:
+            conns.append(_connection_from(item, app=app_name))
+
+    seen: dict[str, list[str]] = {}
+    for conn in conns:
+        seen.setdefault(conn.name, []).append(conn.app or "(无分组)")
+    dupes = {n: apps for n, apps in seen.items() if len(apps) > 1}
+    if dupes:
+        listed = "；".join("%s 出现在 %s" % (n, "、".join(apps))
+                           for n, apps in sorted(dupes.items()))
+        raise ConfigError(
+            "连接名重复：%s。\n"
+            "`-c <名字>` 无法判断该用哪一个,取第一个会连到另一个应用的库上 ——"
+            "执行成功、结果无关、不报错。\n"
+            "改掉重名,或在配置里用不同的名字。" % listed)
     return conns
 
 
-def find(name: str) -> Connection:
-    """Return the named connection or raise ConfigError if absent."""
+def apps() -> dict:
+    """按应用分组的连接，供登录时列菜单用。无分组的归在 '' 下。"""
+    grouped: dict = {}
     for conn in load():
-        if conn.name == name:
-            return conn
+        grouped.setdefault(conn.app, []).append(conn)
+    return grouped
+
+
+def find(name: str) -> Connection:
+    """按名字取连接。支持 `app/conn` 全名，也支持裸名（唯一时）。"""
+    wanted_app, _, wanted = name.rpartition("/")
+    for conn in load():
+        if conn.name != wanted:
+            continue
+        if wanted_app and conn.app != wanted_app:
+            continue
+        return conn
+
+    # 会话里可能有一条**配置文件里不存在**的连接：api 模式下的连接是登录时
+    # 按用户给的库名现场构造的。不在这里回落的话，下一个 skill 会找不到它。
+    from . import session as _session  # 循环依赖：session 依赖本模块的类型
+    live = _session.current()
+    if live is not None and live.name == wanted:
+        if not wanted_app or live.app == wanted_app:
+            return live
+
     raise ConfigError(
-        f"no connection named {name!r}: run `connect add {name} ...` first "
-        f"(or check `connect list`)"
+        "没有名为 %r 的连接。先运行 gaussdb-login 建立会话，"
+        "或用 `gaussdb-login --list` 看有哪些可选。" % name
+    )
+
+
+def resolve(name: Optional[str] = None) -> Connection:
+    """13 个 skill 取连接的统一入口。
+
+    给了 `-c` 就用它；没给就用 gaussdb-login 选定的那条。两者都没有时报错
+    并告诉用户下一步做什么 —— 不猜一个默认连接：猜错的后果是在错误的库上
+    执行诊断，而输出看起来完全正常。
+    """
+    if name:
+        return find(name)
+    from . import session as _session
+    live = _session.current()
+    if live is not None:
+        return live
+    raise ConfigError(
+        "没有指定连接，也没有已建立的会话。\n"
+        "先运行 gaussdb-login 选一个数据库，或用 `-c <连接名>` 显式指定。"
     )

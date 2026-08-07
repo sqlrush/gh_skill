@@ -57,14 +57,18 @@ cat "$GSDB_HOME/config.yaml"        # 看 name 列表（不含密码）
 export GSDB_HOME=~/.my-db-conns     # 任意名字/路径
 mkdir -p "$GSDB_HOME" && chmod 700 "$GSDB_HOME"
 cat >> "$GSDB_HOME/config.yaml" <<'YAML'
-connections:
-  - name: og-prod
-    type: opengauss        # opengauss | gaussdb
-    host: 10.0.0.1
-    port: 5432
-    database: appdb
-    user: tuner
-    driver: gsql           # gsql(默认) | pg8000；可省，见 connection-drivers.md
+# 首行决定所有 skill 怎么连库：gsql 直连 / api 走 GRMP 中间件
+connection_mode: gsql
+
+db_connections:
+  app1:                      # 应用分组，跨应用不能重名
+    - name: og-prod
+      type: opengauss        # opengauss | gaussdb
+      host: 10.0.0.1
+      port: 5432
+      database: appdb
+      user: tuner
+      driver: gsql           # gsql(默认) | pg8000 | grmp；见 connection-drivers.md
 YAML
 chmod 600 "$GSDB_HOME/config.yaml"
 
@@ -144,6 +148,38 @@ PY
 python3 ~/.config/opencode/skills/gaussdb-sqltune/scripts/sqltune.py -h
 python3 ~/.config/opencode/skills/gaussdb-slowsql/scripts/slowsql.py -c og-prod --threshold 1000
 ```
+
+---
+
+## 3.5 第一步永远是登录
+
+**其余 13 个 skill 都从 `gaussdb-login` 建立的会话里取连接。**
+
+```bash
+D=~/.config/opencode/skills
+python3 $D/gaussdb-login/scripts/login.py --list          # 看有哪些可选
+python3 $D/gaussdb-login/scripts/login.py --app app1 --conn og-prod
+python3 $D/gaussdb-login/scripts/login.py --status        # 现在连的是哪个
+```
+
+`connection_mode: api` 时没有预置清单，改为指定目标库：
+
+```bash
+python3 $D/gaussdb-login/scripts/login.py --database <数据库名>
+```
+
+登录之后其余 skill **不需要传 `-c`**：
+
+```bash
+python3 $D/gaussdb-slowsql/scripts/slowsql.py --threshold 1000   # 用登录选的连接
+python3 $D/gaussdb-slowsql/scripts/slowsql.py -c og-dev ...      # 临时换一个
+```
+
+没登录就直接跑别的 skill 会报错并指向这里 —— 不会挑一个默认连接顶上，
+因为猜错的后果是在错误的库上做诊断，而输出看起来完全正常。
+
+登录时会**真连一次**做验证，验不过就不建立会话：把失败留到下一个 skill
+取数时才暴露的话，错误看起来像是那个 skill 坏了。
 
 ---
 

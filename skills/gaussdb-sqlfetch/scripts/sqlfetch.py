@@ -154,7 +154,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="sqlfetch.py",
                                  description="Resolve a unique_sql_id to full SQL text")
     ap.add_argument("sql_id", help="unique_sql_id (integer, may be negative)")
-    ap.add_argument("-c", "--conn", required=True, help="connection name")
+    ap.add_argument("-c", "--conn", default="", help="连接名（省略则用 gaussdb-login 建立的会话）")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
     ap.add_argument("--timeout", type=int, default=None)
     args = ap.parse_args(argv)
