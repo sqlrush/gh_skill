@@ -297,6 +297,24 @@ def find(name: str) -> Connection:
     )
 
 
+def resolved_name(name: Optional[str] = None) -> str:
+    """报告里该记的连接名。
+
+    省略 `-c` 时不能记成空串 —— 而「省略 -c」现在恰恰是推荐用法。一份不写明
+    针对哪个库的健康报告，事后没法分辨它是生产还是测试的；两份放在一起更是
+    完全一样。
+
+    返回带应用前缀的全名（app/conn）：不同应用下可以有同名连接，只记 `og`
+    在多应用环境里仍然是二义的。
+    """
+    try:
+        return resolve(name).qualified
+    except ConfigError:
+        # 取不到就把调用方给的原样回去 —— 这个函数只负责「报告怎么写」，
+        # 连接本身取不到会在真正取数时报错，不该由它抢先抛。
+        return name or ""
+
+
 def resolve(name: Optional[str] = None) -> Connection:
     """13 个 skill 取连接的统一入口。
 

@@ -266,3 +266,35 @@ def test_env_password_overrides_everything(home, monkeypatch):
         dict(_CONN, name="c1", password="plain", encrypted=False)]}})
     monkeypatch.setenv("GSDB_PASSWORD", "from-env")
     assert credential.secret_for(config.find("c1")) == "from-env"
+
+
+# --- 报告里必须写明「针对哪个库」 --------------------------------------------
+
+def test_resolved_name_falls_back_to_the_session(home):
+    """省略 -c 时报告不能记成空串 —— 而「省略 -c」正是推荐用法。
+
+    一份不写明针对哪个库的健康报告，事后没法分辨它是生产还是测试的；
+    两份放在一起更是完全一样。
+    """
+    from common import config, session
+    write_config(home, {"db_connections": {"app1": [dict(_CONN, name="c1")]}})
+    session.save(config.find("c1"))
+    assert config.resolved_name() == "app1/c1"
+    assert config.resolved_name("") == "app1/c1"
+
+
+def test_resolved_name_is_app_qualified(home):
+    """只记 `og` 在多应用环境里仍然是二义的。"""
+    from common import config
+    write_config(home, {"db_connections": {
+        "app1": [dict(_CONN, name="c1")],
+        "app2": [dict(_CONN, name="c2")]}})
+    assert config.resolved_name("c2") == "app2/c2"
+
+
+def test_resolved_name_does_not_raise_when_unresolvable(home):
+    """它只负责「报告怎么写」—— 连接取不到该由真正取数时报错，不该它抢先抛。"""
+    from common import config
+    write_config(home, {})
+    assert config.resolved_name("nope") == "nope"
+    assert config.resolved_name() == ""

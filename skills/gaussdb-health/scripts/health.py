@@ -82,7 +82,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         ev = run_health(runner, _split_dim_list(args.include), _split_dim_list(args.exclude),
                         args.top, default_thresholds())
-        ev.conn = args.conn
+        ev.conn = common.config.resolved_name(args.conn)
         if args.format == "json":
             print(render_health_json(ev))
         else:

@@ -70,7 +70,7 @@ def _cmd_collect(args) -> int:
                       top=args.top, save_html=args.save_html or "",
                       thresholds=default_thresholds())
         ev = collect_evidence(runner, opt)
-        ev.conn = args.conn
+        ev.conn = common.config.resolved_name(args.conn)
         if args.format == "json":
             print(render_evidence_json(ev))
         else:

@@ -197,11 +197,11 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     try:
         if args.cmd == "history":
-            ev = run_history(runner, args.conn, args.top)
+            ev = run_history(runner, common.config.resolved_name(args.conn), args.top)
         elif args.cmd == "watch":
-            ev = run_watch(runner, args.conn, args.top, args.interval, args.count)
+            ev = run_watch(runner, common.config.resolved_name(args.conn), args.top, args.interval, args.count)
         else:
-            ev = run_snapshot(runner, args.conn, args.top)
+            ev = run_snapshot(runner, common.config.resolved_name(args.conn), args.top)
 
         out = (report.render_json(ev) if args.format == "json"
                else report.render_markdown(ev))
