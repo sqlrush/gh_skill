@@ -193,6 +193,31 @@ YAML"
     fi
   fi
 fi
+
+# 保留了已有配置时，MODE_SEL / APP / CNAME 这一轮**根本没被赋值** —— 下面
+# 第 5 步的 ${MODE_SEL:-1} 会兜底成 gsql，${CNAME:-og-prod} 兜底成一个编出来
+# 的连接名。于是保留着 api 配置的客户，会看到脚本拿 og-prod 去直连数据库并
+# 报一串红：既不是他的环境问题，也不是代码问题，纯粹是这里猜错了模式。
+# 按文件里实际写的来。
+if [ "${SKIP_CFG:-0}" = "1" ]; then
+  if grep -qE '^[[:space:]]*connection_mode:[[:space:]]*api' "$CFG" 2>/dev/null; then
+    MODE_SEL=2
+    TOK_ENV="$(sed -nE 's/^[[:space:]]*token_env:[[:space:]]*([A-Za-z_][A-Za-z0-9_]*).*/\1/p' "$CFG" | head -1)"
+    TOK_ENV="${TOK_ENV:-GRMP_AUTH_TOKEN}"
+    ok "沿用已有配置：api 模式，令牌变量 ${TOK_ENV}"
+  else
+    MODE_SEL=1
+    FIRST_CONN="$(cd "$SRC" && GSDB_HOME="$GHOME" python3 -c "
+from common import config
+c = config.load()
+print('%s %s' % (c[0].app or '', c[0].name) if c else '')" 2>/dev/null || true)"
+    APP="${FIRST_CONN%% *}"; CNAME="${FIRST_CONN#* }"
+    [ -n "${APP:-}" ] || APP="app1"
+    [ -n "${CNAME:-}" ] || CNAME="og-prod"
+    ok "沿用已有配置：gsql 模式，连接 ${APP}/${CNAME}"
+  fi
+fi
+
 run "chmod 600 \"$CFG\" 2>/dev/null || true"
 
 # ── 5. 连通性测试 ────────────────────────────────────────────────────────
