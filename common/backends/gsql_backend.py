@@ -1,8 +1,10 @@
 """gsql 后端：本机 TCP 直连 openGauss/GaussDB 的命令行客户端。
 
 每次查询起一个 gsql -c 子进程（无状态）；会话级设置（只读钉、
-statement_timeout）作为前缀拼进每次调用。类型保真靠 json_agg 包裹
-（见 gsql_protocol）。
+statement_timeout）作为前缀拼进每次调用。行列结构靠 json_agg 包裹
+（见 gsql_protocol）——但**类型保真是有边界的**：绝对值小于 1 的数会被
+openGauss 写成带引号的 `".5"`，与文本值无法区分。边界与实测见
+gsql_protocol.parse_json_result 的注释，别在别处重复声称「类型保真」。
 
 口令走 `-2/--pipeline`（从 stdin 读），**绝不进 argv**。
 openGauss 的 gsql 不认 PGPASSWORD —— 实测（openGauss-lite 5.0.3）：

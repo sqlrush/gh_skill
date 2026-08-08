@@ -107,3 +107,30 @@ def test_parse_error_fallback():
 
 def test_parse_error_lowercase_token_not_sqlstate():
     assert gp.parse_gsql_error("gsql: ERROR:  error: boom") == "ERROR: error: boom"
+
+
+# --- openGauss 的 JSON 数字表示（实测钉住，别当成 bug 去"修"）------------
+
+def test_sub_one_numbers_arrive_as_quoted_strings():
+    """**这是实测事实，不是待修的缺陷。**
+
+    openGauss 把绝对值小于 1 的数写成无前导零的 .5,那不是合法 JSON,
+    于是它加引号。numeric / float4 / float8 一视同仁:
+
+        SELECT 0.5::numeric n, 0.5::float8 f, '.5'::text txt
+        → {"n":".5","f":".5","txt":".5"}
+
+    钉在这里是为了防止后人写一个"长得像数字就转回去"的正则:
+    txt 那一列证明了**转回去必然会把文本列悄悄变成数字**,
+    那是拿一个静默错误换另一个。
+    """
+    cols, rows = gp.parse_json_result('[{"n":".5","f":".5","txt":".5"}]\n')
+    assert cols == ["n", "f", "txt"]
+    assert rows == [(".5", ".5", ".5")], "三者在 JSON 里本就无法区分"
+
+
+def test_numbers_at_or_above_one_stay_numeric():
+    cols, rows = gp.parse_json_result('[{"a":1.5,"b":123.456,"c":7,"d":1e-07}]\n')
+    assert rows[0][0] == Decimal("1.5")
+    assert rows[0][2] == 7
+    assert rows[0][3] == Decimal("1e-07"), "科学计数法是合法 JSON,不受影响"

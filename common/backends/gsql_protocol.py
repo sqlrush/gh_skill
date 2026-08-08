@@ -88,6 +88,20 @@ def parse_json_result(stdout: str) -> tuple[list[str], list[tuple]]:
     text = stdout.strip()
     if not text:
         return [], []
+    # **类型保真到此为止，别再往上声称更多。** 实测 openGauss-lite 5.0.3：
+    #
+    #   SELECT 0.5::numeric n, 0.5::float8 f, '.5'::text txt, 1e-7::float8 tiny
+    #   → {"n":".5","f":".5","txt":".5","tiny":1e-07}
+    #
+    # 绝对值小于 1 的数被写成无前导零的 `.5`，那不是合法 JSON，于是 openGauss
+    # 给它加引号 —— numeric / float4 / float8 一视同仁，而且**和真实的文本
+    # 值 '.5' 完全无法区分**。所以这里不做「长得像数字就转回数字」的还原：
+    # 那会把一个文本列悄悄变成数字，是拿一个静默错误换另一个。
+    #
+    # 影响面已实测：skill 走 runner 时结果本来就会被 serialize 成字符串，
+    # 对拍 sqltune 在两条驱动下的输出，193 行里除 hypopg 那段应有的差异外
+    # 逐字节一致，代价推演不受影响。会被绊到的是直接拿 db.query() 的返回值
+    # 做算术的新代码 —— 那会是响亮的 TypeError，不是错误的结论。
     data = json.loads(text, parse_float=Decimal)
     if not data:                       # None 或空数组
         return [], []
