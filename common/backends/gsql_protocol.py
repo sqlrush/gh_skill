@@ -97,11 +97,48 @@ def parse_json_result(stdout: str) -> tuple[list[str], list[tuple]]:
 
 
 def parse_text_result(stdout: str) -> tuple[list[str], list[tuple]]:
-    """解析 -At 文本输出：每非尾空行 → 单元素 tuple（SHOW/EXPLAIN 用）。"""
+    """解析 -At 文本输出：每非尾空行 → 单元素 tuple。
+
+    **列名是空的** —— 只有 query_in_rollback 那条纯文本旁路该用它，
+    它的消费者要的是原始行。走 runner 的语句请用
+    parse_text_result_with_header：runner 用 `if not cols` 判断
+    「这条语句有没有结果集」，空列名会被判成没有。
+    """
     text = stdout[:-1] if stdout.endswith("\n") else stdout
     if text == "":
         return [], []
     return [], [(line,) for line in text.split("\n")]
+
+
+# gsql 不带 -t 时的末行页脚：`(2 rows)` / `(1 row)`
+_ROWCOUNT_FOOTER = re.compile(r"^\(\d+ rows?\)$")
+
+
+def parse_text_result_with_header(stdout: str) -> tuple[list[str], list[tuple]]:
+    """解析 -A（不带 -t）文本输出：首行是列名，末行是行数页脚。
+
+    EXPLAIN 走这条路。pg8000 跑 EXPLAIN 会返回列名 QUERY PLAN，而 -t
+    把表头去掉了，于是 gsql 返回空列名 —— runner 的 `if not cols` 把它
+    判成「未返回结果集」，explain / proctune / sqltune 的 plan_text 和
+    wdr 那几条在 driver: gsql 下全部跑不了。两条驱动必须给出同一形状。
+
+    实测输出（openGauss-lite 5.0.3）：
+        'QUERY PLAN\\nAggregate  (cost=...)\\n  ->  Seq Scan ...\\n(2 rows)\\n'
+        'work_mem\\n16MB\\n(1 row)\\n'
+    """
+    text = stdout[:-1] if stdout.endswith("\n") else stdout
+    if text == "":
+        return [], []
+    lines = text.split("\n")
+    cols = lines[0].split("|")
+    body = lines[1:]
+    if body and _ROWCOUNT_FOOTER.match(body[-1]):
+        body = body[:-1]
+    if len(cols) == 1:
+        # 单列时**不要**按 | 切分：执行计划里出现 | 的表达式会被切碎，
+        # 而那种坏法是静默的 —— 计划少一截，没人会发现。
+        return cols, [(line,) for line in body]
+    return cols, [tuple(line.split("|")) for line in body]
 
 
 def parse_gsql_error(stderr: str) -> str:

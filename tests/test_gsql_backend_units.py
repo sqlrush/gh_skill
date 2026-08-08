@@ -68,14 +68,69 @@ def test_read_only_prefix_present(monkeypatch):
     assert "default_transaction_read_only = on" in sent
 
 def test_show_uses_text_bypass(monkeypatch):
+    # 桩数据必须是 gsql **真实**的输出格式：-A 不带 -t 时首行是列名、
+    # 末行是 (N rows) 页脚。此前这里桩的是 "on\n"（-t 的格式），于是
+    # 「文本旁路返回空列名」这个真 bug 被 mock 遮住了 —— runner 拿 cols
+    # 判断有没有结果集,空列名会让 explain 在 driver: gsql 下整个不可用。
     calls = []
-    _patch(monkeypatch, out="on\n", sink=calls)
+    _patch(monkeypatch, out="enable_wdr_snapshot\non\n(1 row)\n", sink=calls)
     b = gb.GsqlBackend.open(_conn(), "pw", read_only=False)
     calls.clear()
     cols, rows = b.query("SHOW enable_wdr_snapshot")
+    assert cols == ["enable_wdr_snapshot"], "文本旁路必须给出列名"
     assert rows == [("on",)]
-    sent = " ".join(calls[-1][0])
-    assert "json_agg" not in sent
+    sent = calls[-1][0]
+    assert "json_agg" not in " ".join(sent)
+    assert "-t" not in sent, "文本旁路要带表头跑，否则拿不到列名"
+
+
+def test_explain_text_path_returns_query_plan_column(monkeypatch):
+    """pg8000 跑 EXPLAIN 给出列名 QUERY PLAN —— gsql 必须给出同一形状。
+
+    否则 runner 的 `if not cols` 把它判成「未返回结果集」，
+    explain / proctune / sqltune 的 plan_text 在 driver: gsql 下全部跑不了。
+    """
+    _patch(monkeypatch, out="QUERY PLAN\nSeq Scan on t  (cost=0.00..1.00)\n(1 row)\n")
+    b = gb.GsqlBackend.open(_conn(), "pw", read_only=False)
+    cols, rows = b.query("EXPLAIN SELECT * FROM t")
+    assert cols == ["QUERY PLAN"]
+    assert rows == [("Seq Scan on t  (cost=0.00..1.00)",)]
+
+
+def test_password_never_appears_in_argv_and_goes_through_stdin(monkeypatch):
+    """openGauss 的 gsql **不认 PGPASSWORD** —— 实测只给它会卡在交互口令
+    提示直到超时。口令必须走 -2（stdin），而且绝不能进 argv（ps 能看见）。
+    """
+    calls = []
+    _patch(monkeypatch, out='[{"?column?":1}]\n', sink=calls)
+    gb.GsqlBackend.open(_conn(), "s3cretpw")
+    argv, kw = calls[0]
+    assert "-2" in argv, "没走 -2 的话 openGauss 会去等交互口令，一直卡到超时"
+    assert "s3cretpw" not in " ".join(argv)
+    assert kw.get("input", "").strip() == "s3cretpw"
+
+
+def test_empty_result_still_reports_column_names(monkeypatch):
+    """**「查到 0 行」和「这条语句没有结果集」是两件事。**
+
+    零行时 json_agg 返回 NULL，列名无从得知；不补的话 runner 会把空结果
+    报成「未返回结果集」—— slowsql 阈值调高查不到慢 SQL 就失败，
+    memanalyze 探测不存在的视图直接抛 Traceback。
+    """
+    outs = iter(['[]\n', 'sql_id|elapsed\n(0 rows)\n'])
+    calls = []
+    monkeypatch.setattr(gb.shutil, "which", lambda x: "/usr/bin/gsql")
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        return FakeCompleted(rc=0, out=next(outs))
+
+    monkeypatch.setattr(gb.subprocess, "run", fake_run)
+    b = gb.GsqlBackend(_conn(), "pw", "/usr/bin/gsql", read_only=False)
+    cols, rows = b.query("SELECT sql_id, elapsed FROM slow")
+    assert rows == []
+    assert cols == ["sql_id", "elapsed"], "空结果丢了列名"
+    assert "WHERE false" in " ".join(calls[-1]), "列名探测该用 WHERE false"
 
 def test_query_in_rollback_wraps_begin_rollback(monkeypatch):
     calls = []
