@@ -57,7 +57,7 @@ metadata:
    **不要单独取 SQL/采集，也不要向用户索要占位符的值。**
    选项：`--bind '<value>'`（可重复，按占位符顺序）传真实值；`--analyze` 仅用于只读 SQL 或用户明确同意时。
 
-3. **合成值提醒。** 若输出含 `## Placeholder Substitution` 一节，说明计划「形状」可靠，但行数/选择性是近似值。要把这点说清楚，并指出索引/改写验证用的是这些合成值——可用 `--bind` 传真实值做精确验证。
+3. **合成值提醒。** 若输出含 `## Placeholder Substitution` 一节，说明计划「形状」可靠，但行数/选择性是近似值。要把这点说清楚，并指出索引/改写验证用的是这些合成值——可用 `--bind` 传真实值做精确验证。替换值的 Source 列：`type` = 按 catalog 真实列类型生成（类型可靠）；`rule`/`default` = 纯文本启发式猜测。若报 `invalid input syntax`，报错里会点名坏值出自哪个占位符；若提示 bind 顺序错位，核对 `--bind` 传值顺序后重试。
 
 4. **加载方法论。** 阅读 `{baseDir}/references/tuning-methodology.md`，对照证据各节按其检查清单分析（`## Execution Plan`、`## Tables`、`## Indexes`、`## Column Statistics`、`## Key Parameters (GUC)`、`## Deterministic Findings`）。深度判断按需查 GaussDB 专项知识：CBO 与诊断边界 → `{baseDir}/references/gaussdb-cbo-and-diagnosis.md`；改写候选 → `{baseDir}/references/gaussdb-rewrite-patterns.md`；A 兼容库（`sql_compatibility='A'`）→ `{baseDir}/references/gaussdb-a-compat-gotchas.md`；分区表/分布式 → `{baseDir}/references/gaussdb-partition-distribution.md`。
 

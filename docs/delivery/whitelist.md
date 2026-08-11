@@ -12,8 +12,8 @@ python3 -m grmp_middleware.dump_whitelist
 
 | 项 | 值 |
 |---|---|
-| 脚本总数 | 91 |
-| id 范围 | 1 ~ 91 |
+| 脚本总数 | 92 |
+| id 范围 | 1 ~ 94 |
 
 > `id` 是**环境相关数据，不是契约**。skill 从不持有它 —— 运行时调
 > 接口一按 `cmd_name` 现查。客户环境重新发布后 id 会不同，属正常。
@@ -1598,3 +1598,24 @@ FROM pg_stat_user_tables
 WHERE relname IN ({{names}});
 ```
 
+
+### `sqltune.column_types`
+
+- id `94` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `tables` | STRING |
+| `columns` | STRING |
+
+```sql
+SELECT a.attname, format_type(a.atttypid, NULL) AS type_name
+FROM pg_attribute a
+JOIN pg_class c ON c.oid = a.attrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relname IN ({{tables}})
+  AND a.attname IN ({{columns}})
+  AND a.attnum > 0 AND NOT a.attisdropped
+  AND c.relkind IN ('r','v','p','m')
+  AND n.nspname NOT IN ('pg_catalog','information_schema');
+```

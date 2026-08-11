@@ -29,6 +29,7 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
         sys.path.insert(0, str(_anc))
         break
 
+import coltypes  # noqa: E402
 import common  # noqa: E402
 from common import access  # noqa: E402
 from common.grmp.statement import (  # noqa: E402
@@ -210,12 +211,25 @@ def _guard_sql(sql_text: str, analyze: bool) -> None:
 
 def _tune(runner, db, *, original_sql: str, binds: list[str], do_analyze: bool,
           sql_id: str = "", source: str = "", schema: str = "") -> TuneResult:
-    sub = substitute(original_sql, binds)
+    types = coltypes.infer_types(runner, original_sql)
+    sub = substitute(original_sql, binds, types=types)
+    coltypes.validate_binds(sub.substitutions, types)
     if db is None:
         # 没有会话时 SQL 要递进 EXPLAIN 模板 —— 无论它从哪来都得过守卫。
         # 按 sql_id 取的 SQL 走的是另一条入口，早先漏了这一道。
         _guard_sql(sub.sql, do_analyze)
-    ev = collect(runner, db, sub.sql, do_analyze)
+    try:
+        ev = collect(runner, db, sub.sql, do_analyze)
+    except Exception as exc:
+        # 类型转换错时点名坏值出自哪个占位符;非类型错原样抛。
+        enriched = coltypes.enrich_type_error(str(exc), sub.substitutions)
+        if not enriched:
+            raise
+        try:
+            wrapped = type(exc)(enriched)
+        except Exception:  # 异常类构造签名特殊时,宁可保留原报错
+            raise exc
+        raise wrapped from exc
 
     verified: list[IndexCandidate] = []
     note = ""

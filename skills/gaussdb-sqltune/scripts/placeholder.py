@@ -18,7 +18,7 @@ class Substitution:
     token: str
     context: str
     value: str
-    source: str  # rule | rule-format-followup | default | bind
+    source: str  # rule | rule-format-followup | default | bind | type
 
 
 @dataclass(frozen=True)
@@ -28,9 +28,15 @@ class SubstituteResult:
     placeholders: int = 0
 
 
-def substitute(sql_text: str, binds: list[str] | None = None) -> SubstituteResult:
-    """Replace placeholders with deterministic literals (binds override first N)."""
+def substitute(sql_text: str, binds: list[str] | None = None,
+               types: list[str | None] | None = None) -> SubstituteResult:
+    """Replace placeholders with deterministic literals.
+
+    Priority per position: bind (caller-supplied real value) > type (catalog
+    column type, see coltypes.infer_types) > text heuristics.
+    """
     binds = binds or []
+    types = types or []
     positions = _find_all_placeholder_positions(sql_text)
     if not positions:
         return SubstituteResult(sql=sql_text, substitutions=[], placeholders=0)
@@ -40,8 +46,11 @@ def substitute(sql_text: str, binds: list[str] | None = None) -> SubstituteResul
         token = sql_text[start:end]
         left_ctx = _extract_left_context(sql_text, start, 80)
         context = left_ctx.strip()
+        typed = value_for_type(types[i]) if i < len(types) else None
         if i < len(binds) and binds[i] != "":
             value, source = binds[i], "bind"
+        elif typed is not None:
+            value, source = typed, "type"
         else:
             value, source = _choose_with_history(left_ctx, subs)
         subs.append(Substitution(start, token, context, value, source))
@@ -203,6 +212,82 @@ def _looks_like_int_column(ctx: str) -> bool:
                 or t.endswith("count") or t.endswith("qty") or t.endswith("amount")
                 or t.endswith("price"))
     return False
+
+
+def placeholder_contexts(sql_text: str) -> list[str]:
+    """Left context (raw, 80 chars) of each placeholder, in positional order."""
+    return [_extract_left_context(sql_text, start, 80)
+            for start, _ in _find_all_placeholder_positions(sql_text)]
+
+
+_IDENT_ONLY_RE = re.compile(r"^[a-z_][a-z0-9_$]*$")
+# Tokens between the column and its placeholder that carry no column name.
+_NON_COLUMN_TOKENS = frozenset({"in", "any", "some", "all", "not", "between", "and", "("})
+# Identifier-shaped SQL keywords that mean "no comparison column here".
+_NONCOLUMN_KEYWORDS = frozenset({
+    "select", "where", "from", "join", "on", "values", "set", "by", "order",
+    "group", "having", "limit", "offset", "when", "then", "else", "case",
+    "union", "distinct", "as", "insert", "update", "delete", "returning",
+})
+
+
+def comparison_column(left_ctx: str) -> str | None:
+    """Column name being compared against the placeholder, or None.
+
+    Walks tokens right-to-left, skipping operators and IN/ANY/BETWEEN noise,
+    so `o.stock_quantity = `, `total_items=` and `category_id IN (` all yield
+    the bare column name. Non-identifier contexts (function calls, literals)
+    yield None — callers fall back to text heuristics.
+    """
+    for raw in reversed(left_ctx.lower().split()):
+        t = raw.rstrip("=<>!,()").lstrip("(")
+        if t == "" or t in _NON_COLUMN_TOKENS:
+            continue
+        if t in _NONCOLUMN_KEYWORDS:
+            return None
+        if "." in t:
+            t = t[t.rindex(".") + 1:]
+        return t if _IDENT_ONLY_RE.match(t) else None
+    return None
+
+
+_INT_TYPES = frozenset({"tinyint", "smallint", "integer", "bigint", "oid",
+                        "int1", "int2", "int4", "int8"})
+_NUMERIC_TYPES = frozenset({"numeric", "number", "real", "double precision", "money"})
+
+
+def is_numeric_type(type_name: str | None) -> bool:
+    if not type_name:
+        return False
+    t = type_name.strip().lower()
+    return t in _INT_TYPES or t in _NUMERIC_TYPES
+
+
+def value_for_type(type_name: str | None) -> str | None:
+    """Synthetic literal for a catalog column type; None = defer to heuristics.
+
+    String types deliberately return None so context rules keep working
+    (e.g. LIKE still gets '%test%').
+    """
+    if not type_name:
+        return None
+    t = type_name.strip().lower()
+    if t in _INT_TYPES or t in _NUMERIC_TYPES:
+        return "1"
+    if t == "date":
+        return "'2024-01-01'"
+    # "timestamp…" must be tested before "time…" — it shares the prefix.
+    if t.startswith("timestamp") or t == "smalldatetime":
+        return "'2024-01-01 00:00:00'"
+    if t.startswith("time"):
+        return "'12:00:00'"
+    if t in ("boolean", "bool"):
+        return "true"
+    if t == "interval":
+        return "'1 day'"
+    if t == "uuid":
+        return "'00000000-0000-0000-0000-000000000000'"
+    return None
 
 
 def _looks_like_date_column(ctx: str) -> bool:
