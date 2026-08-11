@@ -52,10 +52,10 @@ python3 {baseDir}/scripts/login.py --app <应用> --conn <连接名>
 api 模式下没有预置的连接清单：目标库由用户指定，中间件按它路由到实例。
 
 ```bash
-python3 {baseDir}/scripts/login.py --database <数据库名>
+python3 {baseDir}/scripts/login.py --ip <实例IP> --database <数据库名>
 ```
 
-用户没说是哪个库时**要问**，不要拿一个见过的名字去试。
+用户没说是哪个库时**要问**，不要拿一个见过的名字去试。数据面仅做标识之用。
 
 ### 其他
 
@@ -70,6 +70,14 @@ python3 {baseDir}/scripts/login.py --logout    # 清除会话
 他原本要做的事。**其余 skill 不需要再传 `-c`**。
 
 用户中途要换库，再跑一次本 skill 即可，会话会被覆盖。
+
+## 登出
+用户要求登出数据库，或更换其他数据库时，需要先登出当前数据库，清除会话后再跑一次本skill
+```bash
+python3 {baseDir}/scripts/login.py --status    # 当前连的是哪个
+python3 {baseDir}/scripts/login.py --logout    # 清除会话
+```
+
 
 ## 规则
 
