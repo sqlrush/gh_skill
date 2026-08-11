@@ -55,6 +55,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from common.grmp.values import is_null
+
 # 这些状态下 cancel 无效，必须 terminate
 _NEEDS_TERMINATE_PREFIX = "idle in transaction"
 
@@ -95,8 +97,17 @@ def kill_for(holder: dict) -> KillStatement:
     # `or "?"` 在这里不对：0 是「事务刚开始」这个真实、有信息量的值
     # （恰恰是 cancel 最便宜、terminate 明显过度的那种情形），
     # 用 or 会把它和「取不到」混成一样——`0 or "?"` 求值成 "?"。
-    # 必须显式判 None，不能靠真值判断。
-    xact_age_display = "?" if xact_age is None else xact_age
+    # 必须显式判"未知"，不能靠真值判断。
+    #
+    # **不能只判 `is None`**：这条协议把 NULL 渲染成空字符串 ""，不是
+    # Python 的 None（common/grmp/serialize.py 的 render_cell 对
+    # value is None 走 settings.null_text，默认就是空串；实测确认 og
+    # 连接用的 DirectRunner 同样如此，见 lockwait.py 的说明）。裸
+    # `is None` 在真实查询结果面前永远不会命中——被遗弃的预备/2PC 事务
+    # （这个字段存在的理由）这一行会渲染成"事务已持续  秒"，中间一段
+    # 空白，比印出字面 "None" 更容易被读的人忽略过去。改用
+    # common.grmp.values.is_null()，一次认全 "" 和 None 两种形态。
+    xact_age_display = "?" if is_null(xact_age) else xact_age
     impact = (
         "会话 %s（pid %s）/ 用户 %s / 应用 %s / 事务已持续 %s 秒；"
         "正在执行：%s"

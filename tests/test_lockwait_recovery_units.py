@@ -110,6 +110,20 @@ def test_impact_shows_zero_xact_age_not_placeholder():
     assert "持续 ? 秒" not in k.impact
 
 
+def test_impact_shows_placeholder_when_xact_age_is_empty_string():
+    """真实协议把 NULL 渲染成空字符串，不是 Python 的 None
+    （common/grmp/serialize.py 的 render_cell 对 None 走
+    settings.null_text，默认就是空串；common/grmp/values.py 的
+    is_null() 就是为这件事存在的）。裸 `is None` 判断在这个协议下永远
+    不会命中——这条测试专门钉住这一点：holder_xact_age_s="" 时也要显示
+    占位符，而不是把空串原样拼进 impact 里（"事务已持续  秒"，中间一段
+    空白，比印出字面 None 更容易被忽略）。"""
+    k = kill_for(_holder(holder_xact_age_s=""))
+    assert "None" not in k.impact
+    assert "事务已持续  秒" not in k.impact
+    assert "?" in k.impact
+
+
 def test_render_says_do_not_execute():
     out = render_kills([kill_for(_holder())])
     assert "不要直接执行" in out or "不得执行" in out

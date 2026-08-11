@@ -101,6 +101,10 @@ def _filter_conflicting(pairs: list) -> list:
 
 
 def collect(runner, limit: int) -> LockReport:
+    # 注意：LIMIT 在 SQL 里先于这里的冲突过滤生效——lockwait.pairs 先按
+    # limit 截断原始行，_filter_conflicting() 再从截断后的结果里剔除旁观
+    # 者。所以 --limit 20 之后拿到的真冲突对可能少于 20 条（截断掉的那些
+    # 原始行里如果混了旁观者，真冲突的名额被占掉了）。不是本次要改的行为。
     raw_pairs = runner.run(PAIRS_SCRIPT, {"limit": int(limit)})
     pairs = _filter_conflicting(raw_pairs)
     raw_edges = runner.run(CHAIN_SCRIPT, {})
@@ -256,52 +260,121 @@ def render_markdown(rep: LockReport) -> str:
                           ", ".join(str(s) for s in blocked)))
     out.append("")
 
-    kills, kill_failures = _kill_statements(_root_holders(rep))
-    out.append("\n" + recovery.render_kills(kills))
-    if kill_failures:
-        out.append("\n> **%d 个根 holder 的 kill 语句未能生成**（pid/sessionid "
-                   "不是合法数字，为避免编造数据已跳过，请人工核对该会话）："
-                   % len(kill_failures))
-        for p, reason in kill_failures:
-            out.append("> - 会话 %s：%s" % (p.get("holder_sessionid"), reason))
+    out.append("\n" + _render_recovery_section(rep))
     return "\n".join(out)
 
 
-def _root_holders(rep: LockReport) -> list:
-    """只取**根** holder 去生成 kill 语句 —— 杀中间节点不解堵。"""
+def _root_holders(rep: LockReport):
+    """把 pairs 里的 holder 分成两类：confirmed（chain 确认是根）与
+    unconfirmed（chain 完全没提到对应的 waiter，无法判断）。
+
+    `lockwait.pairs`（`pg_locks` 自连接）与 `lockwait.chain`
+    （`pg_thread_wait_status`）是两条**独立、不同视图**上的查询，覆盖面
+    不保证一致：一个在 pairs 里真实冲突的 holder，chain 完全可能没有
+    这个 waiter 对应的边。这与"chain 明确知道这个 waiter 的根是别的
+    会话"是两件不同的事——后者是正常情况（这个 holder 只是链条中间
+    节点，不该杀），前者是**数据缺口**，不能被当成"不是根"而悄悄放过：
+    对应的 pair 既不会被杀、也不会被特别提示，报告读起来和"已确认无需
+    处理"一模一样，而事实是"没能确认"。
+    """
     root_ids = set(rep.roots.values())
-    seen, out = set(), []
+    seen, confirmed = set(), []
+    unconfirmed_seen, unconfirmed = set(), []
     for p in rep.pairs:
-        sid = as_int(p.get("holder_sessionid"))
-        if sid in root_ids and sid not in seen:
-            seen.add(sid)
-            out.append(p)
-    return out
+        waiter_sid = as_int(p.get("waiter_sessionid"))
+        holder_sid = as_int(p.get("holder_sessionid"))
+        if holder_sid in root_ids:
+            if holder_sid not in seen:
+                seen.add(holder_sid)
+                confirmed.append(p)
+            continue
+        if waiter_sid not in rep.roots and holder_sid not in unconfirmed_seen:
+            unconfirmed_seen.add(holder_sid)
+            unconfirmed.append(p)
+    return confirmed, unconfirmed
 
 
 def _kill_statements(root_holders: list):
-    """给根 holder 生成 kill 语句。
+    """给已确认的根 holder 生成 kill 语句。
 
     recovery.kill_for() 内部是裸 `int(holder.get("holder_pid") or 0)`——
     在 brief 起草时输入还是假想的，可以不管；这里接的是真实查询结果，
-    协议把所有列值都渲染成字符串，非数字字符串会让那个裸 int() 直接抛。
-    这里先用项目统一的 as_int() 做转换：能转就转成真正的 int 再交给
-    kill_for()（它内部的 int() 这时只是对已转好的 int 再包一层，不会
-    出错）；转不了（真的不是数字，比如取数异常留下的脏值）不能悄悄编一个
-    0 出来生成一条看着正常、其实指向假会话的 kill 语句——宁可跳过，把
-    原因摆出来让人工核对。
+    协议把所有列值都渲染成字符串。两类输入都不能悄悄变成一个编造的 0：
+
+      - 非数字字符串（取数异常留下的脏值）：as_int() 会抛，这里接住。
+      - NULL（协议里是空串 ""，见 common.grmp.values.is_null()）：
+        as_int() 对空串/None 的默认行为是返回 0，而不是抛——那正是
+        本函数要避免的"悄悄编一个 0"，所以在调用 as_int() 之前先用
+        is_null() 单独挡一道，NULL 一律算失败，不让它混进 as_int()
+        的默认值路径。
+
+    两种情况都不生成语句，把原因摆出来让人工核对，而不是生成一条看着
+    正常、其实指向假会话（pid=0）的 kill 语句。
     """
     kills, failures = [], []
     for p in root_holders:
+        pid_raw = p.get("holder_pid")
+        sid_raw = p.get("holder_sessionid")
+        if is_null(pid_raw) or is_null(sid_raw):
+            failures.append((p, "holder_pid/holder_sessionid 缺失（NULL），"
+                                "拒绝用默认值 0 顶替去生成 kill 语句"))
+            continue
         try:
             safe = dict(p)
-            safe["holder_pid"] = as_int(p.get("holder_pid"))
-            safe["holder_sessionid"] = as_int(p.get("holder_sessionid"))
+            safe["holder_pid"] = as_int(pid_raw)
+            safe["holder_sessionid"] = as_int(sid_raw)
         except (ValueError, TypeError) as exc:
             failures.append((p, str(exc)))
             continue
         kills.append(recovery.kill_for(safe))
     return kills, failures
+
+
+def _render_recovery_section(rep: LockReport) -> str:
+    """渲染"## 快速恢复语句"整段。
+
+    这是本函数存在的**唯一**理由：`recovery.render_kills([])` 在没有
+    已确认根 holder 时会印"无 —— 当前没有需要处理的根阻塞会话"，这句话
+    只在"确认过、真的没有"时才成立。当 `_root_holders()` 报告了
+    unconfirmed 对（pairs 与 chain 覆盖面不一致，没能确认根是谁）时，
+    真相是"没能确认"，不是"没有"——绝不能让"无"这句话原样印在一张明明
+    显示着冲突的表格下面，那正是这个项目通篇在防的"看似正常、实则没查"。
+    这条说明必须**在这个小节内部**给出，不能只在别的段落打个旁注。
+    """
+    confirmed_roots, unconfirmed_roots = _root_holders(rep)
+    kills, kill_failures = _kill_statements(confirmed_roots)
+
+    caveat = ""
+    if unconfirmed_roots:
+        caveat = (
+            "\n> **%d 对阻塞关系因阻塞链数据缺失，未能确认根 holder，"
+            "未生成对应 kill 语句**（`lockwait.pairs` 与 `lockwait.chain` "
+            "是两条独立查询，覆盖面可能不一致；不能因为 chain 没提到就"
+            "当作「不是根」处理，也不能猜它是根去生成语句）：\n"
+            % len(unconfirmed_roots)
+            + "\n".join(
+                "> - 会话 %s ← %s（%s %s）"
+                % (p.get("waiter_sessionid"), p.get("holder_sessionid"),
+                   p.get("locktype"), p.get("lock_object") or "")
+                for p in unconfirmed_roots))
+
+    if kills:
+        section = recovery.render_kills(kills) + caveat
+    elif caveat:
+        # 有 unconfirmed 对但没有任何已确认的根——不能用
+        # render_kills([]) 的"无"，那句话在这里是假的。
+        section = "## 快速恢复语句\n" + caveat
+    else:
+        section = recovery.render_kills(kills)   # 真正的"无"：没有阻塞对
+
+    if kill_failures:
+        section += (
+            "\n\n> **%d 个根 holder 的 kill 语句未能生成**（pid/sessionid "
+            "缺失或不是合法数字，为避免编造数据已跳过，请人工核对该会话）：\n"
+            % len(kill_failures)
+            + "\n".join("> - 会话 %s：%s" % (p.get("holder_sessionid"), reason)
+                       for p, reason in kill_failures))
+    return section
 
 
 def main(argv: Optional[list] = None) -> int:

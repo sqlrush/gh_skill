@@ -250,3 +250,50 @@ def test_main_does_not_crash_on_any_of_the_above_via_json_format(monkeypatch, ca
     err = capsys.readouterr().err
     assert rc == 0
     assert "Traceback" not in err
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1：review 发现的两个 Important + 一个 Minor
+# ---------------------------------------------------------------------------
+
+def test_kill_section_is_not_a_bare_none_when_chain_data_is_missing():
+    """pairs 与 chain 是两条独立查询，覆盖面可能不一致：一个在 pairs 里
+    真实冲突的 holder，chain 完全没提到对应的 waiter。这时"快速恢复语句"
+    小节不能直接印"无"——那会被读成"已确认没事"，而事实是"没能确认"，
+    是这个项目通篇在防的"看似正常、实则没查"，而且恰好出现在报告里
+    最要紧的那个位置。"""
+    rep = lockwait.collect(_Runner(pairs=[_pair()], edges=[]), limit=20)
+    md = lockwait.render_markdown(rep)
+    assert "## 快速恢复语句" in md
+    section = md[md.index("## 快速恢复语句"):]
+    assert "无 —— 当前没有需要处理的根阻塞会话" not in section
+    assert "未能确认根" in section
+    assert "1" in section  # 数量要出现，不能只说"有一些"
+
+
+def test_kill_section_lists_both_confirmed_kill_and_unconfirmed_caveat():
+    """混合场景：一对有 chain 数据能确认根，另一对完全没有——已确认的
+    kill 语句照常生成，未确认的说明也必须同时出现在同一小节里，
+    不能被已确认的那条挡住视线。"""
+    edges = [{"sessionid": "2260", "block_sessionid": "2259"}]  # 只覆盖这一个 waiter
+    confirmed_pair = _pair()  # waiter=2260, holder=2259 —— chain 能确认
+    unconfirmed_pair = _pair(waiter_pid="2002", waiter_sessionid="9999",
+                              holder_pid="8001", holder_sessionid="8000")
+    rep = lockwait.collect(
+        _Runner(pairs=[confirmed_pair, unconfirmed_pair], edges=edges), limit=20)
+    md = lockwait.render_markdown(rep)
+    section = md[md.index("## 快速恢复语句"):]
+    assert "pg_cancel_session(" in section or "pg_terminate_session(" in section
+    assert "未能确认根" in section
+
+
+def test_null_holder_pid_does_not_silently_become_zero():
+    """holder_pid 缺失（NULL，协议里是空串）不能被 as_int() 的默认值 0
+    悄悄顶替——那会生成一条看着正常、其实 pid 是编出来的 kill 语句。"""
+    rep = lockwait.collect(
+        _Runner(pairs=[_pair(holder_pid="")], edges=_root_edge()), limit=20)
+    md = lockwait.render_markdown(rep)
+    section = md[md.index("## 快速恢复语句"):]
+    assert "pg_cancel_session(0" not in section
+    assert "pg_terminate_session(0" not in section
+    assert "未能生成" in section
