@@ -271,11 +271,19 @@ def _root_holders(rep: LockReport):
     `lockwait.pairs`（`pg_locks` 自连接）与 `lockwait.chain`
     （`pg_thread_wait_status`）是两条**独立、不同视图**上的查询，覆盖面
     不保证一致：一个在 pairs 里真实冲突的 holder，chain 完全可能没有
-    这个 waiter 对应的边。这与"chain 明确知道这个 waiter 的根是别的
-    会话"是两件不同的事——后者是正常情况（这个 holder 只是链条中间
-    节点，不该杀），前者是**数据缺口**，不能被当成"不是根"而悄悄放过：
-    对应的 pair 既不会被杀、也不会被特别提示，报告读起来和"已确认无需
-    处理"一模一样，而事实是"没能确认"。
+    这个 waiter 对应的边。这与「chain 明确知道这个 waiter 的根是别的
+    会话」是两件不同的事——后者是正常情况（这个 holder 只是链条中间
+    节点，不该杀），前者是**数据缺口**，不能被当成「不是根」而悄悄放过：
+    对应的 pair 既不会被杀、也不会被特别提示，报告读起来和「已确认无需
+    处理」一模一样，而事实是「没能确认」。
+
+    confirmed 按 **holder** 去重——同一个根 holder 挡了好几个 waiter 时，
+    只需要一条 kill 语句，杀一次就够了。unconfirmed 按 **(waiter, holder)
+    这一对** 去重，不按 holder 单独去重——它统计和列出的单位是「对阻塞
+    关系」（报告原话是「N 对……」），如果按 holder 折叠，两个不同的
+    waiter 被同一个未确认 holder 挡住时会被压成一条，数字和枚举都会比
+    实际少，而这一段的全部职责就是把这些缺口如实列出来，自己先漏一半
+    说不过去。
     """
     root_ids = set(rep.roots.values())
     seen, confirmed = set(), []
@@ -288,9 +296,11 @@ def _root_holders(rep: LockReport):
                 seen.add(holder_sid)
                 confirmed.append(p)
             continue
-        if waiter_sid not in rep.roots and holder_sid not in unconfirmed_seen:
-            unconfirmed_seen.add(holder_sid)
-            unconfirmed.append(p)
+        if waiter_sid not in rep.roots:
+            key = (waiter_sid, holder_sid)
+            if key not in unconfirmed_seen:
+                unconfirmed_seen.add(key)
+                unconfirmed.append(p)
     return confirmed, unconfirmed
 
 
@@ -331,23 +341,43 @@ def _kill_statements(root_holders: list):
 
 
 def _render_recovery_section(rep: LockReport) -> str:
-    """渲染"## 快速恢复语句"整段。
+    """渲染「## 快速恢复语句」整段。
 
-    这是本函数存在的**唯一**理由：`recovery.render_kills([])` 在没有
-    已确认根 holder 时会印"无 —— 当前没有需要处理的根阻塞会话"，这句话
-    只在"确认过、真的没有"时才成立。当 `_root_holders()` 报告了
-    unconfirmed 对（pairs 与 chain 覆盖面不一致，没能确认根是谁）时，
-    真相是"没能确认"，不是"没有"——绝不能让"无"这句话原样印在一张明明
-    显示着冲突的表格下面，那正是这个项目通篇在防的"看似正常、实则没查"。
-    这条说明必须**在这个小节内部**给出，不能只在别的段落打个旁注。
+    **不变量（这是本函数存在的唯一理由，按不变量把住，不按分支把住）：**
+    只要 `rep.pairs` 非空，这一段就绝不能出现
+    `recovery.render_kills([])` 那句裸的「无 —— 当前没有需要处理的根阻塞
+    会话」。那句话只在「压根没有阻塞对」这一种情况下才成立——不管是
+    chain 缺数据（unconfirmed）、pid/sessionid 拿到但生成语句时失败
+    （kill_failures），还是 chain 确认了根、但那个根没有出现在 pairs
+    的持有者列里（下面的兜底分支），全都不是「无」，是「没能确认/没能
+    生成」，必须在这个小节内部说清楚，不能让读者读到「无需处理」。
+
+    上一轮只在「有 unconfirmed」这一个分支里堵了这句话，结果
+    「有 confirmed 但全部生成失败、且没有 unconfirmed」这个分支原样
+    漏了出去（`kills == [] and caveat == ""` 时仍然落到
+    `recovery.render_kills([])`）。这一轮改成：**pairs 非空时压根不再
+    调用 `render_kills([])`**——kills 非空才用它渲染真正的语句列表，
+    kills 为空则由本函数自己给标题和「未生成」说明，永远不经过那句
+    「无」的文案；再逐项追加 unconfirmed / kill_failures / 兜底三类原因，
+    确保 kills 为空时至少有一类原因被打印出来。
     """
     confirmed_roots, unconfirmed_roots = _root_holders(rep)
     kills, kill_failures = _kill_statements(confirmed_roots)
 
-    caveat = ""
+    if not rep.pairs:
+        return recovery.render_kills(kills)   # 真正的"无"：没有阻塞对
+
+    if kills:
+        section = recovery.render_kills(kills)
+    else:
+        section = ("## 快速恢复语句\n\n"
+                   "> **未生成任何 kill 语句**——原因见下，不代表当前"
+                   "无需处理：\n")
+
+    reasons = []
     if unconfirmed_roots:
-        caveat = (
-            "\n> **%d 对阻塞关系因阻塞链数据缺失，未能确认根 holder，"
+        reasons.append(
+            "> **%d 对阻塞关系因阻塞链数据缺失，未能确认根 holder，"
             "未生成对应 kill 语句**（`lockwait.pairs` 与 `lockwait.chain` "
             "是两条独立查询，覆盖面可能不一致；不能因为 chain 没提到就"
             "当作「不是根」处理，也不能猜它是根去生成语句）：\n"
@@ -357,23 +387,28 @@ def _render_recovery_section(rep: LockReport) -> str:
                 % (p.get("waiter_sessionid"), p.get("holder_sessionid"),
                    p.get("locktype"), p.get("lock_object") or "")
                 for p in unconfirmed_roots))
-
-    if kills:
-        section = recovery.render_kills(kills) + caveat
-    elif caveat:
-        # 有 unconfirmed 对但没有任何已确认的根——不能用
-        # render_kills([]) 的"无"，那句话在这里是假的。
-        section = "## 快速恢复语句\n" + caveat
-    else:
-        section = recovery.render_kills(kills)   # 真正的"无"：没有阻塞对
-
     if kill_failures:
-        section += (
-            "\n\n> **%d 个根 holder 的 kill 语句未能生成**（pid/sessionid "
+        reasons.append(
+            "> **%d 个根 holder 的 kill 语句未能生成**（pid/sessionid "
             "缺失或不是合法数字，为避免编造数据已跳过，请人工核对该会话）：\n"
             % len(kill_failures)
             + "\n".join("> - 会话 %s：%s" % (p.get("holder_sessionid"), reason)
                        for p, reason in kill_failures))
+    if not kills and not reasons:
+        # 兜底：pairs 非空、没有已确认的根、也没有 unconfirmed、也没有
+        # kill_failures——只剩一种情况能落到这里：chain 已经确认了某个
+        # waiter 的根，但那个根会话没有作为 holder 出现在**任何**一条
+        # pairs 里（它可能持有的是链条上游、这次 pairs 明细没覆盖到的
+        # 另一把锁）。既不是「数据缺口」（chain 其实给出了根），也不是
+        # 「生成失败」（根本没有材料可以尝试生成），但同样不能被漏掉。
+        reasons.append(
+            "> 阻塞链数据已确认了根会话，但该会话未出现在「阻塞明细」的"
+            "持有者列里（它可能持有的是链条上游、不在本次 pairs 明细"
+            "范围内的另一把锁），因此没有材料生成 kill 语句，需人工"
+            "进一步排查。\n")
+
+    for r in reasons:
+        section += "\n" + r
     return section
 
 

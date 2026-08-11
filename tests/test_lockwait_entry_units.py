@@ -238,6 +238,7 @@ def test_garbled_holder_pid_does_not_crash_kill_generation():
         limit=20)
     md = lockwait.render_markdown(rep)  # 不能抛
     assert "not-a-number" in md or "无法生成" in md
+    assert "无 —— 当前没有需要处理的根阻塞会话" not in md
 
 
 def test_main_does_not_crash_on_any_of_the_above_via_json_format(monkeypatch, capsys):
@@ -297,3 +298,47 @@ def test_null_holder_pid_does_not_silently_become_zero():
     assert "pg_cancel_session(0" not in section
     assert "pg_terminate_session(0" not in section
     assert "未能生成" in section
+    assert "无 —— 当前没有需要处理的根阻塞会话" not in section
+
+
+# ---------------------------------------------------------------------------
+# Fix round 2：review 发现同一个矛盾还有第二扇门（confirmed 全部生成
+# 失败、且没有 unconfirmed 时，旧代码仍会落到 render_kills([]) 的
+# "无"）。改成一条参数化不变量测试覆盖组合，而不是每发现一个分支
+# 补一条——按分支修正是上一轮漏掉这个分支的原因。
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("edges,pair_kwargs,label", [
+    ([], {}, "pairs 存在，chain 完全没有该 waiter 的数据"),
+    ([{"sessionid": "2260", "block_sessionid": "2259"}], {"holder_pid": ""},
+     "根已被 chain 确认，但 kill 语句因 pid 缺失而生成失败"),
+    ([{"sessionid": "2260", "block_sessionid": "9999"}], {},
+     "chain 确认了根（9999），但这个根没有出现在 pairs 的任何一行"
+     "holder 里"),
+])
+def test_pairs_non_empty_never_yields_the_bare_none(edges, pair_kwargs, label):
+    """不变量：只要 rep.pairs 非空，"快速恢复语句"小节就绝不能出现裸的
+    "无 —— 当前没有需要处理的根阻塞会话"。这句话只在压根没有阻塞对时
+    才成立；不管走哪条分支（chain 缺数据、kill 生成失败、根不在 pairs
+    覆盖范围内……）都不能落到这句话上。"""
+    rep = lockwait.collect(
+        _Runner(pairs=[_pair(**pair_kwargs)], edges=edges), limit=20)
+    assert rep.pairs, "前提：这一步必须真的产出非空 pairs，否则测试没有意义"
+    md = lockwait.render_markdown(rep)
+    assert "## 快速恢复语句" in md
+    section = md[md.index("## 快速恢复语句"):]
+    assert "无 —— 当前没有需要处理的根阻塞会话" not in section, label
+
+
+def test_unconfirmed_caveat_counts_by_pair_not_by_holder():
+    """两个不同的 waiter 被同一个未确认根 holder 挡住时，"N 对……"里的
+    N 和枚举都要数到 2，不能因为 holder 相同就被去重折叠成 1——这一段
+    统计和列出的单位是"对阻塞关系"，按 holder 折叠会让数字和枚举都比
+    实际少，而这一段的全部职责就是把这些缺口如实列出来。"""
+    pair_a = _pair(waiter_sessionid="3001", holder_sessionid="9000")
+    pair_b = _pair(waiter_sessionid="3002", holder_sessionid="9000")
+    rep = lockwait.collect(_Runner(pairs=[pair_a, pair_b], edges=[]), limit=20)
+    md = lockwait.render_markdown(rep)
+    section = md[md.index("## 快速恢复语句"):]
+    assert "2 对阻塞关系" in section
+    assert "3001" in section and "3002" in section
