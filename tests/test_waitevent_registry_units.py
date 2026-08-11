@@ -15,6 +15,7 @@ STATUS/NONE 排除是本模块测试的重点：STATUS（等客户端发命令�
 对同一个窗口给出不同的「等待事件花了多少时间」。
 """
 import pathlib
+import re
 import sys
 
 import pytest
@@ -48,7 +49,14 @@ def test_instance_time_subtracts_later_minus_earlier():
     """snap_value 是累计计数器，窗口值必须是「后一快照 − 前一快照」的减法，
     不能直接读某一个快照的值当窗口成本（那是从实例启动到那一刻的全部累计，
     不是这个窗口的成本）。两个 CTE（或一次自连接）各自锚定一个快照 id，
-    是能做减法的前提 —— 没有这个结构，SQL 里出现的 "-" 也可能只是别的算式。"""
+    是能做减法的前提 —— 没有这个结构，SQL 里出现的 "-" 也可能只是别的算式。
+
+    方向也要钉死，不能只查"有没有减法"：这条脚本里 b/e 两个 CTE 分别锚定
+    起始/结束快照、结果列叫 e.v/b.v，方向必须是 e.v - b.v（后减前）。
+    反过来写成 b.v - e.v（前减后）不会报错、也不会必然出现负数触发"跨了
+    实例重启"的告警（e.v > b.v 时 b.v-e.v 只是变成负数，恰好会被误判成
+    重启），而是安安静静把全部十项的正负号倒过来 —— 光查字符串里有没有
+    "-" 号截不出这种回归。"""
     sql = load_script(_REG / "waitevent/instance_time.yaml").script_content
     assert "-" in sql, "instance_time.yaml 里看不到减法，snap_value 是累计量，" \
                         "直接返回单个快照的值会把「全量累计」当成「窗口成本」"
@@ -57,6 +65,11 @@ def test_instance_time_subtracts_later_minus_earlier():
     assert cte_count >= 2 or self_join, \
         "instance_time.yaml 既没有两个 CTE 也没有自连接 —— 减法两边必须" \
         "各自先按 {{b}}/{{e}} 锚定一个快照，否则减出来的数字没有意义"
+    assert re.search(r"e\.v\s*-\s*b\.v", sql), \
+        "delta_us 的减法方向不对（或者列/别名变了）—— 必须是 e.v - b.v，" \
+        "e 是结束快照、b 是起始快照，反过来会把十项的正负号全部倒转"
+    assert not re.search(r"b\.v\s*-\s*e\.v", sql), \
+        "出现了 b.v - e.v（前减后）—— 会静默倒转全部十项的正负号"
 
 
 def test_instance_time_returns_the_columns_the_report_needs():
@@ -79,12 +92,24 @@ def test_events_excludes_status_and_none_with_the_same_predicate_as_wdr_waits():
 
 def test_events_returns_event_column_for_drill_down():
     """wdr.waits 只 GROUP BY 到 wait_class；waitevent.events 存在的意义就是
-    多下钻一层到具体 event，所以 event 必须出现在 SELECT 列表和 GROUP BY 里，
-    不能只在 WHERE/JOIN 条件里出现。"""
+    多下钻一层到具体 event，所以 event 必须出现在 SELECT 列表和「下钻聚合」
+    那一层 GROUP BY 里，不能只在 WHERE/JOIN 条件里出现。
+
+    这条 SQL 里 GROUP BY 出现三次：两个 CTE 各按 snapshot_id 聚合一次
+    （GROUP BY snap_type, snap_event），外层下钻聚合一次
+    （GROUP BY e.wait_class, e.event）。必须精确定位到**最后**那一次 ——
+    用 split(..., 1) 取第一次出现的话，拿到的是 CTE 内部那句
+    "GROUP BY snap_type, snap_event"，而 "SNAP_EVENT" 这个列名字面上就
+    含有子串 "EVENT"，会让检查在真正回归时（外层 GROUP BY 被人改回只剩
+    e.wait_class，这条脚本退化成 wdr.waits 的重复实现）仍然"碰巧"通过。"""
     sql = load_script(_REG / "waitevent/events.yaml").script_content
     for col in ("wait_class", "event", "waits", "wait_us"):
         assert col in sql, "events.yaml 少了列 %s" % col
-    assert "GROUP BY" in sql.upper()
-    group_by_line = sql.upper().split("GROUP BY", 1)[1].splitlines()[0]
-    assert "EVENT" in group_by_line, \
-        "event 必须出现在 GROUP BY 里，否则下钻聚合会把不同 event 的行错误合并"
+    upper = sql.upper()
+    assert upper.count("GROUP BY") >= 3, \
+        "events.yaml 结构变了：两个 CTE + 一次外层下钻聚合应各有一次 GROUP BY"
+    outer_group_by = upper.rsplit("GROUP BY", 1)[-1].splitlines()[0]
+    assert re.search(r"\bEVENT\b", outer_group_by), \
+        "外层（下钻）聚合子句里没有 event —— 这条脚本存在的唯一理由就是比" \
+        "wdr.waits 多下钻一层到具体 event，退化成只按 wait_class 聚合会让" \
+        "它变成 wdr.waits 的重复实现"
