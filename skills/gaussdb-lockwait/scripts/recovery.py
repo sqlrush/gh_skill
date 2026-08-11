@@ -91,13 +91,19 @@ def kill_for(holder: dict) -> KillStatement:
 
     sql = "SELECT %s(%d, %d);" % (fn, pid, sid)
 
+    xact_age = holder.get("holder_xact_age_s")
+    # `or "?"` 在这里不对：0 是「事务刚开始」这个真实、有信息量的值
+    # （恰恰是 cancel 最便宜、terminate 明显过度的那种情形），
+    # 用 or 会把它和「取不到」混成一样——`0 or "?"` 求值成 "?"。
+    # 必须显式判 None，不能靠真值判断。
+    xact_age_display = "?" if xact_age is None else xact_age
     impact = (
         "会话 %s（pid %s）/ 用户 %s / 应用 %s / 事务已持续 %s 秒；"
         "正在执行：%s"
         % (sid, pid,
            holder.get("holder_user") or "?",
            holder.get("holder_app") or "?",
-           holder.get("holder_xact_age_s") or "?",
+           xact_age_display,
            (holder.get("holder_query") or "").strip() or "(取不到)")
     )
     return KillStatement(

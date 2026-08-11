@@ -74,7 +74,7 @@ python3 {baseDir}/scripts/lockwait.py -c <连接名> [--limit 20] [--format json
 ## kill 语句
 
 - **只对根 holder 生成。** 杀链条中间节点不解堵：3 等 2、2 等 1 时杀掉 2，3 会立刻改成等 1，现场没有任何变化，而操作者会误以为已经处理过。
-- **按 holder 当前状态选函数**：`state = 'active'` 用 `pg_cancel_backend`（只取消当前语句、保住会话）；`idle in transaction`（没在跑却占着锁）用 `pg_terminate_backend`，因为 cancel 对它无效。
+- **按 holder 当前状态选函数**：`state = 'active'` 用 `pg_cancel_session(pid, sessionid)`（只取消当前语句、保住会话）；`idle in transaction`（没在跑却占着锁）用 `pg_terminate_session(pid, sessionid)`，因为 cancel 对它无效。两个都用两参数的会话感知形式，不是单参数的 `pg_cancel_backend`/`pg_terminate_backend`——线程池开启时 pid 是会被复用的线程号，两参数版本要求 pid 与 sessionid 同时对上才动手，对不上就返回 false、什么也不做，能防住诊断到执行之间 pid 被复用、杀错会话的场景。
 - **每条语句旁必须注明会杀掉谁**：用户、应用、已运行/已空闲多久、正在执行什么，让人能自己判断这次代价是否可接受。
 
 ## 安全红线
@@ -83,6 +83,6 @@ python3 {baseDir}/scripts/lockwait.py -c <连接名> [--limit 20] [--format json
   配置里带明文 `password` 时，加载会**直接报错**而不是警告后继续 —— 警告在一堆输出里没人看，而配置一旦那样跑起来就会一直那样跑下去。
   发现用户配置里有明文口令时，提示他改用：`python3 -m common.credential_cli set <连接名>`，然后删掉配置里的 password/encrypted 两行。
 
-- **生成的 kill 语句只给人看，你不得执行它。** 本 skill 的职责到"把 `pg_cancel_backend` / `pg_terminate_backend` 语句连同上下文生成出来"为止；`{baseDir}/scripts/lockwait.py` 本身也只读、绝不执行任何变更。这是刻意的边界：`pg_terminate_backend` 杀错会话会砍掉一个活着的事务，这笔代价是否可接受，取决于操作者对业务当下在做什么的判断，不该由工具替他做决定。你自己不要执行这些语句、不要建议"让我来执行"，也不要通过其他方式（psql/gsql/别的脚本）代为执行。
+- **生成的 kill 语句只给人看，你不得执行它。** 本 skill 的职责到"把 `pg_cancel_session` / `pg_terminate_session` 语句连同上下文生成出来"为止；`{baseDir}/scripts/lockwait.py` 本身也只读、绝不执行任何变更。这是刻意的边界：`pg_terminate_session` 杀错会话会砍掉一个活着的事务，这笔代价是否可接受，取决于操作者对业务当下在做什么的判断，不该由工具替他做决定。你自己不要执行这些语句、不要建议"让我来执行"，也不要通过其他方式（psql/gsql/别的脚本）代为执行。
 
 - **只通过本技能脚本取数**：`{baseDir}/scripts/lockwait.py` 走只读会话、自动解密 `{baseDir}/../common/credentials/` 凭据，**你自己不要**直接写 Python/psql/gsql 连库、不要读取或解密 `{baseDir}/../common/credentials/`。脚本未覆盖的能力，如实说明「当前无此能力」并停止。

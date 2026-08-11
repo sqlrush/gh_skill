@@ -101,6 +101,15 @@ def test_impact_shows_placeholder_when_xact_age_missing():
     assert "?" in k.impact
 
 
+def test_impact_shows_zero_xact_age_not_placeholder():
+    """0 是「事务刚开始」这个真实、有信息量的值（恰恰是 cancel 最便宜的场景），
+    不是「取不到」——不能用 `or "?"` 那种真值判断，0 是 falsy，
+    `0 or "?"` 会求值成 "?"，把 0 伪装成未知。必须显式判 None。"""
+    k = kill_for(_holder(holder_xact_age_s=0))
+    assert "持续 0 秒" in k.impact
+    assert "持续 ? 秒" not in k.impact
+
+
 def test_render_says_do_not_execute():
     out = render_kills([kill_for(_holder())])
     assert "不要直接执行" in out or "不得执行" in out
