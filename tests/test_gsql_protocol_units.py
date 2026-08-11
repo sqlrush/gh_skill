@@ -34,9 +34,33 @@ def test_mixed_string_and_numeric():
     assert sql == "p=:'p0' AND (:'p1'='' OR n=:'p2') LIMIT :p3"
     assert vars_ == {"p0": "proc", "p1": "", "p2": "public", "p3": "1"}
 
-def test_percent_literal_escaped():
-    sql, vars_ = gp.rewrite_params("x LIKE 'a%%b'", [])
-    assert sql == "x LIKE 'a%b'"
+def test_percent_literal_escaped_when_params_present():
+    """有参数时 %% 才是转义 —— 与 pg8000 的 format 参数风格一致。"""
+    sql, vars_ = gp.rewrite_params("x LIKE 'a%%b' AND n = %s", ["v"])
+    assert sql == "x LIKE 'a%b' AND n = :'p0'"
+    assert vars_ == {"p0": "v"}
+
+
+@pytest.mark.parametrize("sql", [
+    "x LIKE 'a%%b'",
+    "x LIKE '%s%'",          # 用户想找含 s 的名字，不是占位符
+    "x LIKE '%status%'",
+    "SELECT a % 7 FROM t",
+])
+def test_no_params_means_sql_is_untouched(sql):
+    """**没参数就没有占位符要填，此时一个字符都不该动。**
+
+    原先无条件扫一遍。实测（og5）三种走样，pg8000 与中间件都没有：
+
+        LIKE 'x%%y'  → 静默改写成 'x%y'，计划是改写后那条的，无人告知
+        LIKE 'x%sy'  → error: more %s placeholders than params
+
+    而 DirectRunner.run() 调的正是 db.query(sql)，一个参数都不传 ——
+    对它来说这趟扫描纯属白做工，却把 explain/proctune/sqltune 里用户给的
+    LIKE 模式弄坏了。
+    """
+    out, vars_ = gp.rewrite_params(sql, [])
+    assert out == sql
     assert vars_ == {}
 
 def test_count_mismatch_raises():

@@ -27,8 +27,24 @@ def _inline_or_var(val: Any, idx: int, vars_: dict) -> str:
 
 
 def rewrite_params(sql: str, params: Sequence[Any]) -> tuple[str, dict]:
-    """把 %s 占位符改写为 gsql 变量引用，返回 (新SQL, 变量映射)。"""
+    """把 %s 占位符改写为 gsql 变量引用，返回 (新SQL, 变量映射)。
+
+    **没有参数就原样返回，一个字符都不动。** 没参数就没有占位符要填，此时
+    SQL 里的 `%` 全是用户的数据，不是我们的语法。原先无条件扫一遍的后果
+    （实测 og5，pg8000 与中间件两条路都没这毛病，只有 gsql 走样）：
+
+        LIKE 'x%y'    → Filter: (relname ~~ 'x%y')      对
+        LIKE 'x%%y'   → Filter: (relname ~~ 'x%y')      **静默改写**
+        LIKE 'x%sy'   → error: more %s placeholders than params
+
+    而 DirectRunner.run() 调的正是 `db.query(sql)`，一个参数都不传 ——
+    对它来说这趟扫描纯属白做工，却把 explain/proctune/sqltune 里用户给的
+    `LIKE '%status%'` 这类写法弄坏了。前一种错法尤其难查：SQL 变了，
+    计划是变之后那条的，没有任何地方说过一声。
+    """
     params = list(params or ())
+    if not params:
+        return sql, {}
     out: list[str] = []
     vars_: dict = {}
     idx = 0
