@@ -6,22 +6,20 @@
      idle in transaction 用 terminate（cancel 对它无效）
   3. 每条旁边注明会杀掉谁 —— 让人能自己判断代价，而不是照抄
 
-实测结论（Step 1，og5，openGauss-lite 5.0.3，enable_thread_pool=on）：
-  pg_cancel_backend(pid)               pronargs=1  —— 官方文档只有单参数形式
-  pg_terminate_backend(pid)            pronargs=1  —— 同样存在，但……
-  pg_terminate_session(pid, sessionid) pronargs=2  —— **也存在**，官方文档确认
-                                        签名与参数顺序：pg_terminate_session(pid int64, sessionid int64)
+两个分支现在都用两参数、会话感知的函数 —— pg_cancel_session(pid, sessionid)
+与 pg_terminate_session(pid, sessionid)，不是单参数的 pg_cancel_backend(pid) /
+pg_terminate_backend(pid)。理由见 recovery.py 模块 docstring：两参数版本
+**失败是关闭的**（fail closed）—— pid 与 sessionid 对不上同一个会话就返回
+false、什么也不做；单参数版本只认 pid，而本环境线程池开着（enable_thread_
+pool=on），pid 是会被复用的线程号，诊断到执行之间的时间差里单参数版本可能
+杀错人，两参数版本不会。
 
-  两者都在，不是「二选一」的替代关系。选 pg_terminate_session 而不是单参数
-  pg_terminate_backend 的理由：pairs.yaml 已经测出 pid 在本环境是线程号，
-  是会被复用的易变量，sessionid 才是稳定标识；线程池开启时，诊断报告生成
-  到人工执行之间有时间差，pid 有被复用给另一个会话的风险。
-  pg_terminate_session 同时校验 pid 和 sessionid，能防住这个场景——
-  单参数版本无法防。
-
-  cancel 没有做同样的替换：官方文档没有 pg_cancel_session（pg_proc 里虽然
-  存在，但未见文档记录参数顺序，不敢在没有确认语义的情况下拿来生成 DBA
-  要执行的语句），所以 active 分支保留单参数 pg_cancel_backend(pid)。
+实测记录（在自己开的 scratch pg_sleep 会话上做的，非任何已存在的会话）：
+  pg_cancel_session(pid, sessionid)     -> True，sleep 立即被中断
+  pg_cancel_session(sessionid, pid)     -> False，sleep 照常跑满全程
+  pg_terminate_session(pid, sessionid)  -> True，连接立即被断开
+  pg_terminate_session(sessionid, pid)  -> False，sleep 照常跑满全程
+确认参数顺序是 (pid, sessionid)，且顺序颠倒时两个函数都精确地「什么也不做」。
 """
 import pathlib
 import sys
@@ -45,18 +43,12 @@ def _holder(**kw):
 def test_active_holder_gets_cancel_not_terminate():
     """正在跑语句的：取消语句就够了，保住会话 —— 代价小得多。"""
     k = kill_for(_holder(holder_state="active"))
-    assert k.function == "pg_cancel_backend"
-    assert "pg_cancel_backend(281440306779808)" in k.sql
+    assert k.function == "pg_cancel_session"
+    assert "pg_cancel_session(281440306779808, 2259)" in k.sql
 
 
 def test_idle_in_transaction_holder_needs_terminate():
-    """**cancel 对它无效** —— 它没在跑语句，只是攥着锁不放事务。
-
-    用 pg_terminate_session(pid, sessionid)，不是单参数 pg_terminate_backend：
-    Step 1 测出 openGauss 上两个函数都存在，选两参数版本是因为它同时校验
-    pid 与 sessionid —— 本环境 pid 是线程号、会被复用，单校验 pid 有杀错
-    会话的风险（见 pairs.yaml 的测量记录）。
-    """
+    """**cancel 对它无效** —— 它没在跑语句，只是攥着锁不放事务。"""
     k = kill_for(_holder(holder_state="idle in transaction"))
     assert k.function == "pg_terminate_session"
     assert "pg_terminate_session(281440306779808, 2259)" in k.sql
@@ -74,17 +66,17 @@ def test_unknown_state_falls_back_to_terminate():
     assert k.function == "pg_terminate_session"
 
 
-def test_cancel_statement_uses_pid_only_not_sessionid():
-    """cancel 分支：官方文档只有单参数 pg_cancel_backend(pid)，
-    openGauss 的 pid 是线程号；语句本身不该带上 sessionid。"""
+def test_cancel_statement_uses_both_pid_and_sessionid():
+    """cancel 分支现在也是两参数、顺序 (pid, sessionid) —— 与 terminate 对称，
+    都是失败关闭的会话感知函数，不是只认 pid 的单参数版本。"""
     k = kill_for(_holder(holder_pid=123, holder_sessionid=999, holder_state="active"))
-    assert "(123)" in k.sql
-    assert "999" not in k.sql.split("--")[0], "语句本身不该出现 sessionid"
+    assert "pg_cancel_session(123, 999)" in k.sql
 
 
 def test_terminate_statement_uses_both_pid_and_sessionid():
     """terminate 分支：pg_terminate_session 需要 (pid, sessionid) 两个参数，
-    顺序为 pid 在前、sessionid 在后（官方文档确认的签名顺序）。"""
+    顺序为 pid 在前、sessionid 在后 —— 官方文档给出的顺序，并且已经在
+    scratch 会话上实测确认过（见本文件顶部的实测记录）。"""
     k = kill_for(_holder(holder_pid=123, holder_sessionid=999,
                           holder_state="idle in transaction"))
     assert "pg_terminate_session(123, 999)" in k.sql
@@ -100,6 +92,13 @@ def test_impact_names_who_gets_killed():
 def test_impact_includes_the_running_sql():
     k = kill_for(_holder())
     assert "UPDATE accounts" in k.impact
+
+
+def test_impact_shows_placeholder_when_xact_age_missing():
+    """holder_xact_age_s 取不到时不能把字面 None 印进报告里。"""
+    k = kill_for(_holder(holder_xact_age_s=None))
+    assert "None" not in k.impact
+    assert "?" in k.impact
 
 
 def test_render_says_do_not_execute():
