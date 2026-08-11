@@ -22,44 +22,115 @@
 
 ## 实测结论（2026-08-11，连接 og → openGauss-lite 5.0.3 / og5，快照 1508–1513）
 
-```
-window 1508->1509 (dur≈?): DB_TIME=132353117 EXECUTION_TIME=129658743 CPU_TIME=85426735
-  DATA_IO_TIME=69548831 NET_SEND_TIME=76417 PARSE_TIME=16048 PLAN_TIME=94185
-  REWRITE_TIME=4335 PL_EXECUTION_TIME=100474 PL_COMPILATION_TIME=5693
-  check1 CPU+IO+NET=155051983 <= EXECUTION=129658743 ? NO  margin=-25393240
-  check2 EXEC+PARSE+PLAN+REWRITE=129773311 <= DB_TIME=132353117 ? YES margin=2579806
+**样本结构 —— 这 5 个窗口不是 5 次独立的工作负载采样，读结论前先看这个：**
+窗口 1508→1509 的 DB_TIME 是 132353117，其余四个窗口的 DB_TIME 都只有
+149092~156128（差了近千倍），而且 1509→1510 到 1512→1513 这四个窗口的
+DATA_IO_TIME 全部是 0。这个形状说明后四个窗口是短间隔内连续取的几张快照，
+抓到的是同一段近乎空闲的活动，不是四段互相独立的负载样本；真正长、忙、
+承载信息量的只有第一个窗口。所以下面结论里的"5/5 窗口"这个说法，含义是
+"一个长/忙窗口给出的判断，另外四个近空闲窗口没有出现反例"，不是"五份独立
+证据都指向同一结论"——后者会声称比这批数据实际支撑的更多。
 
-window 1509->1510: check1 143962 <= 121680 ? NO margin=-22282   check2 154075 <= 156128 ? YES margin=2053
-window 1510->1511: check1 135722 <= 118068 ? NO margin=-17654   check2 148450 <= 149092 ? YES margin=642
-window 1511->1512: check1 141731 <= 114460 ? NO margin=-27271   check2 141422 <= 154162 ? YES margin=12740
-window 1512->1513: check1 141296 <= 116523 ? NO margin=-24773   check2 144766 <= 152697 ? YES margin=7931
-```
+### 全部十项，逐窗口（完整数字，不必重测；四个短窗口的 DATA_IO_TIME=0 就是
+### 在这里才看得到的信息，摘要不会保留）
 
-完整逐项数字见本文件跑出来的 stdout（记在 task-10-report.md 里），这里只摘两条校验。
+```
+窗口 快照1508->1509  ← 唯一的长/忙窗口，下面结论主要靠它
+  DB_TIME              = 132353117
+  EXECUTION_TIME       = 129658743
+  CPU_TIME             = 85426735
+  DATA_IO_TIME         = 69548831
+  NET_SEND_TIME        = 76417
+  PARSE_TIME           = 16048
+  PLAN_TIME            = 94185
+  REWRITE_TIME         = 4335
+  PL_EXECUTION_TIME    = 100474
+  PL_COMPILATION_TIME  = 5693
+  校验1 CPU+IO+NET=155051983 <= EXECUTION=129658743 ? NO  margin=-25393240 (-19.6%)
+  校验2 EXEC+PARSE+PLAN+REWRITE=129773311 <= DB_TIME=132353117 ? YES margin=2579806
+
+窗口 快照1509->1510  ← 短/近空闲窗口 1/4
+  DB_TIME              = 156128
+  EXECUTION_TIME       = 121680
+  CPU_TIME             = 113840
+  DATA_IO_TIME         = 0
+  NET_SEND_TIME        = 30122
+  PARSE_TIME           = 1217
+  PLAN_TIME            = 29712
+  REWRITE_TIME         = 1466
+  PL_EXECUTION_TIME    = 101752
+  PL_COMPILATION_TIME  = 5458
+  校验1 CPU+IO+NET=143962 <= EXECUTION=121680 ? NO margin=-22282 (-18.3%)
+  校验2 EXEC+PARSE+PLAN+REWRITE=154075 <= DB_TIME=156128 ? YES margin=2053
+
+窗口 快照1510->1511  ← 短/近空闲窗口 2/4
+  DB_TIME              = 149092
+  EXECUTION_TIME       = 118068
+  CPU_TIME             = 111192
+  DATA_IO_TIME         = 0
+  NET_SEND_TIME        = 24530
+  PARSE_TIME           = 1160
+  PLAN_TIME            = 27783
+  REWRITE_TIME         = 1439
+  PL_EXECUTION_TIME    = 98601
+  PL_COMPILATION_TIME  = 5456
+  校验1 CPU+IO+NET=135722 <= EXECUTION=118068 ? NO margin=-17654 (-15.0%)
+  校验2 EXEC+PARSE+PLAN+REWRITE=148450 <= DB_TIME=149092 ? YES margin=642
+
+窗口 快照1511->1512  ← 短/近空闲窗口 3/4
+  DB_TIME              = 154162
+  EXECUTION_TIME       = 114460
+  CPU_TIME             = 106321
+  DATA_IO_TIME         = 0
+  NET_SEND_TIME        = 35410
+  PARSE_TIME           = 1169
+  PLAN_TIME            = 24353
+  REWRITE_TIME         = 1440
+  PL_EXECUTION_TIME    = 94637
+  PL_COMPILATION_TIME  = 5396
+  校验1 CPU+IO+NET=141731 <= EXECUTION=114460 ? NO margin=-27271 (-23.8%)
+  校验2 EXEC+PARSE+PLAN+REWRITE=141422 <= DB_TIME=154162 ? YES margin=12740
+
+窗口 快照1512->1513  ← 短/近空闲窗口 4/4
+  DB_TIME              = 152697
+  EXECUTION_TIME       = 116523
+  CPU_TIME             = 109289
+  DATA_IO_TIME         = 0
+  NET_SEND_TIME        = 32007
+  PARSE_TIME           = 1246
+  PLAN_TIME            = 25453
+  REWRITE_TIME         = 1544
+  PL_EXECUTION_TIME    = 95905
+  PL_COMPILATION_TIME  = 5589
+  校验1 CPU+IO+NET=141296 <= EXECUTION=116523 ? NO margin=-24773 (-21.3%)
+  校验2 EXEC+PARSE+PLAN+REWRITE=144766 <= DB_TIME=152697 ? YES margin=7931
+```
 
 **结论：**
 - 关系 (2)（解析三项 + EXECUTION <= DB_TIME）**在全部 5 个窗口都成立**，margin
   始终是正数（642 ~ 2579806，绝对值因窗口时长不同差得很远，但没有一个窗口
-  越界），不是贴着零的巧合。
+  越界）。
 - 关系 (1)（CPU + IO + NET <= EXECUTION）**在全部 5 个窗口都不成立**，而且不是
-  误差量级的失败——CPU_TIME + DATA_IO_TIME 经常单独就逼近甚至超过 EXECUTION_TIME
-  （例如窗口 1508→1509：CPU=85426735 + IO=69548831 已经是 EXECUTION=129658743 的
-  约 1.2 倍）。五个窗口的 margin 绝对值差异很大（-17654 ~ -25393240，因为
-  1508→1509 横跨的时长比后面四个窗口长得多），但**相对 EXECUTION_TIME 的超出
-  比例稳定在 15%~24%**（-19.6% / -18.3% / -15.0% / -23.8% / -21.3%）。
-  这不是"两者近似相等、四舍五入" 的边界情况，是系统性超出。合理猜测：CPU_TIME /
-  DATA_IO_TIME 是各执行线程（含并行 worker）的累加耗时，而 EXECUTION_TIME 是
-  会话可感知的墙钟时间；并行执行下前者对后者不是子集关系。这只是猜测，本工具
-  不对原因下结论，只对"是否可以画成包含关系"下结论。
+  误差量级的失败——单看那个长/忙窗口（1508→1509）：CPU=85426735 +
+  IO=69548831 已经是 EXECUTION=129658743 的约 1.2 倍，margin=-25393240，
+  相对 EXECUTION_TIME 超出 19.6%，这是本工具真正依赖的证据，来自单一但
+  信息量最大的窗口。另外四个短/近空闲窗口的 margin 绝对值小得多
+  （-17654 ~ -27271），但相对 EXECUTION_TIME 的超出比例落在同一量级
+  （-15.0% ~ -23.8%），与忙窗口的 -19.6% 一致——没有反例，起到印证作用，
+  但因为它们抓的是同一段短促的近空闲活动而非四次独立采样，不能当成"四份
+  独立证据"去加固结论的统计强度。合理猜测：CPU_TIME / DATA_IO_TIME 是各
+  执行线程（含并行 worker）的累加耗时，而 EXECUTION_TIME 是会话可感知的
+  墙钟时间；并行执行下前者对后者不是子集关系。这只是猜测，本工具不对原因
+  下结论，只对"是否可以画成包含关系"下结论。
 
 **因此：Task 12 不能画设计文档里那棵完整两层树。** 关系 (2) 那一层（解析阶段
-+ 执行阶段 汇总到 DB_TIME）可以画；关系 (1) 那一层（CPU/IO/NET 汇总到
++ 执行阶段 汇总到 DB_TIME）有实测支撑；关系 (1) 那一层（CPU/IO/NET 汇总到
 EXECUTION_TIME）不能画——应改为平铺列出 CPU_TIME / DATA_IO_TIME / NET_SEND_TIME
 三项各自占 DB_TIME 的比例，并注明"这三项对 EXECUTION_TIME 的包含关系在本实例上
-未能验证（5/5 窗口 CPU+IO+NET 超过 EXECUTION_TIME，例如窗口 1508→1509：
-155051983 > 129658743），因此不作层级归并"。PL_EXECUTION_TIME /
-PL_COMPILATION_TIME 本就与上述项重叠（设计文档已注明"与上面部分重叠"），一律
-平铺展示,不纳入任何加总校验。
+未能验证（长/忙窗口 1508→1509：CPU+IO+NET=155051983 > EXECUTION_TIME=
+129658743，超出 19.6%；另四个近空闲窗口无反例但同源，不构成独立佐证），
+因此不作层级归并"。PL_EXECUTION_TIME / PL_COMPILATION_TIME 本就与上述项重叠
+（设计文档已注明"与上面部分重叠"），一律平铺展示,不纳入任何加总校验。
 
 ## 用法（mac 上）
 
@@ -193,6 +264,10 @@ def main() -> int:
     ap.add_argument("--windows", type=int, default=DEFAULT_WINDOWS,
                      help="窗口数（默认最近 %d 个）" % DEFAULT_WINDOWS)
     args = ap.parse_args()
+
+    if args.windows < 1:
+        print("!!! --windows 必须 >= 1（收到 %d）" % args.windows, file=sys.stderr)
+        return 2
 
     db = None
     try:
