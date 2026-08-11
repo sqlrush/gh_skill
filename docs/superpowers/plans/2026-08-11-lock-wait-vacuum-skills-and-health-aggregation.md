@@ -21,6 +21,16 @@
 - 提交信息格式 `<type>(<scope>): <描述>`，不加 Co-Authored-By（全局已关）。
 - **测试环境**：og5 容器（openGauss-lite 5.0.3）。`gsbench_e2e_20260801_100g.plan_data` 死元组 2009 万是验证素材，**只读不清**。
 - 三种访问路径的测试连接：`-c og`（pg8000，`GSDB_HOME=~/.gdaa`）、`-c og-gsql`（gsql，`GSDB_HOME=/tmp/gsql-probe`，`PATH` 前置 `/tmp/gsql-probe/bin`）、`-c og-grmp`（中间件，`GSDB_HOME=~/.gdaa` 且 `source ~/.gdaa/grmp.env`）。
+- **分支**：`feat/diagnostic-skills`（自 `bb9c375`）。不要提交到 `main`。
+- **部署目录一律是 `~/.config/opencode/skills-dev`**，绝不动 `~/.config/opencode/skills` —— 那个目录用户正在 opencode 里用着，半成品覆盖上去会打断他的工作。
+- 所有 `tools/matrix_*.py` 读环境变量 `GDAA_SKILLS_DIR` 定位 skill 脚本，缺省 `~/.config/opencode/skills-dev`：
+
+  ```python
+  SK = os.environ.get("GDAA_SKILLS_DIR",
+                      os.path.expanduser("~/.config/opencode/skills-dev"))
+  ```
+
+  这样全部验收通过后，切正式目录只需改一个环境变量，不必改代码。
 
 ---
 
@@ -340,8 +350,8 @@ ssh sqlrush@192.168.128.1 "cd ~/gh_skill/opencode_skill-main-v2-0729 && python3 
 
 ```bash
 ssh sqlrush@192.168.128.1 'export GSDB_HOME=~/.gdaa; set -a; . ~/.gdaa/grmp.env; set +a
-SK=~/.config/opencode/skills
-cd ~/gh_skill && bash opencode_skill-main-v2-0729/install-opencode.sh --dest ~/.config/opencode/skills >/dev/null 2>&1
+SK=~/.config/opencode/skills-dev
+cd ~/gh_skill && bash opencode_skill-main-v2-0729/install-opencode.sh --dest ~/.config/opencode/skills-dev >/dev/null 2>&1
 for s in health wdr memanalyze; do
   out=$(python3 $SK/gaussdb-$s/scripts/$s.py -c og-grmp 2>&1)
   echo "$s rc=$? traceback=$(printf "%s" "$out" | grep -c Traceback)"
@@ -1814,7 +1824,7 @@ ssh sqlrush@192.168.128.1 "cd ~/gh_skill/opencode_skill-main-v2-0729 && GSDB_HOM
 - [ ] **Step 4: 部署后跑矩阵**
 
 ```bash
-ssh sqlrush@192.168.128.1 "cd ~/gh_skill && bash opencode_skill-main-v2-0729/install-opencode.sh --dest ~/.config/opencode/skills >/dev/null 2>&1 && cd /tmp && python3 ~/gh_skill/opencode_skill-main-v2-0729/tools/matrix_lockwait.py"
+ssh sqlrush@192.168.128.1 "cd ~/gh_skill && bash opencode_skill-main-v2-0729/install-opencode.sh --dest ~/.config/opencode/skills-dev >/dev/null 2>&1 && cd /tmp && python3 ~/gh_skill/opencode_skill-main-v2-0729/tools/matrix_lockwait.py"
 ```
 
 预期：失败项 0
@@ -1862,7 +1872,7 @@ ssh sqlrush@192.168.128.1 "cd ~/gh_skill/opencode_skill-main-v2-0729 && GSDB_HOM
 
 把实测数字记进 `tools/probe_dbtime_containment.py` 的模块 docstring，后人不必重测。
 
-- [ ] **Step 4: 提交**
+- [ ] **Step 5: 提交**
 
 ```bash
 ssh sqlrush@192.168.128.1 "cd ~/gh_skill/opencode_skill-main-v2-0729 && git add tools/probe_dbtime_containment.py && git commit -q -m 'test(waitevent): 实测 DB time 各项的包含关系 —— 验不出来就不画那棵树'"
@@ -2043,17 +2053,272 @@ CLI：`waitevent.py -c <conn> [--snapshots 6] [--begin ID --end ID] [--format js
 
 - [ ] **Step 1: 写失败的测试**
 
-覆盖：
-- 假 runner 下正常出报告，rc=0
-- `--snapshots 6` 时按快照 id 排序取最近 6 个，形成 5 个窗口
-- `--begin/--end` 指定时不再自动选
-- 快照不足 2 个时**明确报错**（rc=2，说明「至少需要 2 个快照才能算窗口」），不是空报告
-- `--format json` 形状为 Finding 契约、`skill == "gaussdb-waitevent"`
-- 取数失败 → rc=2 且无 Traceback
+创建 `tests/test_waitevent_entry_units.py`：
 
-- [ ] **Step 2–5**：同 Task 7 的节奏（跑失败 → 复制 render.py → 写实现 → 跑通过 → 提交）
+```python
+"""waitevent 入口。用假 runner，不连库。"""
+import json
+import pathlib
+import sys
 
-提交信息：`feat(waitevent): skill 主体 —— 多窗口 DB time 分解 + 等待事件下钻`
+_ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_ROOT))
+sys.path.insert(0, str(_ROOT / "skills" / "gaussdb-waitevent" / "scripts"))
+
+import waitevent  # noqa: E402
+
+
+def _snaps(ids):
+    return [{"snapshot_id": str(i)} for i in ids]
+
+
+_TIME_ROWS = [
+    {"stat_name": "DB_TIME", "delta_us": "1000000"},
+    {"stat_name": "EXECUTION_TIME", "delta_us": "700000"},
+    {"stat_name": "CPU_TIME", "delta_us": "400000"},
+    {"stat_name": "DATA_IO_TIME", "delta_us": "350000"},
+    {"stat_name": "NET_SEND_TIME", "delta_us": "100000"},
+]
+
+_EVENT_ROWS = [
+    {"wait_class": "IO_EVENT", "event": "DataFileRead",
+     "waits": "100", "wait_us": "120000"},
+    {"wait_class": "LOCK_EVENT", "event": "relation",
+     "waits": "3", "wait_us": "150000"},
+]
+
+
+class _Runner:
+    def __init__(self, snap_ids=(1, 2, 3, 4, 5, 6), time_rows=None, event_rows=None):
+        self._snap_ids = list(snap_ids)
+        self._time = _TIME_ROWS if time_rows is None else time_rows
+        self._events = _EVENT_ROWS if event_rows is None else event_rows
+        self.calls = []
+
+    def run(self, script, values=None):
+        self.calls.append((script, dict(values or {})))
+        if script == "wdr.snapshots":
+            return _snaps(self._snap_ids)
+        if script == "wdr.window":
+            return [{"b_start": "2026-08-11 10:00", "e_start": "2026-08-11 11:00",
+                     "dur": "60"}]
+        if script == "waitevent.instance_time":
+            return self._time
+        if script == "waitevent.events":
+            return self._events
+        raise AssertionError("没料到的脚本 %s" % script)
+
+
+def test_normal_report(monkeypatch, capsys):
+    monkeypatch.setattr(waitevent.access, "for_conn", lambda *a, **k: _Runner())
+    rc = waitevent.main(["-c", "x"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "DB_TIME" in out
+
+
+def test_six_snapshots_make_five_windows():
+    """最近 6 个快照 → 5 个窗口。相邻两两成对，不是首尾一对。"""
+    r = _Runner(snap_ids=(11, 12, 13, 14, 15, 16))
+    rep = waitevent.collect(r, snapshots=6)
+    assert len(rep.windows) == 5
+    pairs = [(c[1]["b"], c[1]["e"]) for c in r.calls
+             if c[0] == "waitevent.instance_time"]
+    assert pairs == [(11, 12), (12, 13), (13, 14), (14, 15), (15, 16)]
+
+
+def test_only_the_most_recent_snapshots_are_used():
+    """给了 10 个快照但要 3 个 —— 用最近的 3 个，不是最早的。"""
+    r = _Runner(snap_ids=tuple(range(1, 11)))
+    waitevent.collect(r, snapshots=3)
+    pairs = [(c[1]["b"], c[1]["e"]) for c in r.calls
+             if c[0] == "waitevent.instance_time"]
+    assert pairs == [(8, 9), (9, 10)]
+
+
+def test_explicit_begin_end_skips_auto_selection():
+    r = _Runner(snap_ids=(1, 2, 3, 4, 5, 6))
+    rep = waitevent.collect(r, snapshots=6, begin=2, end=3)
+    assert len(rep.windows) == 1
+    assert not any(c[0] == "wdr.snapshots" for c in r.calls), \
+        "显式给了窗口就不该再去列快照"
+
+
+def test_too_few_snapshots_is_an_explicit_error(monkeypatch, capsys):
+    """**不是空报告。** 一份空报告会被读成「这段时间没问题」。"""
+    monkeypatch.setattr(waitevent.access, "for_conn",
+                        lambda *a, **k: _Runner(snap_ids=(7,)))
+    rc = waitevent.main(["-c", "x"])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "至少需要 2 个快照" in err
+    assert "Traceback" not in err
+
+
+def test_json_output_is_the_finding_contract(monkeypatch, capsys):
+    monkeypatch.setattr(waitevent.access, "for_conn", lambda *a, **k: _Runner())
+    rc = waitevent.main(["-c", "x", "--format", "json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["skill"] == "gaussdb-waitevent"
+    for f in payload["findings"]:
+        assert f["skill"] == "gaussdb-waitevent"
+        assert isinstance(f["severity"], int)
+
+
+def test_io_heavy_window_produces_a_finding(monkeypatch, capsys):
+    """DATA_IO_TIME 占 35%（阈值 30%）→ 该报 DBTIME_IO_HEAVY。"""
+    monkeypatch.setattr(waitevent.access, "for_conn", lambda *a, **k: _Runner())
+    waitevent.main(["-c", "x", "--format", "json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert any(f["code"] == "DBTIME_IO_HEAVY" for f in payload["findings"])
+
+
+def test_restarted_window_reports_unavailable_not_percentages(monkeypatch, capsys):
+    """**跨实例重启的窗口只报不可用。** 负增量算出的比例是假的，
+    报出去比不报更糟 —— 它看起来是个正常数字。"""
+    rows = [{"stat_name": "DB_TIME", "delta_us": "-500"},
+            {"stat_name": "CPU_TIME", "delta_us": "-100"}]
+    monkeypatch.setattr(waitevent.access, "for_conn",
+                        lambda *a, **k: _Runner(time_rows=rows))
+    waitevent.main(["-c", "x", "--format", "json"])
+    payload = json.loads(capsys.readouterr().out)
+    codes = {f["code"] for f in payload["findings"]}
+    assert "DBTIME_RESTART" in codes
+    assert not (codes & {"DBTIME_IO_HEAVY", "DBTIME_CPU_HEAVY", "DBTIME_NET_HEAVY"})
+
+
+def test_lock_wait_share_produces_a_finding(monkeypatch, capsys):
+    """时间模型里没有锁 —— 锁的占比来自等待事件（15% > 10% 阈值）。"""
+    monkeypatch.setattr(waitevent.access, "for_conn", lambda *a, **k: _Runner())
+    waitevent.main(["-c", "x", "--format", "json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert any(f["code"] == "WAIT_LOCK_HEAVY" for f in payload["findings"])
+
+
+def test_query_failure_is_reported_not_thrown(monkeypatch, capsys):
+    from common.grmp.errors import QueryError
+
+    class _Boom:
+        def run(self, *a, **k):
+            raise QueryError("ERROR: relation does not exist (SQLSTATE 42P01)")
+
+    monkeypatch.setattr(waitevent.access, "for_conn", lambda *a, **k: _Boom())
+    rc = waitevent.main(["-c", "x"])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "Traceback" not in err
+    assert "SQLSTATE" in err
+```
+
+- [ ] **Step 2: 跑测试确认它失败**
+
+```bash
+ssh sqlrush@192.168.128.1 "cd ~/gh_skill/opencode_skill-main-v2-0729 && python3 -m pytest tests/test_waitevent_entry_units.py -q"
+```
+
+预期：`ModuleNotFoundError: No module named 'waitevent'`
+
+- [ ] **Step 3: 复制 render.py**
+
+```bash
+ssh sqlrush@192.168.128.1 "cd ~/gh_skill/opencode_skill-main-v2-0729 && mkdir -p skills/gaussdb-waitevent/scripts && cp skills/gaussdb-topsql/scripts/render.py skills/gaussdb-waitevent/scripts/render.py"
+```
+
+- [ ] **Step 4: 写 `skills/gaussdb-waitevent/scripts/waitevent.py`**
+
+模块开头的 `sys.path` 两段、argparse 结构、错误分类与退出码，**逐字照抄 `skills/gaussdb-topsql/scripts/topsql.py`**（那是本项目每个 skill 的统一骨架）。本任务特有的部分：
+
+```python
+SKILL = "gaussdb-waitevent"
+DIM = "DB Time"
+DEFAULT_SNAPSHOTS = 6
+
+SNAPSHOTS_SCRIPT = "wdr.snapshots"       # 复用 wdr 的，不新写
+WINDOW_SCRIPT = "wdr.window"             # 复用
+TIME_SCRIPT = "waitevent.instance_time"  # 本 skill 新增
+EVENTS_SCRIPT = "waitevent.events"       # 本 skill 新增
+
+
+@dataclass(frozen=True)
+class Window:
+    begin: int
+    end: int
+    label: str
+    breakdown: object          # dbtime.Breakdown
+    events: list
+
+
+@dataclass(frozen=True)
+class WaitReport:
+    windows: list = field(default_factory=list)
+    findings: list = field(default_factory=list)
+
+
+def _pick_snapshots(runner, snapshots: int) -> list:
+    """取最近 N 个快照 id，升序。不足 2 个就抛 —— 算不出窗口。"""
+    rows = runner.run(SNAPSHOTS_SCRIPT, {"limit": int(snapshots)})
+    ids = sorted(as_int(r["snapshot_id"]) for r in rows)
+    if len(ids) < 2:
+        raise ValueError(
+            "至少需要 2 个快照才能算出一个窗口，当前只有 %d 个。"
+            "确认 WDR 快照已开启（见 gaussdb-wdr）。" % len(ids))
+    return ids[-int(snapshots):]
+
+
+def collect(runner, snapshots: int = DEFAULT_SNAPSHOTS,
+            begin: int = 0, end: int = 0) -> WaitReport:
+    if begin and end:
+        pairs = [(int(begin), int(end))]
+    else:
+        ids = _pick_snapshots(runner, snapshots)
+        pairs = list(zip(ids, ids[1:]))     # 相邻两两成对
+    windows, findings = [], []
+    for b, e in pairs:
+        time_rows = runner.run(TIME_SCRIPT, {"b": b, "e": e})
+        event_rows = runner.run(EVENTS_SCRIPT, {"b": b, "e": e, "top": 20})
+        bd = dbtime.breakdown(time_rows)
+        win = runner.run(WINDOW_SCRIPT, {"begin": b, "end": e})
+        label = ("%s → %s" % (win[0]["b_start"], win[0]["e_start"])) if win else "%d→%d" % (b, e)
+        windows.append(Window(begin=b, end=e, label=label,
+                              breakdown=bd, events=event_rows))
+        findings.extend(dbtime.judge_dbtime(bd, event_rows))
+    return WaitReport(windows=windows, findings=findings)
+```
+
+`render_markdown(rep)` 要点：
+- 每个窗口一节，标题是 `label`
+- `breakdown.restarted` 为 True 的窗口**只写「该窗口跨越了实例重启，数据不可用」**，不列任何百分比
+- 其余窗口按 Task 10 定下的方式渲染（树或平铺）
+- 等待事件按 `wait_class` 分组列出，每类下钻到 event
+- 报告末尾提示：`锁的详细堵塞关系见 gaussdb-lockwait`
+
+`main()` 的 argparse：
+
+```python
+ap.add_argument("-c", "--conn", default="", help="连接名（省略则用 gaussdb-login 建立的会话）")
+ap.add_argument("--snapshots", type=int, default=DEFAULT_SNAPSHOTS, help="取最近几个快照")
+ap.add_argument("--begin", type=int, default=0, help="起始快照 ID（与 --end 一起给）")
+ap.add_argument("--end", type=int, default=0, help="结束快照 ID")
+ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
+ap.add_argument("--timeout", type=int, default=None)
+```
+
+`collect()` 抛的 `ValueError`（快照不足）要在 `main()` 里捕获并 `return 2`，消息原样打到 stderr。
+
+- [ ] **Step 5: 跑测试确认通过**
+
+```bash
+ssh sqlrush@192.168.128.1 "cd ~/gh_skill/opencode_skill-main-v2-0729 && python3 -m pytest tests/test_waitevent_entry_units.py -q"
+```
+
+预期：全部 passed
+
+- [ ] **Step 6: 提交**
+
+```bash
+ssh sqlrush@192.168.128.1 "cd ~/gh_skill/opencode_skill-main-v2-0729 && git add skills/gaussdb-waitevent tests/test_waitevent_entry_units.py && git commit -q -m 'feat(waitevent): skill 主体 —— 多窗口 DB time 分解 + 等待事件下钻'"
+```
 
 ---
 
@@ -2063,13 +2328,23 @@ CLI：`waitevent.py -c <conn> [--snapshots 6] [--begin ID --end ID] [--format js
 - Create: `skills/gaussdb-waitevent/SKILL.md`
 - Create: `tools/matrix_waitevent.py`
 
-- [ ] **Step 1: 写 SKILL.md**（7 条结构约束同 Task 8）
+- [ ] **Step 1: 写 SKILL.md**
+
+照 `skills/gaussdb-topsql/SKILL.md` 的骨架。**必须满足 `tests/test_skill_md_structure_units.py` 的 7 条**：
+
+1. YAML frontmatter 含 `name: gaussdb-waitevent`（必须等于目录名）与 `description`
+2. `\n## 安全红线` 恰好出现 1 次
+3. 明文口令那条恰好 1 次，且正文含 `credential_cli`
+4. `KB-CONTRACT:BEGIN` / `KB-CONTRACT:END` 成对（或都不出现）
+5. 无 `<<<<<<<` / `>>>>>>>` / `=======` 冲突标记
+6. 无 4 个连续换行（`\n\n\n\n`）
+7. 正文提到 `gaussdb-login`
 
 内容要点必须包含：
-- **DB time 各项不是互斥的加和**，以及本实例上的验证结论（来自 Task 10）
-- **STATUS/wait cmd 已被排除**及理由
-- 时间模型里没有锁，锁的耗时来自等待事件
-- 快照跨实例重启时该窗口不可用
+- **DB time 各项不是互斥的加和**，以及本实例上的验证结论（把 `tools/probe_dbtime_containment.py` 实测出的数字写进来）
+- **STATUS/wait cmd 已被排除**及理由（实测累计 681262104468 us，不排除会得出「99.9% 花在 STATUS」这种无用且误导的结论）
+- 时间模型里**没有锁**这一项，锁的耗时来自等待事件
+- 快照跨实例重启时该窗口不可用（负增量算出的比例是假的）
 
 - [ ] **Step 2: 跑结构测试**
 
@@ -2077,15 +2352,44 @@ CLI：`waitevent.py -c <conn> [--snapshots 6] [--begin ID --end ID] [--format js
 ssh sqlrush@192.168.128.1 "cd ~/gh_skill/opencode_skill-main-v2-0729 && python3 -m pytest tests/test_skill_md_structure_units.py -q"
 ```
 
-- [ ] **Step 3: 写并跑双模式矩阵**（照 Task 9 Step 3 的表格，用例换成 waitevent 的参数）
+- [ ] **Step 3: 写双模式矩阵**
+
+创建 `tools/matrix_waitevent.py`。结构：同一批用例在 `api`（`-c og-grmp`，`GSDB_HOME=~/.gdaa` 且从 `~/.gdaa/grmp.env` 读令牌）与 `gsql`（`-c og-gsql`，`GSDB_HOME=/tmp/gsql-probe`，`PATH` 前置 `/tmp/gsql-probe/bin`）两种模式下各跑一次真实进程，逐例断言 rc 与关键字。
+
+**skill 目录按全局约束读环境变量：**
+
+```python
+SK = os.environ.get("GDAA_SKILLS_DIR",
+                    os.path.expanduser("~/.config/opencode/skills-dev"))
+```
+
+**两条所有用例都要过的底线**：输出里不得出现 `Traceback`；期望被拒的用例不得返回 0。
+
+用例表：
+
+| 用例 | 参数 | 期望 |
+|---|---|---|
+| 默认窗口 | 无 | rc=0，输出含 `DB_TIME` |
+| 指定快照数 | `--snapshots 3` | rc=0 |
+| 显式窗口 | `--begin <倒数第二个 id> --end <最后一个 id>` | rc=0 |
+| JSON 输出 | `--format json` | rc=0，合法 JSON，`skill` 字段为 `gaussdb-waitevent`，每条 finding 的 `severity` 是 int |
+| 快照数为 1 | `--snapshots 1` | rc=2，stderr 含「至少需要 2 个快照」 |
+| 显式超时 | `--timeout 5` | rc=0；**api 模式** stderr 含「无法设置语句超时」，**gsql 模式**不含 |
+| 不给超时 | 无 | rc=0，stderr 不含「无法设置语句超时」 |
+| 连接名不存在 | `-c no_such_conn_zzz` | rc=2，无 Traceback |
+| 跨模式一致 | 默认参数 | 两模式的 findings 的 `code` 集合应一致（数值可不同） |
+
+真实快照 id 从 `wdr.snapshots` 取，不要硬编码。
+
+- [ ] **Step 4: 部署到 skills-dev 后跑矩阵**
 
 ```bash
-ssh sqlrush@192.168.128.1 "cd ~/gh_skill && bash opencode_skill-main-v2-0729/install-opencode.sh --dest ~/.config/opencode/skills >/dev/null 2>&1 && cd /tmp && python3 ~/gh_skill/opencode_skill-main-v2-0729/tools/matrix_waitevent.py"
+ssh sqlrush@192.168.128.1 "cd ~/gh_skill && bash opencode_skill-main-v2-0729/install-opencode.sh --dest ~/.config/opencode/skills-dev >/dev/null 2>&1 && cd /tmp && python3 ~/gh_skill/opencode_skill-main-v2-0729/tools/matrix_waitevent.py"
 ```
 
 预期：失败项 0
 
-- [ ] **Step 4: 提交**
+- [ ] **Step 5: 提交**
 
 ```bash
 ssh sqlrush@192.168.128.1 "cd ~/gh_skill/opencode_skill-main-v2-0729 && git add skills/gaussdb-waitevent/SKILL.md tools/matrix_waitevent.py && git commit -q -m 'docs(waitevent): SKILL.md + 双模式矩阵'"
@@ -2113,15 +2417,114 @@ ssh sqlrush@192.168.128.1 "cd ~/gh_skill/opencode_skill-main-v2-0729 && git add 
 
 **`oldest_xmin` 是 R4 的数据来源**——死元组被老事务卡住时，手工 VACUUM 是无效建议。
 
-- [ ] **Step 1–6**：同 Task 4 的节奏。测试至少断言：
-- 四条脚本都 `readonly is True`
-- `dead_tuples.yaml` 返回 `reltuples`（算触发线要用）和 `table_bytes`（R3 的表大小门槛要用）
-- `dead_tuples.yaml` 排除系统 schema（照 `scripts/registry/health/bloat.yaml` 的 `NOT IN ('pg_catalog','information_schema','snapshot','dbe_perf','dbe_pldeveloper','cstore')`）
-- `oldest_xmin.yaml` 同时覆盖 `pg_stat_activity`、`pg_prepared_xacts`、`pg_replication_slots` 三个来源
+- [ ] **Step 1: 写失败的测试**
 
-真库验证时确认 `gsbench_e2e_20260801_100g.plan_data` 出现在结果里且 `n_dead_tup` 约 2009 万。
+创建 `tests/test_vacuum_registry_units.py`：
 
-提交信息：`feat(vacuum): 注册脚本 —— 含 oldest_xmin，长事务卡住回收时 VACUUM 是无效建议`
+```python
+"""注册脚本的形态检查 —— 白名单模式下这四条是 vacuum 的全部取数来源。"""
+import pathlib
+import sys
+
+import pytest
+
+_ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_ROOT))
+_REG = _ROOT / "scripts" / "registry"
+
+from common.grmp.script import load_script  # noqa: E402
+
+_SCRIPTS = [
+    ("vacuum/dead_tuples.yaml", "vacuum.dead_tuples"),
+    ("vacuum/autovac_settings.yaml", "vacuum.autovac_settings"),
+    ("vacuum/autovac_workers.yaml", "vacuum.autovac_workers"),
+    ("vacuum/oldest_xmin.yaml", "vacuum.oldest_xmin"),
+]
+
+
+@pytest.mark.parametrize("rel,name", _SCRIPTS)
+def test_script_loads_and_is_readonly(rel, name):
+    rec = load_script(_REG / rel)
+    assert rec.name == name
+    assert rec.readonly is True, "%s 不是只读 —— 诊断脚本不该能写" % rel
+
+
+def test_dead_tuples_returns_what_the_rules_need():
+    """列名是**契约**。少一列，对应的规则会静默失效。"""
+    sql = load_script(_REG / "vacuum/dead_tuples.yaml").script_content
+    for col in ("n_live_tup", "n_dead_tup", "reltuples", "table_bytes",
+                "last_autovacuum_age_s", "vacuum_count", "autovacuum_count",
+                "autovac_enabled", "reloptions"):
+        assert col in sql, "dead_tuples.yaml 少了列 %s" % col
+
+
+def test_dead_tuples_excludes_system_schemas():
+    """系统表的死元组不是用户该管的事，混进来会淹没真正的风险表。"""
+    sql = load_script(_REG / "vacuum/dead_tuples.yaml").script_content
+    for s in ("pg_catalog", "information_schema", "snapshot", "dbe_perf"):
+        assert s in sql, "没排除 %s" % s
+
+
+def test_settings_covers_the_trigger_formula_inputs():
+    """触发线 = threshold + scale_factor × reltuples，两个参数都得取得到。"""
+    sql = load_script(_REG / "vacuum/autovac_settings.yaml").script_content
+    assert "autovacuum" in sql
+
+
+def test_oldest_xmin_covers_all_three_sources():
+    """**R4 的数据来源。** 少一个来源就会漏掉一类卡住回收的原因，
+    而漏掉的表现是「建议手工 VACUUM」—— 一条跑了也没用的建议。"""
+    sql = load_script(_REG / "vacuum/oldest_xmin.yaml").script_content
+    for src in ("pg_stat_activity", "pg_prepared_xacts", "pg_replication_slots"):
+        assert src in sql, "oldest_xmin.yaml 少了来源 %s" % src
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+```bash
+ssh sqlrush@192.168.128.1 "cd ~/gh_skill/opencode_skill-main-v2-0729 && python3 -m pytest tests/test_vacuum_registry_units.py -q"
+```
+
+预期：文件不存在导致的失败
+
+- [ ] **Step 3: 写四条 yaml**
+
+格式照 `scripts/registry/health/bloat.yaml`（`name` / `description` / `readonly: true` / `sql` / `params`）。要点：
+
+- `dead_tuples.yaml`：`pg_stat_user_tables t JOIN pg_class c ON c.oid = t.relid JOIN pg_namespace n`，`table_bytes` 用 `pg_total_relation_size(c.oid)`，`autovac_enabled` 用 `CASE WHEN 'autovacuum_enabled=false' = ANY(c.reloptions) THEN false ELSE true END`，`reloptions` 用 `COALESCE(array_to_string(c.reloptions, ','), '')`，`last_autovacuum_age_s` 用 `EXTRACT(EPOCH FROM (now()-t.last_autovacuum))`（**为空时返回 NULL，不要 COALESCE 成 0** —— 0 秒和「从没跑过」是相反的意思），排除系统 schema，`ORDER BY t.n_dead_tup DESC LIMIT {{limit}}`
+- `autovac_settings.yaml`：`SELECT name, setting FROM pg_settings WHERE name LIKE 'autovacuum%' OR name LIKE 'vacuum_cost%' ORDER BY name`，无参数
+- `autovac_workers.yaml`：`SELECT pid, COALESCE(sessionid,0) AS sessionid, EXTRACT(EPOCH FROM (now()-xact_start)) AS xact_age_s, COALESCE(query,'') AS query FROM pg_stat_activity WHERE query LIKE 'autovacuum:%'`，无参数
+- `oldest_xmin.yaml`：三段 `UNION ALL`，每段给 `source`（`'long_xact'` / `'prepared_xact'` / `'replication_slot'`）、`identifier`、`xmin_age_s`、`detail`
+
+- [ ] **Step 4: 跑测试确认通过**
+
+```bash
+ssh sqlrush@192.168.128.1 "cd ~/gh_skill/opencode_skill-main-v2-0729 && python3 -m pytest tests/test_vacuum_registry_units.py -q"
+```
+
+- [ ] **Step 5: 四条脚本在真库上各跑一次**
+
+```bash
+ssh sqlrush@192.168.128.1 'cd ~/gh_skill/opencode_skill-main-v2-0729 && GSDB_HOME=~/.gdaa python3 -c "
+import sys; sys.path.insert(0, \".\")
+from common import access
+r = access.for_conn(\"og\")
+rows = r.run(\"vacuum.dead_tuples\", {\"limit\": 5})
+for x in rows[:3]:
+    print(x[\"schema\"], x[\"table\"], x[\"n_dead_tup\"], x[\"table_bytes\"])
+print(\"settings:\", len(r.run(\"vacuum.autovac_settings\", {})))
+print(\"workers:\", len(r.run(\"vacuum.autovac_workers\", {})))
+print(\"xmin:\", len(r.run(\"vacuum.oldest_xmin\", {})))
+"'
+```
+
+预期：`gsbench_e2e_20260801_100g.plan_data` 出现在前几行，`n_dead_tup` 约 2009 万；settings 约 12 条。**不要对它执行 VACUUM。**
+
+- [ ] **Step 6: 提交**
+
+```bash
+ssh sqlrush@192.168.128.1 "cd ~/gh_skill/opencode_skill-main-v2-0729 && git add scripts/registry/vacuum tests/test_vacuum_registry_units.py && git commit -q -m 'feat(vacuum): 注册脚本 —— 含 oldest_xmin，长事务卡住回收时 VACUUM 是无效建议'"
+```
 
 ---
 
@@ -2154,11 +2557,193 @@ ssh sqlrush@192.168.128.1 "cd ~/gh_skill/opencode_skill-main-v2-0729 && git add 
 - **R4**：`oldest_xmin` 里有一条 3600 秒的长事务 → 命中，且 finding 的 evidence **必须包含「VACUUM 现在做也没用」这层意思**
 - **实测案例**：`plan_data`（活 20178297 / 死 20087028 / `autovacuum_count=0` / `last_autovacuum=None`）→ 同时命中 R1 与 R3
 
-- [ ] **Step 2–5**：跑失败 → 写实现 → 跑通过 → 提交
+测试文件 `tests/test_vacuum_rules_units.py` 的骨架：
 
-`evaluate()` 的实现要点：**R4 命中时，其余规则照常命中但报告措辞要改**——不是「不报 R1/R3」，而是在建议里明说「先处理阻塞回收的事务，否则 VACUUM 跑了也回收不掉」。
+```python
+"""autovacuum 触发线与四条手工清理规则 —— 纯函数，不连库。"""
+import pathlib
+import sys
 
-提交信息：`feat(vacuum): 触发线实算 + 四条清理规则 —— 每张表列出命中了哪几条`
+import pytest
+
+_ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_ROOT))
+sys.path.insert(0, str(_ROOT / "skills" / "gaussdb-vacuum" / "scripts"))
+
+from common.finding import Severity  # noqa: E402
+from rules import default_thresholds, evaluate, judge_tables, trigger_line  # noqa: E402
+
+_SETTINGS = {"autovacuum_vacuum_threshold": "50",
+             "autovacuum_vacuum_scale_factor": "0.2",
+             "autovacuum_naptime": "30"}
+MB = 1024 * 1024
+
+
+def _tbl(**kw):
+    base = dict(schema="public", table="t", n_live_tup=1000, n_dead_tup=100,
+                reltuples=1000, table_bytes=200 * MB,
+                last_autovacuum_age_s=None, last_vacuum_age_s=None,
+                vacuum_count=0, autovacuum_count=0,
+                autovac_enabled=True, reloptions="")
+    base.update(kw)
+    return base
+
+
+def test_trigger_line_uses_the_real_gucs():
+    """50 + 0.2 × 1000 = 250。参数从 pg_settings 实读，不写死。"""
+    assert trigger_line(1000, _SETTINGS, "") == 250.0
+
+
+def test_table_level_reloptions_override_the_global_scale_factor():
+    assert trigger_line(1000, _SETTINGS,
+                        "autovacuum_vacuum_scale_factor=0.05") == 100.0
+
+
+def test_table_level_threshold_also_overrides():
+    assert trigger_line(1000, _SETTINGS,
+                        "autovacuum_vacuum_threshold=500") == 700.0
+
+
+def test_r1_hits_when_over_the_line_and_never_autovacuumed():
+    hit = evaluate(_tbl(n_dead_tup=300, last_autovacuum_age_s=None),
+                   _SETTINGS, [], default_thresholds())
+    assert "R1" in hit
+
+
+def test_r1_hits_when_over_the_line_and_overdue():
+    hit = evaluate(_tbl(n_dead_tup=300, last_autovacuum_age_s=7200),
+                   _SETTINGS, [], default_thresholds())
+    assert "R1" in hit
+
+
+def test_r1_does_not_hit_when_autovacuum_just_ran():
+    """刚跑过就不是「没跟上」—— 死元组还在只是因为还没来得及。"""
+    hit = evaluate(_tbl(n_dead_tup=300, last_autovacuum_age_s=60),
+                   _SETTINGS, [], default_thresholds())
+    assert "R1" not in hit
+
+
+def test_r1_does_not_hit_below_the_trigger_line():
+    hit = evaluate(_tbl(n_dead_tup=100, last_autovacuum_age_s=None),
+                   _SETTINGS, [], default_thresholds())
+    assert "R1" not in hit
+
+
+def test_r2_hits_when_autovacuum_disabled_on_the_table():
+    hit = evaluate(_tbl(autovac_enabled=False,
+                        reloptions="autovacuum_enabled=false"),
+                   _SETTINGS, [], default_thresholds())
+    assert "R2" in hit
+
+
+def test_r3_hits_on_high_ratio_and_big_table():
+    hit = evaluate(_tbl(n_live_tup=1000, n_dead_tup=1000, table_bytes=200 * MB),
+                   _SETTINGS, [], default_thresholds())
+    assert "R3" in hit
+
+
+def test_r3_does_not_hit_on_a_tiny_table():
+    """比例再高，1 MB 的表也不值得让人半夜起来处理。"""
+    hit = evaluate(_tbl(n_live_tup=1000, n_dead_tup=1000, table_bytes=1 * MB),
+                   _SETTINGS, [], default_thresholds())
+    assert "R3" not in hit
+
+
+def test_r4_hits_when_an_old_transaction_blocks_reclaim():
+    xmin = [{"source": "long_xact", "identifier": "2259",
+             "xmin_age_s": "3600", "detail": "idle in transaction"}]
+    hit = evaluate(_tbl(n_dead_tup=300), _SETTINGS, xmin, default_thresholds())
+    assert "R4" in hit
+
+
+def test_r4_evidence_says_vacuum_would_not_help():
+    """**这是 R4 存在的全部理由。** 不说这句，用户会去跑一条没用的 VACUUM。"""
+    xmin = [{"source": "long_xact", "identifier": "2259",
+             "xmin_age_s": "3600", "detail": "idle in transaction"}]
+    fs = judge_tables([_tbl(n_dead_tup=300)], _SETTINGS, xmin,
+                      default_thresholds())
+    r4 = [f for f in fs if "R4" in f.evidence or f.code.endswith("XMIN_BLOCKED")]
+    assert r4, "R4 没产出 finding"
+    assert "回收不掉" in r4[0].evidence or "也没用" in r4[0].evidence
+
+
+def test_the_measured_case_hits_r1_and_r3():
+    """og5 上的真实案例：plan_data 活 20178297 / 死 20087028，从没 autovacuum 过。"""
+    hit = evaluate(_tbl(schema="gsbench_e2e_20260801_100g", table="plan_data",
+                        n_live_tup=20178297, n_dead_tup=20087028,
+                        reltuples=20178297, table_bytes=8 * 1024 * MB,
+                        last_autovacuum_age_s=None, autovacuum_count=0),
+                   _SETTINGS, [], default_thresholds())
+    assert "R1" in hit and "R3" in hit
+
+
+def test_crit_ratio_is_more_severe_than_warn_ratio():
+    fs_warn = judge_tables([_tbl(n_live_tup=1000, n_dead_tup=300,
+                                 table_bytes=200 * MB)],
+                           _SETTINGS, [], default_thresholds())
+    fs_crit = judge_tables([_tbl(n_live_tup=1000, n_dead_tup=1000,
+                                 table_bytes=200 * MB)],
+                           _SETTINGS, [], default_thresholds())
+    assert max(f.severity for f in fs_crit) > max(f.severity for f in fs_warn)
+
+
+def test_clean_table_produces_no_findings():
+    assert judge_tables([_tbl(n_dead_tup=10, last_autovacuum_age_s=30)],
+                        _SETTINGS, [], default_thresholds()) == []
+```
+
+- [ ] **Step 2: 跑测试确认失败**
+
+```bash
+ssh sqlrush@192.168.128.1 "cd ~/gh_skill/opencode_skill-main-v2-0729 && python3 -m pytest tests/test_vacuum_rules_units.py -q"
+```
+
+预期：`ModuleNotFoundError: No module named 'rules'`
+
+- [ ] **Step 3: 写 `thresholds.py` 与 `rules.py`**
+
+`thresholds.py`：
+
+```python
+"""手工清理判定的阈值 —— 集中放这里，可调。
+
+初值的依据：naptime 是 30 秒，autovac_overdue_s 取 3600（= 120 个 naptime）——
+autovacuum 一轮都没轮到这张表上，才算「没跟上」，而不是「这一秒还没跑」。
+"""
+from dataclasses import dataclass
+
+MB = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class Thresholds:
+    autovac_overdue_s: float = 3600.0
+    dead_ratio_warn: float = 0.20
+    dead_ratio_crit: float = 0.40
+    min_table_bytes: int = 100 * MB
+
+
+def default_thresholds() -> Thresholds:
+    return Thresholds()
+```
+
+`rules.py` 的实现要点：
+- `trigger_line()`：先取全局 `autovacuum_vacuum_threshold` / `autovacuum_vacuum_scale_factor`，再用 `reloptions` 里同名项覆盖（`reloptions` 是逗号分隔的 `k=v` 串）
+- `evaluate()` 返回命中的规则码列表，四条规则**互不短路**——一张表可以同时命中 R1/R3/R4
+- `judge_tables()` 把命中转成 `Finding`：`dimension="Dead Tuples"`，`code` 形如 `VACUUM_OVERDUE`(R1) / `VACUUM_DISABLED`(R2) / `VACUUM_DEAD_RATIO`(R3) / `VACUUM_XMIN_BLOCKED`(R4)；R3 按 `dead_ratio_crit` 决定 WARN 还是 CRITICAL
+- **R4 命中时，其余规则照常命中，但每条 finding 的 evidence 都要缀上**「注意：会话 X 的事务卡住了回收，现在跑 VACUUM 也回收不掉，先处理该事务」——不是「不报 R1/R3」，而是让建议不至于误导
+
+- [ ] **Step 4: 跑测试确认通过**
+
+```bash
+ssh sqlrush@192.168.128.1 "cd ~/gh_skill/opencode_skill-main-v2-0729 && python3 -m pytest tests/test_vacuum_rules_units.py -q"
+```
+
+- [ ] **Step 5: 提交**
+
+```bash
+ssh sqlrush@192.168.128.1 "cd ~/gh_skill/opencode_skill-main-v2-0729 && git add skills/gaussdb-vacuum/scripts/rules.py skills/gaussdb-vacuum/scripts/thresholds.py tests/test_vacuum_rules_units.py && git commit -q -m 'feat(vacuum): 触发线实算 + 四条清理规则 —— 每张表列出命中了哪几条'"
+```
 
 ---
 
@@ -2178,7 +2763,9 @@ CLI：`vacuum.py -c <conn> [--limit 20] [--format json] [--timeout N]`
 
 报告三段：风险表（含触发线与命中的规则）→ autovacuum 近期运行情况 → 手工清理评估。
 
-- [ ] **Step 1: 写失败的测试**（照 Task 7 的用例组织）
+- [ ] **Step 1: 写失败的测试**
+
+创建 `tests/test_vacuum_entry_units.py`。用假 runner（一个类，`run(script, values)` 按脚本名返回预置行），覆盖下列各点
 
 必须含：
 - 无风险表时 → 明确写「未发现死元组风险表」，**不是空白**
@@ -2187,9 +2774,65 @@ CLI：`vacuum.py -c <conn> [--limit 20] [--format json] [--timeout N]`
 - **报告里不得出现任何空间回收量的预估**（断言输出不含「可回收」「预计释放」这类字样）
 - `--format json` 的 `skill == "gaussdb-vacuum"`
 
-- [ ] **Step 2: 写实现与 SKILL.md**（SKILL.md 的 7 条结构约束同 Task 8）
+- [ ] **Step 2: 写实现与 SKILL.md**
 
-SKILL.md 安全红线除明文口令那条外，加一条：**本 skill 不执行 VACUUM，只评估**。
+`vacuum.py` 的骨架（sys.path 两段、argparse、错误分类、退出码）**逐字照抄 `skills/gaussdb-topsql/scripts/topsql.py`**。本任务特有的部分：
+
+```python
+SKILL = "gaussdb-vacuum"
+DIM = "Dead Tuples"
+
+DEAD_SCRIPT = "vacuum.dead_tuples"
+SETTINGS_SCRIPT = "vacuum.autovac_settings"
+WORKERS_SCRIPT = "vacuum.autovac_workers"
+XMIN_SCRIPT = "vacuum.oldest_xmin"
+
+
+@dataclass(frozen=True)
+class VacuumReport:
+    tables: list = field(default_factory=list)      # 每项含原行 + trigger_line + hits
+    settings: dict = field(default_factory=dict)
+    workers: list = field(default_factory=list)
+    oldest_xmin: list = field(default_factory=list)
+    findings: list = field(default_factory=list)
+
+
+def collect(runner, limit: int, th) -> VacuumReport:
+    settings = {r["name"]: r["setting"]
+                for r in runner.run(SETTINGS_SCRIPT, {})}
+    raw = runner.run(DEAD_SCRIPT, {"limit": int(limit)})
+    workers = runner.run(WORKERS_SCRIPT, {})
+    xmin = runner.run(XMIN_SCRIPT, {})
+    tables = []
+    for row in raw:
+        line = rules.trigger_line(as_float(row["reltuples"]), settings,
+                                  row.get("reloptions") or "")
+        tables.append(dict(row, trigger_line=line,
+                           hits=rules.evaluate(row, settings, xmin, th)))
+    return VacuumReport(tables=tables, settings=settings, workers=workers,
+                        oldest_xmin=xmin,
+                        findings=rules.judge_tables(raw, settings, xmin, th))
+```
+
+`render_markdown(rep)` 三段：
+
+1. **风险表** —— 每行：schema.table、活/死元组、死元组比例、表大小、**触发线**、`last_autovacuum`、**命中的规则码**。空表时写「未发现死元组风险表 —— 查询正常返回，当前没有超过阈值的表」，**不能留空白**
+2. **autovacuum 近期运行情况** —— 关键 GUC（`autovacuum` / `naptime` / `max_workers` / `mode` / `threshold` / `scale_factor`）与当前正在跑的 worker；一个 worker 都没有时明说「当前没有正在运行的 autovacuum 线程」
+3. **手工清理评估** —— 逐表列出命中了哪几条规则及各自含义；R4 命中时**先写那句警告**再列表
+
+**报告里绝不出现空间回收量的预估**（「可回收 X GB」「预计释放」这类）——那要真跑才知道，推测值会被当成承诺。
+
+SKILL.md 照 `skills/gaussdb-topsql/SKILL.md` 的骨架，**必须满足 `tests/test_skill_md_structure_units.py` 的 7 条**：
+
+1. YAML frontmatter 含 `name: gaussdb-vacuum`（必须等于目录名）与 `description`
+2. `\n## 安全红线` 恰好出现 1 次
+3. 明文口令那条恰好 1 次，且正文含 `credential_cli`
+4. `KB-CONTRACT:BEGIN` / `KB-CONTRACT:END` 成对（或都不出现）
+5. 无 `<<<<<<<` / `>>>>>>>` / `=======` 冲突标记
+6. 无 4 个连续换行（`\n\n\n\n`）
+7. 正文提到 `gaussdb-login`
+
+安全红线除明文口令那条外，加一条：**本 skill 不执行 VACUUM，只评估**。
 
 - [ ] **Step 3: 跑单测 + 结构测试**
 
@@ -2200,7 +2843,7 @@ ssh sqlrush@192.168.128.1 "cd ~/gh_skill/opencode_skill-main-v2-0729 && python3 
 - [ ] **Step 4: 在真库上验证实测案例**
 
 ```bash
-ssh sqlrush@192.168.128.1 'export GSDB_HOME=~/.gdaa; SK=~/.config/opencode/skills
+ssh sqlrush@192.168.128.1 'export GSDB_HOME=~/.gdaa; SK=~/.config/opencode/skills-dev
 cd ~/gh_skill && bash opencode_skill-main-v2-0729/install-opencode.sh --dest $SK >/dev/null 2>&1
 python3 $SK/gaussdb-vacuum/scripts/vacuum.py -c og | grep -A2 plan_data'
 ```
@@ -2440,7 +3083,7 @@ ssh sqlrush@192.168.128.1 "cd ~/gh_skill/opencode_skill-main-v2-0729 && git add 
 - [ ] **Step 3: 部署并跑**
 
 ```bash
-ssh sqlrush@192.168.128.1 "cd ~/gh_skill && bash opencode_skill-main-v2-0729/install-opencode.sh --dest ~/.config/opencode/skills >/dev/null 2>&1 && cd /tmp && python3 ~/gh_skill/opencode_skill-main-v2-0729/tools/matrix_health_aggregate.py"
+ssh sqlrush@192.168.128.1 "cd ~/gh_skill && bash opencode_skill-main-v2-0729/install-opencode.sh --dest ~/.config/opencode/skills-dev >/dev/null 2>&1 && cd /tmp && python3 ~/gh_skill/opencode_skill-main-v2-0729/tools/matrix_health_aggregate.py"
 ```
 
 预期：失败项 0
@@ -2465,7 +3108,7 @@ ssh sqlrush@192.168.128.1 "cd ~/gh_skill/opencode_skill-main-v2-0729 && git add 
 - [ ] **Step 6: 重新部署，确认版本戳对得上**
 
 ```bash
-ssh sqlrush@192.168.128.1 "cd ~/gh_skill && bash opencode_skill-main-v2-0729/install-opencode.sh --dest ~/.config/opencode/skills >/dev/null 2>&1 && head -6 ~/.config/opencode/skills/.installed-version"
+ssh sqlrush@192.168.128.1 "cd ~/gh_skill && bash opencode_skill-main-v2-0729/install-opencode.sh --dest ~/.config/opencode/skills-dev >/dev/null 2>&1 && head -6 ~/.config/opencode/skills-dev/.installed-version"
 ```
 
 预期：`commit` 与 `git log -1` 一致，`skills:` 列表里出现三个新 skill。
