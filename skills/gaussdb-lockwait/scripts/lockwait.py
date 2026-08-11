@@ -264,50 +264,125 @@ def render_markdown(rep: LockReport) -> str:
     return "\n".join(out)
 
 
+def _direct_blockers(edges: list) -> dict:
+    """(waiter, blocker) 边表 → waiter → 它被记录到的**全部**直接阻塞者。
+
+    与 `chain._blocker_of()` 只留第一条边（`setdefault`）的差别是有意的，
+    因为两者回答的不是同一个问题：chain 要给出"根是谁"这**一个**答案，
+    只能挑一条边；这里要回答的是"处理掉根会话之后，这个 holder 会不会
+    跟着解开"——那是一句会写进恢复语句小节的**肯定断言**，只要有任何
+    一条被记录下来的等待边不通向那个根，这句断言就不成立。在这里跟着
+    丢掉第二条边，只会让断言看起来成立。
+    """
+    out: dict = {}
+    for waiter, blocker in edges:
+        bucket = out.setdefault(waiter, [])
+        if blocker not in bucket:
+            bucket.append(blocker)
+    return out
+
+
+def _released_by_killing(blockers: dict, node: int, target: int) -> bool:
+    """只凭阻塞链数据判断：处理掉 `target` 之后，`node` 是否**必定**不再
+    卡在等待上（因而它持有的锁会随之释放）。
+
+    True 的充要条件是：从 node 出发，**每一条**被记录下来的等待边最终都
+    落到 target 上。两种情况一律返回 False，都是"数据没说"而不是"数据说
+    了不"：
+
+      - node 根本没被记录成等待者（`blockers` 里没有它）——chain 没说它
+        在等谁，就不能替它断言"它会跟着解开"。**这正是 review 给出的那
+        个复现**：一个 waiter 同时被 200 和 201 独立挡着，chain 只记下
+        200；201 自己不在等任何人，杀掉 200 之后它照样挡着。
+      - 顺着边绕回了已经走过的会话（环）却没碰到 target——环里的会话互相
+        等着，处理 target 解不开它们。
+
+    不用递归：真实的阻塞链很短，但报告不能因为一条畸形的长链就抛
+    RecursionError。
+    """
+    stack = [(node, frozenset())]
+    while stack:
+        cur, visiting = stack.pop()
+        if cur == target:
+            continue                      # 这条分支落到 target 上了
+        if cur in visiting:
+            return False                  # 绕回来了，没碰到 target
+        waiting_on = blockers.get(cur)
+        if not waiting_on:
+            return False                  # chain 没说它在等谁
+        deeper = visiting | {cur}
+        for nxt in waiting_on:
+            stack.append((nxt, deeper))
+    return True
+
+
 def _classify_pairs(rep: LockReport) -> dict:
     """把 `rep.pairs` 里**每一对**都归到唯一一类——这是一个全函数
-    （total function）：并集覆盖全部 pairs，四类互不重叠，任何一对都不
+    （total function）：并集覆盖全部 pairs，各类互不重叠，任何一对都不
     会因为落在两类判据的缝隙里而消失。
 
-    上两轮的教训：先是只分 confirmed/unconfirmed 两类，遗漏了"根已确认
+    前几轮的教训：先是只分 confirmed/unconfirmed 两类，遗漏了"根已确认
     但没出现在 pairs 里"的第三种情况；后来在渲染层用 `kills`/`reasons`
     两个聚合状态去判断该不该提示，又在"两条链混在一份报告里、一条成功
     生成语句、另一条恰好落进第三类"时失效——聚合判断只关心"整体有没有
-    话可说"，看不见"某一条具体的 pair 有没有被照顾到"。这次把判断挪到
-    最细的粒度：**每一对**在四类里必属其一，渲染层只管照着这四类如实
-    转述，不再做任何整体性的"还有没有话说"式推断。
+    话可说"，看不见"某一条具体的 pair 有没有被照顾到"。于是把判断挪到
+    最细的粒度：**每一对**必属其一，渲染层只管照着这些类如实转述，不再
+    做任何整体性的"还有没有话说"式推断。
 
-    四类（对每一对 (waiter, holder)）：
+    round 4 补上的是另一半：不但"不能少说"，而且"不能多说"。上一版把
+    `intermediate` 的判据写成"这个 waiter 的根**恰好**也出现在某一对的
+    holder 列里"，从来没有验证过**这一对自己的 holder** 与那个根之间有
+    任何关系——于是会对一个独立的共同阻塞者说"处理掉根就顺带解决了它"，
+    而事实是杀掉根之后它照样挡着。根源是两条查询的不对称：
+    `lockwait.pairs`（`pg_locks` 自连接）一个 waiter 可以有好几个真冲突
+    的 holder（一条 DDL 等 AccessExclusive、被好几个 AccessShare 读者
+    同时挡住，是最平常的现场），而 `lockwait.chain`
+    （`pg_thread_wait_status`）每个等待者只记一个阻塞者。现在这句"已被
+    覆盖"要过 `_released_by_killing()` 那一关：数据连不上就不许说。
+
+    五类（对每一对 (waiter, holder)）：
 
       root          holder 本身就是（某条链的）确认根——是 kill 语句的
                     直接对象。
       data_gap      chain 里完全没有这个 waiter 的数据（waiter_sid 不在
                     rep.roots 里）——不知道这个 holder 是不是根。
-      intermediate  chain 给出了这个 waiter 的根，根不是这个 holder，
-                    但那个根**确实**作为某一对的 holder 出现在了
-                    rep.pairs 里——这个 holder 只是链条中间节点，真正
-                    该杀的根有另一对负责生成语句/说明。
-      orphan_root   chain 给出了这个 waiter 的根，根不是这个 holder，
-                    而那个根**没有**作为任何一对的 holder 出现在
-                    rep.pairs 里——根已确认，但没有材料（pid/状态/
+      coblocker     chain 给出了这个 waiter 的根，但**没有任何数据**表明
+                    这个 holder 会随着那个根一起解开——它是一个独立的
+                    共同阻塞者（或者只是 chain 没覆盖到它），必须当成
+                    "还没被处理的阻塞者"单独摆出来，绝不能算进已覆盖。
+      intermediate  chain 给出了这个 waiter 的根，且数据可以确认这个
+                    holder 自己也在（传递地）等那个根，那个根又**确实**
+                    作为某一对的 holder 出现在了 rep.pairs 里——这个
+                    holder 是链条中间节点，处理根时会一并解开，真正该
+                    处理的根有另一对负责生成语句/说明。
+      orphan_root   同上，但那个根**没有**作为任何一对的 holder 出现在
+                    rep.pairs 里——根已确认，却没有材料（pid/状态/
                     query……）生成语句，需要人工继续查。
 
-    `lockwait.pairs`（`pg_locks` 自连接）与 `lockwait.chain`
-    （`pg_thread_wait_status`）是两条**独立、不同视图**上的查询，覆盖面
-    不保证一致，data_gap 与 orphan_root 都是这种不一致的直接后果。
+    `lockwait.pairs` 与 `lockwait.chain` 是两条**独立、不同视图**上的
+    查询，覆盖面不保证一致：data_gap、coblocker、orphan_root 都是这种
+    不一致的直接后果，三者的共同点是"我们不知道"，处理方式一律是如实
+    说出不知道什么，而不是挑一个看起来合理的说法填上去。
     """
     root_ids = set(rep.roots.values())
     holder_sids_in_pairs = {as_int(p.get("holder_sessionid")) for p in rep.pairs}
+    blockers = _direct_blockers(rep.edges)
 
-    buckets: dict = {"root": [], "data_gap": [], "intermediate": [], "orphan_root": []}
+    buckets: dict = {"root": [], "data_gap": [], "coblocker": [],
+                     "intermediate": [], "orphan_root": []}
     for p in rep.pairs:
         waiter_sid = as_int(p.get("waiter_sessionid"))
         holder_sid = as_int(p.get("holder_sessionid"))
         if holder_sid in root_ids:
             buckets["root"].append(p)
-        elif waiter_sid not in rep.roots:
+            continue
+        if waiter_sid not in rep.roots:
             buckets["data_gap"].append(p)
-        elif rep.roots[waiter_sid] in holder_sids_in_pairs:
+            continue
+        root_sid = rep.roots[waiter_sid]
+        if not _released_by_killing(blockers, holder_sid, root_sid):
+            buckets["coblocker"].append(p)
+        elif root_sid in holder_sids_in_pairs:
             buckets["intermediate"].append(p)
         else:
             buckets["orphan_root"].append(p)
@@ -393,10 +468,15 @@ def _kill_statements(root_holders: list):
 def _render_recovery_section(rep: LockReport) -> str:
     """渲染「## 快速恢复语句」整段。
 
-    **不变量（这是本函数存在的唯一理由）：`rep.pairs` 里的每一对，要么
-    被一条已生成的 kill 语句覆盖，要么有一句写明的理由说明为什么没有。
-    不允许任何一对因为"恰好还有别的对生成了语句/给出了理由"就被聚合
-    状态判断悄悄放过。**
+    **两条不变量（这是本函数存在的唯一理由）：**
+
+      1. `rep.pairs` 里的每一对，要么被一条已生成的 kill 语句覆盖，要么
+         有一句写明的理由说明为什么没有。不允许任何一对因为"恰好还有
+         别的对生成了语句/给出了理由"就被聚合状态判断悄悄放过。
+      2. **没有任何一对可以在数据没有真正建立起连接的情况下被说成"已被
+         别处覆盖"。** 少说一句是沉默，说错一句是在读的人正准备结束故障
+         的那一节里给他一个错的肯定 —— 后者更糟。判据交给
+         `_released_by_killing()`，连不上就归 coblocker 段如实说明。
 
     这是本函数第三次因为同一类问题被改：
       round 1：只判断"有没有 unconfirmed"，漏了"confirmed 但全部生成
@@ -407,13 +487,21 @@ def _render_recovery_section(rep: LockReport) -> str:
         确认但不在 pairs 里"这个兜底分支就被跳过了，因为兜底分支的
         触发条件写的是 `if not kills and not reasons`，只要**别的**pair
         让 kills 非空，这一对就静默消失。
-      round 3（本次）：不再用任何聚合状态做判断。`_classify_pairs()`
+      round 3：不再用任何聚合状态做判断。`_classify_pairs()`
         把每一对都放进四个互斥的桶（root / data_gap / intermediate /
         orphan_root），下面对四个桶**各自独立**地渲染说明——桶 A 是否
         非空只取决于桶 A 里有没有 pair，与桶 B 是否非空无关。这样不管
         一份报告里同时出现多少条独立的阻塞链、各自处于什么状态，每一对
         都有自己对应的一句话，不会因为报告里别的部分"看起来正常"就被
         捎带着忽略。
+      round 4（本次）：前三轮都在补"不能少说"，这轮补的是"不能多说"。
+        `intermediate` 那一桶对读者说的是一句肯定断言（"不用单独管，
+        处理掉根就顺带解开了"），而它的判据只看"这个 waiter 的根恰好
+        也出现在某个 holder 列里"，从来没有验证过**这一对自己的
+        holder** 与那个根有任何关系 —— 一个 waiter 被两个会话独立挡住、
+        chain 只跟踪了其中一个时，另一个会被说成"已覆盖"，而杀掉根它
+        照样挡着。现在这句话要过 `_released_by_killing()` 那一关，过不
+        了的归 coblocker，当成还没被处理的独立阻塞者摆出来。
     """
     if not rep.pairs:
         return recovery.render_kills([])   # 真正的"无"：没有阻塞对
@@ -429,8 +517,13 @@ def _render_recovery_section(rep: LockReport) -> str:
         for k in kills:
             waiters = waiters_by_holder.get(k.target_sessionid, [])
             if waiters:
+                # 措辞按**这一对**来写，不写成"解除了 X 的阻塞"：同一个
+                # waiter 完全可以同时被好几个会话独立挡着（pg_locks 里
+                # 一个 waiter 可以配出多个真冲突的 holder），这条语句只
+                # 解除它自己那一份。别的那几份在本节其余条目里各自有话。
                 notes.append(
-                    "> 会话 %s 的这条语句预计解除：%s 的阻塞"
+                    "> 会话 %s 的这条语句解除的是**它自己**挡住的这几个会话："
+                    "%s（这些会话若同时还被别的会话挡着，那部分见本节其余说明）"
                     % (k.target_sessionid, "、".join(str(w) for w in waiters)))
         if notes:
             section += "\n" + "\n".join(notes)
@@ -446,14 +539,44 @@ def _render_recovery_section(rep: LockReport) -> str:
             waiters = waiters_by_holder.get(h) or [p.get("waiter_sessionid")]
             lines.append("> - 会话 %s（挡住 %s）：%s"
                          % (h, "、".join(str(w) for w in waiters), reason))
-        section += "\n" + (
+        # 块之间空一行：markdown 里连续的 `>` 行会并成同一段，"已覆盖"
+        # 与"没被覆盖"两段挤在一起时，读的人很容易只看见前一句。
+        section += "\n\n" + (
             "> **%d 个根 holder 的 kill 语句未能生成**（pid/sessionid "
             "缺失或不是合法数字，为避免编造数据已跳过，请人工核对该会话）：\n"
             % len(kill_failures) + "\n".join(lines))
 
+    coblocker = _dedup_by_waiter_and_holder(buckets["coblocker"])
+    if coblocker:
+        lines = []
+        for p in coblocker:
+            w = p.get("waiter_sessionid")
+            h = p.get("holder_sessionid")
+            r = rep.roots[as_int(w)]
+            lines.append(
+                "> - 会话 %s ← %s（阻塞链数据只说会话 %s 在等会话 %s，"
+                "没有任何一条边说会话 %s 也在等会话 %s）" % (w, h, w, r, h, r))
+        # 块之间空一行：markdown 里连续的 `>` 行会并成同一段，"已覆盖"
+        # 与"没被覆盖"两段挤在一起时，读的人很容易只看见前一句。
+        section += "\n\n" + (
+            "> **%d 对阻塞关系没有被上面任何一条语句覆盖 —— 这些持有者是"
+            "独立的阻塞者，要各自单独处理**：`lockwait.pairs`（`pg_locks`）"
+            "显示它们与等待者的锁模式确实互斥，等待者必须等它们释放；但"
+            "`lockwait.chain`（`pg_thread_wait_status`）里没有任何数据表明"
+            "它们自己在等对应的根会话 —— 那张视图每个等待者只记**一个**"
+            "阻塞者，而同一个等待者在 `pg_locks` 里可以被好几个会话同时"
+            "挡着（一条 DDL 等 AccessExclusive、被好几个 AccessShare 读者"
+            "一起挡住是最平常的现场），链路数据里只会留下其中一个。**所以"
+            "不能说处理掉根会话就顺带解决了它们**；也不给它们凭猜测生成 "
+            "kill 语句（它们自己可能同样在等别人，杀了不解堵）。请逐条确认"
+            "这个会话在等谁、要不要单独处理：\n" % len(coblocker)
+            + "\n".join(lines))
+
     data_gap = _dedup_by_waiter_and_holder(buckets["data_gap"])
     if data_gap:
-        section += "\n" + (
+        # 块之间空一行：markdown 里连续的 `>` 行会并成同一段，"已覆盖"
+        # 与"没被覆盖"两段挤在一起时，读的人很容易只看见前一句。
+        section += "\n\n" + (
             "> **%d 对阻塞关系因阻塞链数据缺失，未能确认根 holder，"
             "未生成对应 kill 语句**（`lockwait.pairs` 与 `lockwait.chain` "
             "是两条独立查询，覆盖面可能不一致；不能因为 chain 没提到就"
@@ -467,19 +590,31 @@ def _render_recovery_section(rep: LockReport) -> str:
 
     intermediate = _dedup_by_waiter_and_holder(buckets["intermediate"])
     if intermediate:
-        section += "\n" + (
-            "> %d 对是阻塞链的中间节点（真正的根另有确认，见上文/下方"
-            "对应根的语句或说明；杀中间节点不解堵，因此不单独生成"
-            "语句）：\n" % len(intermediate)
-            + "\n".join(
-                "> - 会话 %s ← %s（根是会话 %s）"
-                % (p.get("waiter_sessionid"), p.get("holder_sessionid"),
-                   rep.roots[as_int(p.get("waiter_sessionid"))])
-                for p in intermediate))
+        # 只有走到这里的对才允许说"已经被别处覆盖" —— 判据是
+        # _released_by_killing()：阻塞链数据能确认这个持有者自己也在等
+        # 那个根，处理根之后它必定跟着解开。连不上的一律进上面的
+        # coblocker 段，当成还没被处理的独立阻塞者摆出来。
+        lines = []
+        for p in intermediate:
+            w = p.get("waiter_sessionid")
+            h = p.get("holder_sessionid")
+            r = rep.roots[as_int(w)]
+            lines.append(
+                "> - 会话 %s ← %s：阻塞链数据可确认会话 %s 自己也在（传递地）"
+                "等会话 %s，处理根会话 %s 之后它会一并解开" % (w, h, h, r, r))
+        # 块之间空一行：markdown 里连续的 `>` 行会并成同一段，"已覆盖"
+        # 与"没被覆盖"两段挤在一起时，读的人很容易只看见前一句。
+        section += "\n\n" + (
+            "> %d 对是阻塞链的中间节点，**已被针对根会话的处理覆盖**，因此"
+            "不单独生成语句（杀中间节点不解堵）；根会话本身的语句或说明见"
+            "本节其他条目：\n" % len(intermediate)
+            + "\n".join(lines))
 
     orphan_root = _dedup_by_waiter_and_holder(buckets["orphan_root"])
     if orphan_root:
-        section += "\n" + (
+        # 块之间空一行：markdown 里连续的 `>` 行会并成同一段，"已覆盖"
+        # 与"没被覆盖"两段挤在一起时，读的人很容易只看见前一句。
+        section += "\n\n" + (
             "> **%d 对阻塞关系的根会话已被阻塞链数据确认，但该根未出现在"
             "「阻塞明细」的持有者列里**（它可能持有的是链条上游、不在"
             "本次 pairs 明细范围内的另一把锁），没有材料生成 kill 语句，"

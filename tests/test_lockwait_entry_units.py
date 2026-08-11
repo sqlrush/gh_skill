@@ -2,6 +2,7 @@
 import io
 import json
 import pathlib
+import re
 import sys
 
 import pytest
@@ -391,3 +392,154 @@ def test_every_pair_is_accounted_for_in_the_recovery_section():
             "会话 %s（对应的 pair 出现在阻塞明细里）从「快速恢复语句」"
             "小节的文本里消失了——每一对都必须被覆盖或给出理由，"
             "不能因为报告里别的对处于别的状态就被捎带忽略" % wid)
+
+
+# ---------------------------------------------------------------------------
+# Fix round 4：round 3 的四分类保证了"没有一对被静默略过"，但它对
+# `intermediate` 那一类说出的是一句**肯定断言**——"这一对不用单独管，
+# 处理掉根就顺带解开了"——而判据只有"这个 waiter 的根恰好也出现在
+# pairs 的某个 holder 列里"，从来没有验证过**这一对自己的 holder** 与
+# 那个根之间有任何关系。
+#
+# `lockwait.pairs`（pg_locks 自连接）一个 waiter 可以有好几个真冲突的
+# holder（一条 DDL 等 AccessExclusive，被好几个 AccessShare 读者同时
+# 挡着，是最平常的现场）；`lockwait.chain`（pg_thread_wait_status）
+# 每个等待者只记一个阻塞者。两边覆盖面不对称时，第二个 holder 会被
+# 说成"中间节点、根另有处理"——**杀掉根它照样还在挡着**。
+#
+# 这比前三轮的"漏掉一对"更糟：那是沉默，这是在读的人正准备结束故障的
+# 那一节里，给他一句错的肯定。下面这条属性测试钉的就是第二条不变量：
+# **除非数据真的建立起了连接，否则不许对任何一对说"它已经被别处覆盖"。**
+# 与 round 3 那条一样，断言写成对形状通用的性质，不针对某一个分支，
+# 将来再加第六个分类它依然管用。
+# ---------------------------------------------------------------------------
+
+_COVERED_CLAIM = "会一并解开"   # 渲染层"这一对已被针对根的处理覆盖"的标记
+
+_COVERAGE_SHAPES = [
+    # ① review 给的最小复现：一个 waiter 被两个会话**各自独立**挡着
+    #    （两个 holder 与它的锁模式都真冲突），chain 只跟踪了其中一个。
+    ("一个 waiter 两个独立 holder，chain 只记了其中一个",
+     [("100", "200"), ("100", "201")],
+     [("100", "200")]),
+    # ② 真正的中间节点：250 自己在等 200，杀 200 确实会让 250 解开。
+    ("真正的中间节点（250 自己在等 200）",
+     [("100", "200"), ("105", "250")],
+     [("100", "200"), ("105", "250"), ("250", "200")]),
+    # ③ 旁支：waiter 同时被根和另一个"自己也在等同一个根"的会话挡住 ——
+    #    holder 不在 waiter 通往根的那条路径上，但同样会被根的处理解开，
+    #    这一类**应该**算已覆盖（防止修得过头，把真覆盖也说成没覆盖）。
+    ("旁支 holder 自己也在等同一个根",
+     [("100", "200"), ("100", "250")],
+     [("100", "200"), ("250", "200")]),
+    # ④ chain 对同一个 waiter 给了两条边（chain._blocker_of 只留第一条，
+    #    是单独记账的既有债务）——被丢掉的那条边对应的 holder 不能因此
+    #    被说成"已覆盖"。
+    ("chain 同一个 waiter 多条边，只有第一条被建成链",
+     [("100", "201")],
+     [("100", "200"), ("100", "201")]),
+    # ⑤ 死锁环。
+    ("死锁环", [("100", "200")], [("100", "200"), ("200", "100")]),
+    # ⑥ 根已被 chain 确认，但没有作为任何一对的 holder 出现在 pairs 里。
+    ("根已确认但不在 pairs 的持有者列里",
+     [("100", "250")], [("100", "250"), ("250", "999")]),
+    # ⑦ chain 完全没有数据。
+    ("chain 完全没有数据", [("100", "200")], []),
+]
+
+
+def _waits_on_via_raw_edges(raw_edges, start, target):
+    """测试侧**独立**实现：只看 `lockwait.chain` 返回的原始边，判断
+    start 是否（传递地）在等 target。
+
+    故意不复用 lockwait.py 里的任何函数——拿被测代码自己的判断去验证
+    被测代码，等于什么都没验证。这里刻意写得比实现宽松（只要有**一条**
+    路径连得上就算连得上），因为这条测试要卡的是一个**必要**条件：
+    实现可以比它更保守，但绝不能在连它都连不上的时候声称"已覆盖"。
+    """
+    blockers = {}
+    for e in raw_edges:
+        blockers.setdefault(int(e["sessionid"]), set()).add(int(e["block_sessionid"]))
+    if start == target:
+        return True
+    seen, stack = set(), [start]
+    while stack:
+        cur = stack.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        for nxt in blockers.get(cur, ()):
+            if nxt == target:
+                return True
+            stack.append(nxt)
+    return False
+
+
+def test_no_pair_is_claimed_covered_unless_the_chain_data_connects_it():
+    """属性：**没有任何一对可以在数据没建立起连接的情况下被说成"已被别处
+    覆盖"。** 对每一种形状都同时查两层——
+
+      分类层：落进"中间节点"这一类的每一对，holder 必须真的（传递地）
+              在等这个 waiter 的根；
+      渲染层：文本里带"已覆盖"标记的每一行，同样要过这一关。
+
+    顺带继续钉住 round 3 的第一条不变量（每一对都必须被提到），并加强
+    成 waiter 与 holder **两个**会话号都要出现——读的人要知道去处理谁。
+    """
+    saw_claim = False
+    for label, pair_ids, edge_ids in _COVERAGE_SHAPES:
+        pairs = [_pair(waiter_sessionid=w, holder_sessionid=h)
+                 for w, h in pair_ids]
+        raw_edges = [{"sessionid": s, "block_sessionid": b} for s, b in edge_ids]
+        rep = lockwait.collect(_Runner(pairs=pairs, edges=raw_edges), limit=20)
+        assert len(rep.pairs) == len(pair_ids), (
+            "前提：%s —— 每一对都要真的活过冲突过滤，否则这个形状没验证到东西"
+            % label)
+
+        buckets = lockwait._classify_pairs(rep)
+
+        # round 3 的不变量：分类是全函数，每一对恰好落进一个桶。
+        assert (sorted(id(p) for bucket in buckets.values() for p in bucket)
+                == sorted(id(p) for p in rep.pairs)), (
+            "%s：分类不再是全函数——有的对落进了两个桶，或者一个都没落进" % label)
+
+        # 本轮的不变量（分类层）。
+        for p in buckets["intermediate"]:
+            w = int(p["waiter_sessionid"])
+            h = int(p["holder_sessionid"])
+            root = rep.roots.get(w)
+            assert root is not None and _waits_on_via_raw_edges(raw_edges, h, root), (
+                "%s：把 %s ← %s 归成「中间节点、根另有处理」，但阻塞链数据里"
+                "没有任何证据表明会话 %s 在等根会话 %s —— %s 可能是一个独立的"
+                "共同阻塞者，处理掉根它照样挡着，这句话是在读的人最需要准确"
+                "信息的时候给了他一个错的肯定" % (label, w, h, h, root, h))
+
+        md = lockwait.render_markdown(rep)
+        assert "## 快速恢复语句" in md, label
+        section = md[md.index("## 快速恢复语句"):]
+
+        # 本轮的不变量（渲染层）。
+        for line in section.splitlines():
+            if _COVERED_CLAIM not in line:
+                continue
+            for w_s, h_s in re.findall(r"会话 (\d+) ← (\d+)", line):
+                saw_claim = True
+                w, h = int(w_s), int(h_s)
+                root = rep.roots.get(w)
+                assert root is not None and _waits_on_via_raw_edges(raw_edges, h, root), (
+                    "%s：这一行对 %s ← %s 说了「%s」，但阻塞链数据里没有任何"
+                    "证据表明会话 %s 在等根会话 %s：%s"
+                    % (label, w, h, _COVERED_CLAIM, h, root, line))
+
+        # round 3 不变量的加强版：两个会话号都要出现。
+        for p in rep.pairs:
+            for role, sid in (("等待", p["waiter_sessionid"]),
+                              ("持有", p["holder_sessionid"])):
+                assert str(sid) in section, (
+                    "%s：%s会话 %s 出现在阻塞明细里，却在「快速恢复语句」"
+                    "小节里找不到" % (label, role, sid))
+
+    assert saw_claim, (
+        "没有任何一行被标成「%s」——这条测试于是空转了：形状 ②③ 里的"
+        "中间节点是真的会被根的处理解开，实现应当明确这么说；如果标记"
+        "文案改了，这条测试必须跟着改，而不是静默变成摆设" % _COVERED_CLAIM)
