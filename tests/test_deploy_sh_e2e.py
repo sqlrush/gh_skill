@@ -93,7 +93,17 @@ def test_gsql_flow_installs_and_writes_config(box):
     text = cfg.read_text(encoding="utf-8")
     assert "connection_mode: gsql" in text
     assert "og-prod" in text
-    assert len(list(box["dest"].glob("gaussdb-*"))) == 14, "skill 没装全"
+    # 期望值从源码树反推，不写死数字。install-opencode.sh 判断"要不要装某个
+    # skill"用的就是 `[ -f "${d}SKILL.md" ] || continue`（第 202 行）—— 这里数
+    # 的必须是同一个条件，否则测试测的是另一件事。写死数字的坏处不是麻烦，
+    # 是每加一个 skill（如 gaussdb-waitevent、gaussdb-vacuum）都要有人判断
+    # "数字变了是新增合理还是装漏了"，而顺手的答案永远是"改数字"——一个
+    # 总被无脑放行的门禁等于没有门禁。别把这里改回字面量。
+    expected = len(list(_ROOT.glob("skills/*/SKILL.md")))
+    installed = len(list(box["dest"].glob("gaussdb-*")))
+    assert installed == expected, (
+        "skill 没装全：源码树里带 SKILL.md 的 skill 目录有 %d 个，实际装了 %d 个"
+        % (expected, installed))
 
 
 def test_generated_config_carries_no_plaintext_password(box):
