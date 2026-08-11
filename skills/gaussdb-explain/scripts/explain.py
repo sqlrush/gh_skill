@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
-import re
 import sys
 from dataclasses import dataclass
 from typing import Optional
@@ -27,6 +26,7 @@ for _anc in _HERE.parents:  # locate common/ (repo root or install dir)
 
 import common  # noqa: E402
 from common import access  # noqa: E402
+from common.grmp import statement as stmt  # noqa: E402
 from common.grmp.statement import (  # noqa: E402
     ExplainNotAllowed,
     ensure_explainable,
@@ -43,49 +43,13 @@ import render  # noqa: E402
 # 脚本进去，白名单的意义被架空。要不要开这个口子是客户的安全策略决策，
 # 不是技术决策，不该由交付方替客户定。
 #
-# 所以 grmp 连接在入口处明确报错，而不是静默降级或偷偷绕过；
-# 直连连接（pg8000 / gsql）行为与迁移前完全一致。
-# 「路给不了」由连接模块说（access.require_unregistered_sql），这里只补
-# 本 skill 的策略：为什么不绕过去。
-_WHY_NO_PASSTHROUGH = (
-    "本 skill 不为此注册「EXPLAIN {{user_sql}}」这类直通脚本 —— 那会让任何 SQL "
-    "都能从这一条脚本进入，白名单形同虚设。是否开这个口子属于客户的安全策略决策。\n"
-    "可选做法：为任意 SQL 类诊断保留一条直连通道（driver: pg8000 / gsql），"
-    "或在客户环境不提供本 skill。"
-)
-
-
-def require_direct_sql_path(conn_name: str) -> None:
-    """任意 SQL 只能走直连。走不了就当场报错，绝不降级成别的结果。
-
-    **刻意不用 access.session_for()**：那个口子除了白名单型驱动，还会拒掉
-    provides_session=False 的 gsql（每条语句起独立子进程）。而 explain
-    根本不需要跨语句会话 —— 单条 EXPLAIN 的 ANALYZE 也是在一次
-    调用里 BEGIN/ROLLBACK 包住的，gsql 今天跑得好好的。用会话守卫会把
-    一批能用的连接一并拒掉，属于借来的约束。这里只判它真正的边界：
-    能不能执行未注册的 SQL。
-
-    判断本身交给连接模块 —— skill 里不该出现 driver 名字，否则客户再换
-    一种白名单型中间件，这句判断会静默放行。
-    """
-    common.find(conn_name)  # ConfigError 由调用方接
-    try:
-        access.require_unregistered_sql(conn_name)
-    except access.UnregisteredSqlUnsupported as exc:
-        raise access.AccessError("%s\n%s" % (exc, _WHY_NO_PASSTHROUGH)) from exc
-
-
-_DML_RE = re.compile(r"(?i)^\s*(insert|update|delete|merge)\b")
-_CTE_RE = re.compile(r"(?i)^\s*with\b")
-_CTE_DML_RE = re.compile(r"(?i)\b(insert|update|delete|merge)\b")
-_DDL_RE = re.compile(
-    r'\b(?:'
-    r'CREATE\s+OR\s+REPLACE|'
-    r'CREATE|ALTER|DROP|TRUNCATE|'
-    r'RENAME|COMMENT|REINDEX'
-    r')\b',
-    re.IGNORECASE
-)
+# 走的是注册好的 `EXPLAIN (...) {{sql}}` 模板 —— **中间件与直连同一条路**。
+# 原先还留了一条「模板受理不了就回落到原始连接」的旁路，理由是直连能出
+# DML 的计划。那条旁路实际上到不了：main() 的形态校验先把 DML 拒了。而它
+# 一旦被别的形态触到，拿到的就是一条**可写**的原始会话（--analyze 时
+# read_only=False），用户 SQL 不经 EXPLAIN 包裹直接下发 —— 实测就是这条路
+# 让 `/* c */ UPDATE ...` 真写了库。已删除：两条模式共用一条路径，
+# 差异面才是零。
 
 
 @dataclass(frozen=True)
@@ -96,14 +60,47 @@ class Finding:
     advice: str
 
 
-def is_dml(sql_text: str) -> bool:
-    if _DML_RE.search(sql_text):
-        return True
-    return bool(_CTE_RE.search(sql_text) and _CTE_DML_RE.search(sql_text))
+def shape_reject(sql_text: str) -> Optional[str]:
+    """这条 SQL 的**形态**能不能受理；不能就回一句给用户看的话。
 
+    纯文本判断，不连库。判定一律建立在 common.grmp.statement 的归一化结果上
+    （先按引号与注释切语句，再取每条的首关键字），**不在原始 SQL 文本上跑
+    正则**。原先那套正则有两个方向相反的毛病，实测都能复现：
 
-def is_ddl(sql_text: str) -> bool:
-    return _DDL_RE.search(sql_text)
+      - DML 那条 `^\\s*(insert|update|delete|merge)\\b` 锚死在串首却不跳注释，
+        `/* c */ UPDATE ...` 判成非 DML —— 漏放行。
+      - DDL 那条不带锚点、扫整串原文，`SELECT comment FROM t`、
+        `WHERE relname = 'drop'` 全被当成 DDL —— 过度拦截。
+
+    现在改成白名单：首关键字必须是只读起始关键字，其余一律拒。黑名单永远
+    会漏（原来那份就漏了 COPY / GRANT / VACUUM / CALL），白名单漏不了。
+    """
+    statements = stmt.split_statements(sql_text)
+    if not statements:
+        return ("No executable SQL statement detected "
+                "(comments or whitespace only).")
+    if len(statements) > 1:
+        # 原先数的是分号个数 `> 1`，于是**恰好一个分号**的两条语句漏了过去：
+        # `SELECT 1; SELECT pg_backend_pid()`。实测后果三种，没有一种是对的 ——
+        # gsql 把第二条真跑了并把结果拼进「执行计划」（退出 0），pg8000 抛
+        # Traceback，中间件才是正确拒绝。数语句，不数分号。
+        return ("Multiple SQL statements detected (%d). "
+                "Submit one statement at a time." % len(statements))
+    if stmt.is_dml(sql_text):
+        return "DML keywords (INSERT/UPDATE/DELETE) detected in SQL statement."
+    keyword = stmt.leading_keyword(statements[0])
+    if keyword not in stmt.READ_ONLY_STARTERS:
+        # 措辞不说"非只读" —— 打错的首关键字远比真正的写语句常见，
+        # 把 `SELEKT 1` 报成"非只读语句"会把人往完全错误的方向带。
+        # 也不能为了给出数据库那句 syntax error 就放它过去：认不出的关键字
+        # 未必真的无害（CALL / DO / COPY 都是数据库认得而这里不认的），
+        # 白名单的意义就在于不去赌这一把。
+        return ("Unsupported leading keyword detected (%s). explain only "
+                "plans read-only queries (%s). Check for a typo; DDL/DCL/"
+                "maintenance statements are refused by design." % (
+                    keyword.upper() or "none",
+                    "/".join(sorted(stmt.READ_ONLY_STARTERS)).upper()))
+    return None
 
 
 def explain_via_script(runner, sql_text: str, analyze: bool) -> str:
@@ -115,16 +112,6 @@ def explain_via_script(runner, sql_text: str, analyze: bool) -> str:
     rows = runner.run(script, {"sql": sql_text})
     # 结果行是列名到值的字典；EXPLAIN 只有一列，取那一列的值
     return "\n".join(str(next(iter(r.values()), "")) for r in rows)
-
-
-def explain(db, sql_text: str, analyze: bool) -> str:
-    stmt = (f"EXPLAIN (ANALYZE {str(analyze).lower()}, "
-            f"BUFFERS {str(analyze).lower()}, FORMAT TEXT) {sql_text}")
-    if analyze and is_dml(sql_text):
-        _, rows = db.query_in_rollback(stmt)
-    else:
-        _, rows = db.query(stmt)
-    return "\n".join(r[0] for r in rows)
 
 
 def scan_plan(plan_text: str) -> list[Finding]:
@@ -173,7 +160,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--sql-stdin", action="store_true", required=True,
                     help="read SQL text from stdin")
     ap.add_argument("--analyze", action="store_true",
-                    help="EXPLAIN ANALYZE (executes; DML wrapped in rollback)")
+                    help="EXPLAIN ANALYZE（真执行该 SQL；只受理只读语句）")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
     ap.add_argument("--timeout", type=int, default=None)
     args = ap.parse_args(argv)
@@ -182,55 +169,28 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not sql_text.strip():
         ap.error("empty SQL on stdin")
 
-    # 先看这条 SQL 能不能走注册模板。模板只受理单条只读语句 —— 它是文本替换，
-    # 参数位就是注入面，多语句和写语句一律挡在外面。
-    #
-    # 走不通**不等于做不了**：直连有原始会话，`EXPLAIN UPDATE ...` 一直是能出
-    # 计划的（不带 --analyze 时 DML 根本不执行）。所以这里回落到直连，而不是
-    # 直接失败 —— 把模板的限制当成 skill 的限制，会砍掉直连本来就有的能力。
-    try:
-        ensure_explainable(sql_text, analyze=args.analyze)
-        template_blocked = None
-    except ExplainNotAllowed as exc:
-        template_blocked = exc
-
     # 语句形态校验 —— **纯文本检查，放在连库之前**。
     #
-    # 这三条原先写在取到计划之后，那时才 return 1：白跑一次 EXPLAIN、白建一次
+    # 这几条原先写在取到计划之后，那时才 return 1：白跑一次 EXPLAIN、白建一次
     # 连接，而且拒绝理由与「已经拿到计划」同时出现，读起来自相矛盾。
-    if is_dml(sql_text):
-        print("DML keywords (INSERT/UPDATE/DELETE) detected in SQL statement.")
-        return 1
-    if is_ddl(sql_text):
-        print("DDL keywords (CREATE/REPLACE/ALTER/DROP/TRUNCATE/RENAME/"
-              "COMMENT/REINDEX) detected in SQL statement.")
-        return 1
-    # 多语句：先把字符串字面量与注释抹掉，再数分号 —— 否则 SQL 文本里的
-    # 分号（'a;b'、-- 注释里的）会被误判成第二条语句
-    sql_cleaned = re.sub(r"'.*?'", "''", sql_text, flags=re.DOTALL)
-    sql_cleaned = re.sub(r'".*?"', '""', sql_cleaned, flags=re.DOTALL)
-    sql_cleaned = re.sub(r'--.*?$', '', sql_cleaned, flags=re.MULTILINE)
-    sql_cleaned = re.sub(r'/\*.*?\*/', '', sql_cleaned, flags=re.DOTALL)
-    if sql_cleaned.count(';') > 1:
-        print("Multiple semicolons (;) detected, suspected of containing "
-              "multiple SQL statements. Please review and modify before "
-              "executing.")
+    reject = shape_reject(sql_text)
+    if reject:
+        print(reject)
         return 1
 
-    db = None
+    # 第二道闸，与上面那道**各判各的**。上面按形态白名单拒，这道是模板自己的
+    # 守卫（单语句 + analyze 时只读）。今天两者的结论必然一致 —— 正因如此，
+    # 它一旦真的抛出来，说明两道闸对同一条 SQL 判出了不同结果，那本身就是
+    # 要当场喊停的事，不是悄悄走下去。
     try:
-        if template_blocked is None:
-            runner = access.for_conn(args.conn, timeout=args.timeout)
-            plan = explain_via_script(runner, sql_text, args.analyze)
-        else:
-            # 回落到原始会话。中间件给不了，connection_for 会在这里明确报错
-            # 而不是静默降级 —— 降级成「不 analyze」会让用户拿到估算计划却
-            # 以为是实际计划，实测两者能差 2.3 倍。
-            db = access.connection_for(args.conn, read_only=not args.analyze)
-            db.set_statement_timeout(
-                args.timeout if args.timeout is not None
-                else access.DEFAULT_SKILL_TIMEOUT_SECONDS)
-            plan = explain(db, sql_text, args.analyze)
+        ensure_explainable(sql_text, analyze=args.analyze)
+    except ExplainNotAllowed as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        runner = access.for_conn(args.conn, timeout=args.timeout)
+        plan = explain_via_script(runner, sql_text, args.analyze)
     # access.QueryError 必须在列 —— 它是本项目归一化的「取数失败」类型，
     # runner.run() 在 SQL 本身执行失败时抛的就是它（打错字、表不存在、
     # 类型不匹配）。漏掉它的后果不是少一条错误信息，而是**直接吐 Traceback**：
@@ -238,19 +198,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     # 「syntax error at or near "SELEKT"」。而这是最常见的用户路径之一。
     except (common.ConfigError, common.CredentialError, common.DBError,
             access.AccessError, access.QueryError) as exc:
-        # 回落到直连又失败时，把「模板为什么走不通」一并说出来。只报后半句
-        # （「白名单只执行预注册脚本」）会让人以为是配置问题，而真正的原因是
-        # 这条 SQL 的形态本身就进不了模板。
-        if template_blocked is not None:
-            print(f"error: {template_blocked}\n{exc}", file=sys.stderr)
-        else:
-            print(f"error: {exc}", file=sys.stderr)
+        print(f"error: {exc}", file=sys.stderr)
         return 2
     try:
-        # plan 已经在上面那段里取到了（模板路径或原始会话路径）。
-        # 原先这里又调了一次 explain(db, ...)：不但把已有结果丢掉重算，
-        # 而且走模板路径时 db 是 None，直接 AttributeError —— 也就是**常规
-        # 路径必崩**。同理下面的 db.close() 也丢了 None 守卫。
         findings = scan_plan(plan)
         if args.format == "json":
             print(json.dumps({"sql": sql_text, "plan": plan,
@@ -262,9 +212,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     except (ValueError, common.DBError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    finally:
-        if db is not None:
-            db.close()
 
 
 if __name__ == "__main__":

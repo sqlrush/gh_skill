@@ -60,8 +60,17 @@ def test_explain_scan_plan_seqscan_sort():
 
 
 def test_explain_is_dml():
-    assert explain.is_dml("DELETE FROM t")
-    assert not explain.is_dml("SELECT 1")
+    """is_dml 从 explain.py 挪到了 common.grmp.statement（三个 skill 曾各抄一份）。
+
+    顺带钉住那条实测能写库的载荷：前导注释不能让 UPDATE 蒙混过关。
+    """
+    from common.grmp.statement import is_dml
+
+    assert is_dml("DELETE FROM t")
+    assert not is_dml("SELECT 1")
+    assert is_dml("/* c */ UPDATE t SET a = 1")
+    assert not explain.shape_reject("SELECT 1")
+    assert "DML" in explain.shape_reject("/* c */ UPDATE t SET a = 1")
 
 
 def test_slowsql_stmt_table_empty():

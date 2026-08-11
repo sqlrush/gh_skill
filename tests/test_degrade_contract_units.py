@@ -111,24 +111,59 @@ def test_explain_templates_are_read_only(rel):
 # 模板的限制不能变成 skill 的限制 —— 实际发生过的回归
 # ===========================================================================
 
-def test_template_block_falls_back_to_a_session_instead_of_failing():
-    """模板受理不了的 SQL，要回落到直连会话，不能直接失败。
+def test_explain_never_opens_a_raw_writable_session():
+    """explain 只走注册模板，**不建原始连接** —— 中间件与直连同一条路。
 
-    真实回归:我把注入守卫无条件加在所有路径上，把直连也一起拒了 ——
-    `EXPLAIN UPDATE ...`（不带 --analyze，DML 根本不执行）改动前一直能出计划，
-    改完变成退出 2。用新写的测试发现不了，因为新测试是照着新行为写的；
-    是把旧版本取出来逐项对照才看到的。
+    这条取代了原先的 `test_template_block_falls_back_to_a_session_instead_of_failing`。
+    那条钉的是源码里有没有 `template_blocked` / `connection_for` 这两个串，
+    用意是保住「不带 --analyze 的 EXPLAIN UPDATE 仍能出计划」。**但那个行为
+    早就没了**：main() 的 DML 形态校验先 `return 1`，回落分支根本到不了。
+    实测（og5，三条访问路径）裸 UPDATE 一律 rc=1「DML keywords detected」。
+    也就是说它一直在给假保证 —— 串还在，行为已经没了。
 
-    这条钉的是源码结构:模板走不通时必须还有一条回落路径。
+    而那条回落一旦真被触到，拿到的是 read_only=not analyze 的原始会话：
+    `--analyze` 时就是**可写**会话，用户 SQL 不经 EXPLAIN 包裹直接下发。
+    实测 `/* c */ UPDATE ...` 与 `/* c */ DELETE FROM ...` 由此真写了库
+    （gsql 与 pg8000 各复现一次，退出码 0，报告显示一份正常的执行计划）。
+    所以旁路删掉了，形态校验改走 common.grmp.statement 的归一化判定。
+
+    **遗留的产品决策**：不带 --analyze 的 DML 该不该出计划？EXPLAIN 不带
+    ANALYZE 根本不执行语句，模板又是 readonly + ANALYZE 写死 false，技术上
+    安全且两条模式都能做；sqlfetch 按 sql_id 取回来的 SQL 也常常就是 DML。
+    今天沿用现状（拒），因为那是实测在跑的行为，改它属于加能力不属于修 bug。
+    要放开的话改 shape_reject 一处即可，别再引回原始连接那条路。
     """
     src = (_ROOT / "skills" / "gaussdb-explain" / "scripts"
            / "explain.py").read_text(encoding="utf-8")
-    assert "template_blocked" in src, "模板受阻的分支没了"
-    assert "connection_for" in src, "没有回落到原始会话的路径"
-    # 回落不能只在 analyze 时发生 —— 那正是当初判错的地方
-    assert "needs_rollback" not in src, (
-        "又把回落条件收窄成「只有 analyze 才回落」了 —— "
-        "不带 analyze 的 DML 同样过不了只读模板，但直连能跑")
+    assert "connection_for" not in src, (
+        "explain 又去建原始连接了 —— 那条路 --analyze 时是可写会话，"
+        "且用户 SQL 不经 EXPLAIN 包裹，实测能写库")
+    assert "query_in_rollback" not in src, (
+        "回滚包装实测挡不住注入（一个 `--` 就能注释掉 ROLLBACK），"
+        "不该靠它兜底写操作")
+    assert "for_conn" in src, "模板路径没了 —— 两条模式共用的就是这一条"
+
+
+def test_explain_shape_checks_use_the_shared_normalizer():
+    """形态判定必须走 common.grmp.statement，不许再在原文上跑正则。
+
+    三个 skill 曾各抄一份 `^\\s*(insert|update|delete|merge)\\b`：`^\\s*` 跳
+    空白但不跳注释，`/* c */ UPDATE ...` 判成非 DML。抄三份的直接后果是
+    修一处、另两处照旧带着 bug 跑，而它们都拿这个结果决定「要不要拒」和
+    「要不要包回滚」。
+    """
+    for rel in ("gaussdb-explain/scripts/explain.py",
+                "gaussdb-proctune/scripts/evidence.py",
+                "gaussdb-sqltune/scripts/evidence.py"):
+        src = (_ROOT / "skills" / rel).read_text(encoding="utf-8")
+        # 只看真正编译出来的正则 —— 注释里引用这个模式来说明当初错在哪，
+        # 那是文档不是代码，不该把它算进来
+        code = "\n".join(line for line in src.splitlines()
+                         if not line.lstrip().startswith("#"))
+        assert "re.compile(r\"(?i)^\\s*(insert" not in code, (
+            "%s 又抄了一份 DML 正则 —— 它不跳注释" % rel)
+        assert "common.grmp.statement" in code, (
+            "%s 没走共用的语句形态判定" % rel)
 
 
 @pytest.mark.parametrize("rel", [

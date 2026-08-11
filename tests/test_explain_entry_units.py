@@ -62,9 +62,22 @@ def test_template_path_does_not_touch_the_none_db(monkeypatch, capsys):
     ("INSERT INTO t VALUES (1)", 1),
     ("CREATE TABLE t(i int)", 1),
     ("SELECT 1; SELECT 2;", 1),
+    # --- 以下每条都是实测绕过，不是补齐用的等价变形 ---
+    # 前导注释让 DML 蒙混过关：og5 上 gsql 与 pg8000 两条直连都真写了库
+    ("/* c */ UPDATE t SET a = 1", 1),
+    ("-- c\nUPDATE t SET a = 1", 1),
+    ("/* c */ DELETE FROM t", 1),
+    # 恰好一个分号的两条语句：原先数分号 `> 1`，这条漏了过去
+    ("SELECT 1; SELECT pg_backend_pid()", 1),
+    ("SELECT 1; GRANT ALL ON t TO public", 1),
+    # 白名单挡住黑名单漏掉的那些
+    ("COPY (SELECT 1) TO PROGRAM 'true'", 1),
+    ("VACUUM t", 1),
+    ("GRANT ALL ON t TO public", 1),
+    ("-- 只有注释", 1),
 ])
 def test_shape_checks_run_before_connecting(monkeypatch, sql, expect):
-    """DML/DDL/多语句是**纯文本检查**，必须在连库之前就拒。
+    """DML/非只读/多语句是**纯文本检查**，必须在连库之前就拒。
 
     原先放在取到计划之后：白跑一次 EXPLAIN、白建一次连接，而且拒绝理由与
     「已经拿到计划」同时出现，读起来自相矛盾。
@@ -78,6 +91,47 @@ def test_shape_checks_run_before_connecting(monkeypatch, sql, expect):
     import io
     monkeypatch.setattr(sys, "stdin", io.StringIO(sql))
     assert explain_mod.main(["--sql-stdin"]) == expect
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT 'drop' AS x",
+    "SELECT relname FROM pg_class WHERE relname = 'alter'",
+    "SELECT comment FROM (SELECT 1 AS comment) t",
+    "SELECT 1 AS x -- a;b;c",
+    "SELECT 1 /* ; */ AS x",
+    "SELECT 1; -- 收尾注释",
+    "SELECT relname FROM t WHERE relname LIKE '%status%'",
+])
+def test_ordinary_queries_are_not_falsely_rejected(monkeypatch, sql):
+    """**误拒也是 bug。**
+
+    原先的 DDL 判定不带锚点、扫整串原文：任何叫 comment 的列、任何值是
+    'drop' 的过滤条件都被拒 —— 而 comment 是真实业务表里极常见的列名。
+    注释里的分号则让合法单语句在中间件模式下被判成多语句。
+    """
+    monkeypatch.setattr(explain_mod.access, "for_conn",
+                        lambda *a, **k: _Runner())
+    import io
+    monkeypatch.setattr(sys, "stdin", io.StringIO(sql))
+    assert explain_mod.main(["--sql-stdin"]) == 0
+
+
+def test_analyze_never_gets_a_writable_raw_session(monkeypatch):
+    """**explain 不再建原始连接 —— 中间件与直连同一条路。**
+
+    原先 `--analyze` 走回落时拿的是 read_only=False 的原始会话，用户 SQL
+    不经 EXPLAIN 包裹直接下发（实测 default_transaction_read_only = off）。
+    那条旁路是 `/* c */ UPDATE ...` 能写库的载体，已删除。
+    """
+    def _boom(*a, **k):
+        raise AssertionError("explain 不该再去建原始连接")
+
+    monkeypatch.setattr(explain_mod.access, "connection_for", _boom)
+    monkeypatch.setattr(explain_mod.access, "for_conn",
+                        lambda *a, **k: _Runner())
+    import io
+    monkeypatch.setattr(sys, "stdin", io.StringIO("SELECT 1"))
+    assert explain_mod.main(["--sql-stdin", "--analyze"]) == 0
 
 
 def test_semicolon_inside_a_literal_is_not_a_second_statement(monkeypatch):

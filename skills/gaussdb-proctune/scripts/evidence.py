@@ -114,15 +114,13 @@ def extract_tables(sql_text: str) -> list[str]:
 
 # --- DML detection + EXPLAIN (port of explain.go) ----------------------------
 
-_DML_RE = re.compile(r"(?i)^\s*(insert|update|delete|merge)\b")
-_CTE_RE = re.compile(r"(?i)^\s*with\b")
-_CTE_DML_RE = re.compile(r"(?i)\b(insert|update|delete|merge)\b")
-
-
-def is_dml(sql_text: str) -> bool:
-    if _DML_RE.search(sql_text):
-        return True
-    return bool(_CTE_RE.search(sql_text) and _CTE_DML_RE.search(sql_text))
+# 判定统一走 common.grmp.statement —— 这里原先抄了一份
+# `^\s*(insert|update|delete|merge)\b`，explain 和 sqltune 各抄一份，共三份。
+# 那个正则的 `^\s*` 跳空白但不跳注释，`/* c */ UPDATE ...` 判成非 DML。
+# 本文件的 is_dml 同时把着 explain(analyze=True) 要不要包回滚（下面 _EXPLAIN
+# 那段）和 verify.py 的等价性校验要不要跳过 —— 判错一次两处一起失效。
+# 复制粘贴的判定改不动：修一处，另两处照旧带着 bug 跑。
+from common.grmp.statement import is_dml  # noqa: E402,F401  (verify.py 从本模块导入)
 
 
 def explain_via_script(runner, sql_text: str, analyze: bool) -> str:

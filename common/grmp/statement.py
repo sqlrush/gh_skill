@@ -28,37 +28,104 @@ def leading_keyword(sql: str) -> str:
     return match.group(0).lower() if match else ""
 
 
+def _scan(sql: str):
+    """逐字符扫描，标出每个字符处在 sql / quote / comment 哪一段。
+
+    单遍扫描共享给 strip_noise 与 split_statements —— 两处各写一套状态机的话，
+    迟早在某个转义细节上分叉，而分叉出来的差异是静默的。
+
+    转义与引号的处理刻意保守：`E'\\''` 这类反斜杠转义会被当成字面量提前结束，
+    `$$...$$` 完全不认。两者的错法都是**多切一刀**，也就是把一条语句判成多条 ——
+    多判出来的语句会被上层拒掉，是"错杀"而不是"放过"。反过来漏切才危险。
+    """
+    i, n = 0, len(sql)
+    quote = None
+    comment = None
+    while i < n:
+        ch = sql[i]
+        nxt = sql[i + 1] if i + 1 < n else ""
+        if comment == "--":
+            yield ch, "comment"
+            if ch == "\n":
+                comment = None
+            i += 1
+        elif comment == "/*":
+            yield ch, "comment"
+            if ch == "*" and nxt == "/":
+                yield nxt, "comment"
+                comment = None
+                i += 2
+            else:
+                i += 1
+        elif quote:
+            yield ch, "quote"
+            if ch == quote:
+                if nxt == quote:      # 连续两个引号是转义，不结束字面量
+                    yield nxt, "quote"
+                    i += 2
+                    continue
+                quote = None
+            i += 1
+        elif ch == "-" and nxt == "-":
+            comment = "--"
+            yield ch, "comment"
+            yield nxt, "comment"
+            i += 2
+        elif ch == "/" and nxt == "*":
+            comment = "/*"
+            yield ch, "comment"
+            yield nxt, "comment"
+            i += 2
+        elif ch in ("'", '"'):
+            quote = ch
+            yield ch, "quote"
+            i += 1
+        else:
+            yield ch, "sql"
+            i += 1
+
+
+def strip_noise(sql: str, literals: bool = False) -> str:
+    """把注释（可选：连同字符串字面量）抹成等长空格。
+
+    抹成空格而不是删掉：`select 1--c\\nfrom t` 直接删注释会粘成 `select 1from t`，
+    再去数关键字就成了 `1from`。等长替换还顺带保住了字符偏移。
+
+    literals=True 时连字面量一起抹 —— 扫关键字时要的是这个，否则
+    `select 'delete' as a` 会被当成 DELETE。
+    """
+    out = []
+    for ch, state in _scan(sql):
+        blank = state == "comment" or (literals and state == "quote")
+        # 换行保留原样：`--` 注释靠它收尾，抹成空格会把下一行并进注释里
+        out.append(("\n" if ch == "\n" else " ") if blank else ch)
+    return "".join(out)
+
+
 def split_statements(sql: str) -> List[str]:
-    """按分号拆成多条语句，跳过字符串字面量里的分号。
+    """按分号拆成多条语句，跳过字符串字面量**与注释**里的分号。
 
     中间件允许一次调用发多条语句（PREPARE + EXPLAIN EXECUTE 就靠这个），
     所以判定必须逐条来。只看首个关键字的话，
     `select 1; drop table t;` 会被判成只读。
+
+    注释里的分号原先是算数的，于是 `SELECT 1 AS x -- a;b;c` 被判成 3 条语句。
+    实测后果：中间件模式下这条完全合法的单语句被 explain 拒掉，理由还是错的
+    （"含多条语句（3 条）"）；直连模式靠回落到原始会话侥幸能跑 —— 同一条 SQL
+    两条路两个结果。客户环境只有中间件，那就是硬失败。
+
+    只由注释和空白构成的片段会被丢掉：`SELECT 1; -- 收尾注释` 是一条语句，
+    不是两条。丢掉不含可执行内容的片段不可能凭空多出语句，方向上是安全的。
     """
-    out, buf, quote = [], [], None
-    i = 0
-    while i < len(sql):
-        ch = sql[i]
-        if quote:
-            buf.append(ch)
-            if ch == quote:
-                # 连续两个引号是转义，不结束字面量
-                if i + 1 < len(sql) and sql[i + 1] == quote:
-                    buf.append(sql[i + 1])
-                    i += 2
-                    continue
-                quote = None
-        elif ch in ("'", '"'):
-            quote = ch
-            buf.append(ch)
-        elif ch == ";":
+    out, buf = [], []
+    for ch, state in _scan(sql):
+        if state == "sql" and ch == ";":
             out.append("".join(buf))
             buf = []
         else:
             buf.append(ch)
-        i += 1
     out.append("".join(buf))
-    return [s for s in out if s.strip()]
+    return [s for s in out if strip_noise(s).strip()]
 
 
 def is_read_only(sql: str) -> bool:
@@ -67,6 +134,40 @@ def is_read_only(sql: str) -> bool:
     if not parts:
         return True
     return all(leading_keyword(p) in READ_ONLY_STARTERS for p in parts)
+
+
+# 会改数据的起始关键字。DDL/DCL 不在这里 —— 它们由 READ_ONLY_STARTERS
+# 的白名单兜住，不需要再列一份黑名单（列黑名单永远会漏，COPY/GRANT/VACUUM
+# 就是原先那份 DDL 正则漏掉的）。
+_DML_STARTERS = frozenset({"insert", "update", "delete", "merge"})
+_DML_WORD_RE = re.compile(r"(?i)\b(insert|update|delete|merge)\b")
+
+
+def is_dml(sql: str) -> bool:
+    """这条 SQL 会不会改数据。
+
+    **按归一化后的首关键字判，不在原始文本上跑正则。** 原先三个 skill 各自
+    抄了一份 `^\\s*(insert|update|delete|merge)\\b`：`^\\s*` 跳空白但不跳注释，
+    于是 `/* c */ UPDATE t SET ...` 判成非 DML。
+
+    实测后果（og5，gsql 与 pg8000 两条直连各复现一次）：explain --analyze
+    下这条载荷既没被拒绝（拒绝检查用的就是本函数），也没被包进回滚事务
+    （包不包也用本函数），UPDATE/DELETE 直接落盘 —— 表被改、被清空，
+    而 explain 退出码 0，报告里是一份看起来完全正常的执行计划。
+    一个函数同时把着"要不要拒"和"要不要回滚"两道闸，判错一次就是双重失效。
+
+    CTE 里藏写操作（`WITH x AS (DELETE ... RETURNING 1) SELECT * FROM x`）
+    首关键字是 with，得往里再看一眼；扫之前先把注释和字符串字面量抹掉，
+    否则 `WITH x AS (SELECT 'delete') ...` 会被误判。
+    """
+    for part in split_statements(sql):
+        keyword = leading_keyword(part)
+        if keyword in _DML_STARTERS:
+            return True
+        if keyword == "with" and _DML_WORD_RE.search(
+                strip_noise(part, literals=True)):
+            return True
+    return False
 
 
 class ExplainNotAllowed(Exception):
@@ -110,10 +211,10 @@ def ensure_explainable(sql: str, analyze: bool = False) -> None:
             % len(statements)
         )
 
-    # 只有注释/空白时 split_statements 仍会给回一项，但它没有可执行内容。
-    # 这道检查以前是被「非只读」那条顺手拦住的 —— 放宽只读要求后就漏了，
-    # 得显式判。递一段纯注释进模板会拼出 `EXPLAIN (...) -- xxx`，
-    # EXPLAIN 后面空无一物，报的是看不出所以然的语法错。
+    # 纯注释现在由 split_statements 直接丢掉，上面 `not statements` 那条就兜住了。
+    # 这里再判一次是因为「片段非空但取不出首关键字」仍然可能（比如一段孤立的
+    # 字符串字面量）—— 递进模板会拼出 EXPLAIN 后面空无一物，报的是看不出
+    # 所以然的语法错。
     if not leading_keyword(statements[0]):
         raise ExplainNotAllowed("SQL 里没有可执行的语句（只有注释或空白）。")
 
