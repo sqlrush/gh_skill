@@ -22,11 +22,15 @@ def test_script_loads_and_is_readonly(rel, name):
 
 
 def test_pairs_returns_every_column_the_report_needs():
-    """列名是**契约**。少一列，报告里那一栏会静默变空。"""
+    """列名是**契约**。少一列，报告里那一栏会静默变空。全部 18 列都要覆盖 ——
+    覆盖不全的守卫等于没守卫：漏掉的那几列照样能悄悄消失而没有测试报警。"""
     sql = load_script(_REG / "lockwait/pairs.yaml").script_content
-    for col in ("waiter_sessionid", "waiter_mode", "holder_sessionid",
-                "holder_mode", "locktype", "lock_object", "locktag",
-                "waiter_wait_s", "holder_state", "holder_query", "waiter_query"):
+    for col in ("waiter_pid", "waiter_sessionid", "waiter_mode",
+                "holder_pid", "holder_sessionid", "holder_mode",
+                "locktype", "lock_object", "locktag",
+                "waiter_wait_s", "waiter_user", "waiter_app", "waiter_query",
+                "holder_state", "holder_user", "holder_app",
+                "holder_xact_age_s", "holder_query"):
         assert col in sql, "pairs.yaml 少了列 %s" % col
 
 
