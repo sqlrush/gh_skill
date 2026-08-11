@@ -94,8 +94,15 @@ def findings_from_json(text: str) -> list[Finding]:
     if not isinstance(payload, dict) or "findings" not in payload:
         raise ValueError("findings json 缺 'findings' 键，拿到的是：%r"
                          % (list(payload)[:5] if isinstance(payload, dict) else type(payload).__name__))
+    findings = payload["findings"]
+    if not isinstance(findings, list):
+        raise ValueError("findings json 的 'findings' 应为列表，拿到的是：%s"
+                         % type(findings).__name__)
     out = []
-    for i, raw in enumerate(payload["findings"]):
+    for i, raw in enumerate(findings):
+        if not isinstance(raw, dict):
+            raise ValueError("第 %d 条 finding 应为对象，拿到的是：%s"
+                             % (i, type(raw).__name__))
         missing = [k for k in _REQUIRED if k not in raw]
         if missing:
             raise ValueError("第 %d 条 finding 缺字段 %s" % (i, missing))

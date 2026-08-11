@@ -71,6 +71,22 @@ def test_from_json_rejects_a_wrong_shape():
         findings_from_json(json.dumps({"nope": 1}))
 
 
+def test_from_json_rejects_findings_being_none():
+    """findings 是 None 不该冒出 TypeError —— 调用方只捕获 ValueError。"""
+    with pytest.raises(ValueError):
+        findings_from_json(json.dumps({"skill": "x", "findings": None}))
+
+
+def test_from_json_rejects_findings_being_a_scalar():
+    with pytest.raises(ValueError):
+        findings_from_json(json.dumps({"skill": "x", "findings": 5}))
+
+
+def test_from_json_rejects_a_list_of_non_dicts():
+    with pytest.raises(ValueError):
+        findings_from_json(json.dumps({"skill": "x", "findings": [1, 2, 3]}))
+
+
 def test_finding_is_immutable():
     with pytest.raises(Exception):
         _f().code = "X"
