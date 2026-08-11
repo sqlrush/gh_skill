@@ -153,13 +153,30 @@ def proc_collect(runner, qualified: str) -> ProcEvidence:
     )
 
 
-_NO_HYPOPG_NOTE = (
-    "**索引建议未经验证。** 本次连接不提供跨语句的持久会话（中间件的白名单模型，"
-    "或每条语句起独立子进程的 gsql），而 hypopg 虚拟索引必须与随后的 EXPLAIN "
-    "落在同一条连接里 —— 跨调用会不报错地得出「加这个索引没用」的错误结论。\n"
-    "下面的索引建议来自表/列统计与执行计划的推断，**加索引前请人工验证**；"
-    "需要验证背书请改用 driver: pg8000 的连接重跑。"
+_NO_HYPOPG_BODY = (
+    "**索引建议未经验证。** 本次连接不提供跨语句的持久会话，而 hypopg 虚拟索引"
+    "必须与随后的 EXPLAIN 落在同一条连接里 —— 跨调用会不报错地得出"
+    "「加这个索引没用」的错误结论。\n"
+    "下面的索引建议来自表/列统计与执行计划的推断，**加索引前请人工验证**。"
 )
+
+# 收尾那句按访问路径分叉，理由同 sqltune：白名单部署里没有可切换的直连
+# 通道，劝客户「改用 driver: pg8000」不是建议，是把人往绕过白名单的方向引。
+_HYPOPG_HINT_DIRECT = "需要验证背书请改用 driver: pg8000 的连接重跑。"
+_HYPOPG_HINT_WHITELIST = (
+    "本次走的是白名单访问路径（只执行预注册脚本、每次调用独立连接），"
+    "该能力在这套部署里不提供 —— 没有可切换的选项，以人工验证为准。"
+)
+
+# 兼容旧名：降级标注不能丢，tests/test_degrade_contract_units.py 钉着它。
+_NO_HYPOPG_NOTE = _NO_HYPOPG_BODY + _HYPOPG_HINT_DIRECT
+
+
+def no_hypopg_note(runner) -> str:
+    """按访问路径给出降级标注。runner 就是「这条路是什么」的载体。"""
+    if getattr(runner, "whitelist_only", False):
+        return _NO_HYPOPG_BODY + _HYPOPG_HINT_WHITELIST
+    return _NO_HYPOPG_BODY + _HYPOPG_HINT_DIRECT
 
 
 def tune_cursors(runner, db, qualified: str,
@@ -208,7 +225,7 @@ def tune_cursors(runner, db, qualified: str,
         if db is None:
             # 没有原始会话 —— hypopg 虚拟索引必须与随后的 EXPLAIN 同处一条连接，
             # 跨调用会**不报错地**得出「加这个索引没用」的错误结论。
-            note = _NO_HYPOPG_NOTE
+            note = no_hypopg_note(runner)
         else:
             try:
                 verified = verify_indexes(db, sub.sql, MIN_SPEEDUP)
@@ -390,7 +407,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     db = None
     try:
         runner = access.for_conn(args.conn, timeout=args.timeout)
-        if needs_session:
+        # 先问再取：中间件那条路注定给不了会话，没必要先试一次再从异常里恢复。
+        # gsql 仍要建连后才看得出（每条语句起独立子进程），所以 except 留着。
+        if needs_session and access.may_provide_session(args.conn):
             try:
                 db = access.session_for(args.conn)
             except access.SessionUnavailable:

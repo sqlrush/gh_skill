@@ -36,6 +36,16 @@ def _load(skill, mod):
 # 未验证标注不能丢
 # ===========================================================================
 
+class _WhitelistRunner:
+    """白名单访问路径（中间件）。"""
+    whitelist_only = True
+
+
+class _DirectRunner:
+    """直连访问路径。"""
+    whitelist_only = False
+
+
 @pytest.mark.parametrize("skill", ["sqltune", "proctune"])
 def test_no_hypopg_note_exists_and_says_unverified(skill):
     """两个 skill 都得有这条标注，且必须点明「未经验证」。
@@ -47,7 +57,43 @@ def test_no_hypopg_note_exists_and_says_unverified(skill):
     assert note, "%s 缺 _NO_HYPOPG_NOTE —— 降级时索引建议会不带标注" % skill
     assert "未经验证" in note
     assert "人工验证" in note, "得告诉 DBA 下一步该做什么，不能只说坏消息"
-    assert "pg8000" in note, "得给出拿到验证背书的具体办法"
+
+
+@pytest.mark.parametrize("skill", ["sqltune", "proctune"])
+def test_no_hypopg_note_is_worded_per_access_path(skill):
+    """「下一步该做什么」两条路不一样，标注不能只有一份措辞。
+
+    这条原先断言 note 里必须出现 pg8000（"得给出拿到验证背书的具体办法"）。
+    在本机直连时那确实是可执行的下一步；可客户的白名单部署里**压根没有直连
+    通道** —— 那正是白名单模型的前提。对着那边的 DBA 说「改用 driver: pg8000
+    重跑」，不是建议，是噪音，还会把人往「绕过白名单」的方向引。
+
+    所以拆成两句：直连给具体办法，白名单说清这套部署里没有可切换的选项、
+    以人工验证为准。两边都必须保留「未经验证 / 人工验证」这个核心信号。
+    """
+    m = _load(skill, skill)
+    direct = m.no_hypopg_note(_DirectRunner())
+    whitelist = m.no_hypopg_note(_WhitelistRunner())
+
+    assert "pg8000" in direct, "直连路径要给出拿到验证背书的具体办法"
+    assert "pg8000" not in whitelist, (
+        "白名单路径不该提 pg8000 —— 客户环境没有直连通道，这句话不可执行")
+    for note in (direct, whitelist):
+        assert "未经验证" in note and "人工验证" in note
+
+
+@pytest.mark.parametrize("skill", ["sqltune", "proctune"])
+def test_session_is_not_attempted_on_a_whitelist_path(skill):
+    """中间件那条路注定给不了会话，就不该先试一次再从异常里恢复。
+
+    拿 SessionUnavailable 当控制流的代价不只是白跑一趟：降级路径是靠 except
+    分支拼出来的，读代码的人看不出「这条路本来就不走 hypopg」是设计，
+    还是某次失败的兜底。
+    """
+    src = (_ROOT / "skills" / ("gaussdb-" + skill) / "scripts"
+           / (skill + ".py")).read_text(encoding="utf-8")
+    assert "may_provide_session" in src, (
+        "%s 仍在无条件尝试 session_for()" % skill)
 
 
 @pytest.mark.parametrize("skill", ["sqltune", "proctune"])

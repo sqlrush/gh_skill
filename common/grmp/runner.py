@@ -46,6 +46,8 @@ class DirectRunner:
     """
 
     provides_session = False
+    # 直连能跑任意 SQL —— 与 GrmpRunner 的差别就在这一位上。
+    whitelist_only = False
 
     def __init__(
         self,

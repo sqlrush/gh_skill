@@ -29,6 +29,7 @@ from .grmp.settings import Settings
 __all__ = ["for_conn", "runner_for", "session_for", "session_for_conn",
            "connection_for", "connection_for_conn",
            "require_unregistered_sql", "require_unregistered_sql_for_conn",
+           "may_provide_session", "whitelist_only",
            "QueryError", "AccessError", "SessionUnavailable",
            "UnregisteredSqlUnsupported"]
 
@@ -144,6 +145,32 @@ def session_for_conn(conn: Connection, read_only: bool = True):
 def session_for(name: str, read_only: bool = True):
     """按连接名索取带持久会话的原始连接。"""
     return session_for_conn(resolve(name), read_only=read_only)
+
+
+def may_provide_session(name: str) -> bool:
+    """这条访问路径**有没有可能**给出跨语句的持久会话。不抛异常，不建连接。
+
+    与 session_for() 是问与取的关系：拿 SessionUnavailable 当控制流，意味着
+    每次都要先尝试、再从异常里恢复 —— 而对中间件来说那次尝试是注定失败的，
+    白跑一趟不说，降级路径还得靠 except 分支拼出来。skill 该在动手之前就
+    知道这条路通不通。
+
+    返回 False 是**确定**给不了（白名单型中间件每次调用独立连接）。
+    返回 True 只表示驱动这一层没排除 —— gsql 每条语句起独立子进程，
+    要等 session_for() 建连后看后端的 provides_session 才能定。
+    """
+    return (resolve(name).driver or "gsql") not in _STATELESS
+
+
+def whitelist_only(name: str) -> bool:
+    """这条访问路径是不是只执行预注册脚本的白名单型通道。
+
+    给的是**措辞**的依据，不是能力的依据：同一句「拿不到 hypopg 背书」，
+    本机调试时下一步是「换 driver: pg8000 重跑」，而客户的白名单部署里
+    压根没有直连通道 —— 那句话在那边不是建议，是噪音，还会把人往
+    「绕过白名单」的方向引。
+    """
+    return (resolve(name).driver or "gsql") in _WHITELIST_ONLY
 
 
 def require_unregistered_sql_for_conn(conn: Connection) -> None:

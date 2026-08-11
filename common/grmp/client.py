@@ -170,6 +170,10 @@ class GrmpRunner:
     """
 
     provides_session = False
+    # 只执行预注册脚本。与 provides_session 是**两根独立的轴**（见 access.py）：
+    # 这条说「跑不了临时给的 SQL」，那条说「跨语句状态留不住」。skill 拿它决定
+    # 降级时该怎么措辞 —— 白名单部署里没有可切换的直连选项，劝人换驱动是噪音。
+    whitelist_only = True
 
     def __init__(self, client: GrmpClient):
         self._client = client

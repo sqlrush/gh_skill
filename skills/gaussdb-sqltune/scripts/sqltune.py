@@ -99,19 +99,37 @@ class TuneResult:
     derivation_report: str = ""
 
 
-_NO_HYPOPG_NOTE = (
-    "**hypopg 虚拟索引验证在本次连接下不可用。** 中间件的白名单模型（以及每条"
-    "语句起独立子进程的 gsql）不提供跨语句的持久会话，而虚拟索引必须与随后的 "
-    "EXPLAIN 落在同一条连接里 —— 跨调用会不报错地得出「加这个索引没用」的"
-    "错误结论。\n"
+_NO_HYPOPG_BODY = (
+    "**hypopg 虚拟索引验证在本次连接下不可用。** 虚拟索引必须与随后的 EXPLAIN "
+    "落在同一条连接里，而本次访问路径不提供跨语句的持久会话 —— 跨调用会不报错"
+    "地得出「加这个索引没用」的错误结论。\n"
     "**替代证据见下面的「代价推演」一节**：它用规划器自己的公式复算当前计划的"
     "每一个节点并与 EXPLAIN 实测逐节点比对，通过了才说明模型在这个实例上可信。\n"
     "注意两者的区别，别混为一谈：hypopg 是**实测**加了索引之后的计划；"
     "代价推演校准的是**基线**，即「当前这个代价是怎么算出来的」。\n"
     "所以下面的索引建议依然**未经验证** —— 推演没有回答「加了这条索引会变成"
-    "多少」，加索引前请**人工验证**；需要 hypopg 背书请改用 driver: pg8000 "
-    "的连接重跑。"
+    "多少」，加索引前请**人工验证**。"
 )
+
+# 收尾那句按访问路径分叉。同一件事，两边的下一步不一样：
+#   本机直连  下一步是换一条 driver: pg8000 的连接重跑，确实能拿到背书
+#   白名单    压根没有直连通道 —— 那句话在客户环境不是建议，是噪音，
+#             还会把人往「绕过白名单」的方向引。这边只能是人工验证。
+_HYPOPG_HINT_DIRECT = "需要 hypopg 背书请改用 driver: pg8000 的连接重跑。"
+_HYPOPG_HINT_WHITELIST = (
+    "本次走的是白名单访问路径（只执行预注册脚本、每次调用独立连接），"
+    "该能力在这套部署里不提供 —— 没有可切换的选项，索引建议以人工验证为准。"
+)
+
+# 兼容旧名：降级标注不能丢，tests/test_degrade_contract_units.py 钉着它。
+_NO_HYPOPG_NOTE = _NO_HYPOPG_BODY + _HYPOPG_HINT_DIRECT
+
+
+def no_hypopg_note(runner) -> str:
+    """按访问路径给出降级标注。runner 就是「这条路是什么」的载体。"""
+    if getattr(runner, "whitelist_only", False):
+        return _NO_HYPOPG_BODY + _HYPOPG_HINT_WHITELIST
+    return _NO_HYPOPG_BODY + _HYPOPG_HINT_DIRECT
 
 
 def _derivation_report(runner, db, sql_text: str, ev) -> str:
@@ -205,7 +223,7 @@ def _tune(runner, db, *, original_sql: str, binds: list[str], do_analyze: bool,
         # 没有原始会话 —— hypopg 的虚拟索引必须与随后的 EXPLAIN 同处一条连接，
         # 跨调用会**不报错地**得出「加这个索引没用」的错误结论。所以不做，
         # 并且把这件事写进报告：本次的索引建议没有验证背书。
-        note = _NO_HYPOPG_NOTE
+        note = no_hypopg_note(runner)
     else:
         try:
             verified = verify_indexes(db, sub.sql, MIN_SPEEDUP)
@@ -339,13 +357,21 @@ def main(argv: Optional[list[str]] = None) -> int:
     db = None
     try:
         runner = access.for_conn(args.conn, timeout=args.timeout)
-        try:
-            # 有会话就用 —— 索引验证只有这条路
-            db = access.session_for(args.conn, read_only=not args.analyze)
-        except access.SessionUnavailable:
+        # 先问再取。中间件这条路注定给不了会话，原先仍要先 session_for() 一次
+        # 再从 SessionUnavailable 里恢复 —— 白跑一趟，且降级路径是靠 except
+        # 分支拼出来的。问一句就知道走不走得通，不必拿异常当控制流。
+        if access.may_provide_session(args.conn):
+            try:
+                # 有会话就用 —— 索引验证只有这条路
+                db = access.session_for(args.conn, read_only=not args.analyze)
+            except access.SessionUnavailable:
+                # gsql 要建连之后才看得出没有会话（每条语句起独立子进程），
+                # 所以这条 except 还得留着，只是不再兼管中间件那种情形。
+                db = None
+        if db is None:
             # 没有会话不等于什么都做不了：证据与执行计划照采，
             # 只是索引建议拿不到 hypopg 背书。降级的事实写进报告，不隐瞒。
-            db = None
+            #
             # 按 sql_id 取的 SQL 此刻还没到手，守卫挪到取回之后（_tune 里）。
             # 直接给的 SQL 现在就能校验，早报错早收工。
             if not has_id:
