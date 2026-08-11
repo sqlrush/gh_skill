@@ -342,3 +342,52 @@ def test_unconfirmed_caveat_counts_by_pair_not_by_holder():
     section = md[md.index("## 快速恢复语句"):]
     assert "2 对阻塞关系" in section
     assert "3001" in section and "3002" in section
+
+
+# ---------------------------------------------------------------------------
+# Fix round 3：review 发现前两轮堵的都是"聚合状态"的漏洞——一份报告里
+# 同时混几条独立的阻塞链时，某一条落进"没材料生成语句"的分类，但因为
+# **另一条**链成功生成了语句，kills 非空，兜底分支的触发条件
+# （`if not kills and not reasons`）看的是整体，不是这一条本身，于是
+# 这一条被静默放过。改成属性测试：不管 pairs 里混了多少种结果，
+# rep.pairs 里每一个 waiter 会话号都必须能在恢复语句小节的文本里找到，
+# 不针对某一个具体分支写断言——这样以后再加一种新分类，测试依然管用。
+# ---------------------------------------------------------------------------
+
+def test_every_pair_is_accounted_for_in_the_recovery_section():
+    """属性测试：一份报告里混了五种结果——
+      100 ← 200  根已确认，kill 语句成功生成
+      101 ← 300  根是 999，但 999 没有作为任何一对的 holder 出现在 pairs 里（orphan_root）
+      102 ← 400  chain 完全没有这个 waiter 的数据（data_gap）
+      103 ← 500  根已确认，但 holder_pid 缺失，kill 语句生成失败
+      105 ← 250  链条中间节点：链条的根是 200，200 已经在上面被确认为根
+    这不是按分支各写一条断言，而是不管走哪条分支、组合成什么样，
+    rep.pairs 里出现过的每一个 waiter 会话号都必须能在"快速恢复语句"
+    这一节的文本里找到——这正是 review 指出的、前两轮都没堵住的那类
+    漏洞：某一对是否被提及，不该取决于**另一对**恰好处于什么状态。"""
+    pairs = [
+        _pair(waiter_sessionid="100", holder_sessionid="200"),
+        _pair(waiter_sessionid="101", holder_sessionid="300"),
+        _pair(waiter_sessionid="102", holder_sessionid="400"),
+        _pair(waiter_sessionid="103", holder_sessionid="500", holder_pid=""),
+        _pair(waiter_sessionid="105", holder_sessionid="250"),
+    ]
+    edges = [
+        {"sessionid": "100", "block_sessionid": "200"},
+        {"sessionid": "101", "block_sessionid": "999"},
+        {"sessionid": "103", "block_sessionid": "500"},
+        {"sessionid": "105", "block_sessionid": "250"},
+        {"sessionid": "250", "block_sessionid": "200"},
+        # 102 故意不给边：chain 完全没有这个 waiter 的数据
+    ]
+    rep = lockwait.collect(_Runner(pairs=pairs, edges=edges), limit=20)
+    assert len(rep.pairs) == 5, "前提：五对都要真的活过冲突过滤，否则测试没有意义"
+    md = lockwait.render_markdown(rep)
+    assert "## 快速恢复语句" in md
+    section = md[md.index("## 快速恢复语句"):]
+    for p in rep.pairs:
+        wid = str(p.get("waiter_sessionid"))
+        assert wid in section, (
+            "会话 %s（对应的 pair 出现在阻塞明细里）从「快速恢复语句」"
+            "小节的文本里消失了——每一对都必须被覆盖或给出理由，"
+            "不能因为报告里别的对处于别的状态就被捎带忽略" % wid)

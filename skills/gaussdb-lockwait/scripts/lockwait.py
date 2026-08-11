@@ -264,44 +264,94 @@ def render_markdown(rep: LockReport) -> str:
     return "\n".join(out)
 
 
-def _root_holders(rep: LockReport):
-    """把 pairs 里的 holder 分成两类：confirmed（chain 确认是根）与
-    unconfirmed（chain 完全没提到对应的 waiter，无法判断）。
+def _classify_pairs(rep: LockReport) -> dict:
+    """把 `rep.pairs` 里**每一对**都归到唯一一类——这是一个全函数
+    （total function）：并集覆盖全部 pairs，四类互不重叠，任何一对都不
+    会因为落在两类判据的缝隙里而消失。
+
+    上两轮的教训：先是只分 confirmed/unconfirmed 两类，遗漏了"根已确认
+    但没出现在 pairs 里"的第三种情况；后来在渲染层用 `kills`/`reasons`
+    两个聚合状态去判断该不该提示，又在"两条链混在一份报告里、一条成功
+    生成语句、另一条恰好落进第三类"时失效——聚合判断只关心"整体有没有
+    话可说"，看不见"某一条具体的 pair 有没有被照顾到"。这次把判断挪到
+    最细的粒度：**每一对**在四类里必属其一，渲染层只管照着这四类如实
+    转述，不再做任何整体性的"还有没有话说"式推断。
+
+    四类（对每一对 (waiter, holder)）：
+
+      root          holder 本身就是（某条链的）确认根——是 kill 语句的
+                    直接对象。
+      data_gap      chain 里完全没有这个 waiter 的数据（waiter_sid 不在
+                    rep.roots 里）——不知道这个 holder 是不是根。
+      intermediate  chain 给出了这个 waiter 的根，根不是这个 holder，
+                    但那个根**确实**作为某一对的 holder 出现在了
+                    rep.pairs 里——这个 holder 只是链条中间节点，真正
+                    该杀的根有另一对负责生成语句/说明。
+      orphan_root   chain 给出了这个 waiter 的根，根不是这个 holder，
+                    而那个根**没有**作为任何一对的 holder 出现在
+                    rep.pairs 里——根已确认，但没有材料（pid/状态/
+                    query……）生成语句，需要人工继续查。
 
     `lockwait.pairs`（`pg_locks` 自连接）与 `lockwait.chain`
     （`pg_thread_wait_status`）是两条**独立、不同视图**上的查询，覆盖面
-    不保证一致：一个在 pairs 里真实冲突的 holder，chain 完全可能没有
-    这个 waiter 对应的边。这与「chain 明确知道这个 waiter 的根是别的
-    会话」是两件不同的事——后者是正常情况（这个 holder 只是链条中间
-    节点，不该杀），前者是**数据缺口**，不能被当成「不是根」而悄悄放过：
-    对应的 pair 既不会被杀、也不会被特别提示，报告读起来和「已确认无需
-    处理」一模一样，而事实是「没能确认」。
-
-    confirmed 按 **holder** 去重——同一个根 holder 挡了好几个 waiter 时，
-    只需要一条 kill 语句，杀一次就够了。unconfirmed 按 **(waiter, holder)
-    这一对** 去重，不按 holder 单独去重——它统计和列出的单位是「对阻塞
-    关系」（报告原话是「N 对……」），如果按 holder 折叠，两个不同的
-    waiter 被同一个未确认 holder 挡住时会被压成一条，数字和枚举都会比
-    实际少，而这一段的全部职责就是把这些缺口如实列出来，自己先漏一半
-    说不过去。
+    不保证一致，data_gap 与 orphan_root 都是这种不一致的直接后果。
     """
     root_ids = set(rep.roots.values())
-    seen, confirmed = set(), []
-    unconfirmed_seen, unconfirmed = set(), []
+    holder_sids_in_pairs = {as_int(p.get("holder_sessionid")) for p in rep.pairs}
+
+    buckets: dict = {"root": [], "data_gap": [], "intermediate": [], "orphan_root": []}
     for p in rep.pairs:
         waiter_sid = as_int(p.get("waiter_sessionid"))
         holder_sid = as_int(p.get("holder_sessionid"))
         if holder_sid in root_ids:
-            if holder_sid not in seen:
-                seen.add(holder_sid)
-                confirmed.append(p)
-            continue
-        if waiter_sid not in rep.roots:
-            key = (waiter_sid, holder_sid)
-            if key not in unconfirmed_seen:
-                unconfirmed_seen.add(key)
-                unconfirmed.append(p)
-    return confirmed, unconfirmed
+            buckets["root"].append(p)
+        elif waiter_sid not in rep.roots:
+            buckets["data_gap"].append(p)
+        elif rep.roots[waiter_sid] in holder_sids_in_pairs:
+            buckets["intermediate"].append(p)
+        else:
+            buckets["orphan_root"].append(p)
+    return buckets
+
+
+def _dedup_by_holder(pairs: list) -> list:
+    """按 holder 去重——生成 kill 语句只需要一条，同一个根挡了几个
+    waiter 不该重复杀。"""
+    seen, out = set(), []
+    for p in pairs:
+        h = as_int(p.get("holder_sessionid"))
+        if h not in seen:
+            seen.add(h)
+            out.append(p)
+    return out
+
+
+def _dedup_by_waiter_and_holder(pairs: list) -> list:
+    """按 (waiter, holder) 这一对去重——枚举"缺口"类文本的单位是
+    「对阻塞关系」，按 holder 单独折叠会让两个不同 waiter 撞上同一个
+    holder 时被压成一条，数字和枚举都比实际少。"""
+    seen, out = set(), []
+    for p in pairs:
+        key = (as_int(p.get("waiter_sessionid")), as_int(p.get("holder_sessionid")))
+        if key not in seen:
+            seen.add(key)
+            out.append(p)
+    return out
+
+
+def _waiters_by_holder(pairs: list) -> dict:
+    """holder_sessionid -> 被它挡住的 waiter_sessionid 列表（保留原始
+    字符串、去重、按出现顺序）。用来在 kill 语句/失败说明旁边标注
+    "这条语句预计解除了哪些会话"——`recovery.kill_for()` 只知道 holder，
+    不知道被它挡住的是谁，这段追加要在 lockwait.py 这一层做。"""
+    out: dict = {}
+    for p in pairs:
+        h = as_int(p.get("holder_sessionid"))
+        w = p.get("waiter_sessionid")
+        bucket = out.setdefault(h, [])
+        if w not in bucket:
+            bucket.append(w)
+    return out
 
 
 def _kill_statements(root_holders: list):
@@ -343,72 +393,103 @@ def _kill_statements(root_holders: list):
 def _render_recovery_section(rep: LockReport) -> str:
     """渲染「## 快速恢复语句」整段。
 
-    **不变量（这是本函数存在的唯一理由，按不变量把住，不按分支把住）：**
-    只要 `rep.pairs` 非空，这一段就绝不能出现
-    `recovery.render_kills([])` 那句裸的「无 —— 当前没有需要处理的根阻塞
-    会话」。那句话只在「压根没有阻塞对」这一种情况下才成立——不管是
-    chain 缺数据（unconfirmed）、pid/sessionid 拿到但生成语句时失败
-    （kill_failures），还是 chain 确认了根、但那个根没有出现在 pairs
-    的持有者列里（下面的兜底分支），全都不是「无」，是「没能确认/没能
-    生成」，必须在这个小节内部说清楚，不能让读者读到「无需处理」。
+    **不变量（这是本函数存在的唯一理由）：`rep.pairs` 里的每一对，要么
+    被一条已生成的 kill 语句覆盖，要么有一句写明的理由说明为什么没有。
+    不允许任何一对因为"恰好还有别的对生成了语句/给出了理由"就被聚合
+    状态判断悄悄放过。**
 
-    上一轮只在「有 unconfirmed」这一个分支里堵了这句话，结果
-    「有 confirmed 但全部生成失败、且没有 unconfirmed」这个分支原样
-    漏了出去（`kills == [] and caveat == ""` 时仍然落到
-    `recovery.render_kills([])`）。这一轮改成：**pairs 非空时压根不再
-    调用 `render_kills([])`**——kills 非空才用它渲染真正的语句列表，
-    kills 为空则由本函数自己给标题和「未生成」说明，永远不经过那句
-    「无」的文案；再逐项追加 unconfirmed / kill_failures / 兜底三类原因，
-    确保 kills 为空时至少有一类原因被打印出来。
+    这是本函数第三次因为同一类问题被改：
+      round 1：只判断"有没有 unconfirmed"，漏了"confirmed 但全部生成
+        失败"这个分支。
+      round 2：把裸"无"堵死了，但用 `kills`/`reasons` 两个**聚合**布尔
+        状态去决定要不要打印某一类说明——两条独立的阻塞链混在一份报告
+        里、一条成功生成了语句时，`kills` 非空，另一条恰好落进"根已
+        确认但不在 pairs 里"这个兜底分支就被跳过了，因为兜底分支的
+        触发条件写的是 `if not kills and not reasons`，只要**别的**pair
+        让 kills 非空，这一对就静默消失。
+      round 3（本次）：不再用任何聚合状态做判断。`_classify_pairs()`
+        把每一对都放进四个互斥的桶（root / data_gap / intermediate /
+        orphan_root），下面对四个桶**各自独立**地渲染说明——桶 A 是否
+        非空只取决于桶 A 里有没有 pair，与桶 B 是否非空无关。这样不管
+        一份报告里同时出现多少条独立的阻塞链、各自处于什么状态，每一对
+        都有自己对应的一句话，不会因为报告里别的部分"看起来正常"就被
+        捎带着忽略。
     """
-    confirmed_roots, unconfirmed_roots = _root_holders(rep)
-    kills, kill_failures = _kill_statements(confirmed_roots)
-
     if not rep.pairs:
-        return recovery.render_kills(kills)   # 真正的"无"：没有阻塞对
+        return recovery.render_kills([])   # 真正的"无"：没有阻塞对
+
+    buckets = _classify_pairs(rep)
+    root_pairs = _dedup_by_holder(buckets["root"])
+    waiters_by_holder = _waiters_by_holder(buckets["root"])
+    kills, kill_failures = _kill_statements(root_pairs)
 
     if kills:
         section = recovery.render_kills(kills)
+        notes = []
+        for k in kills:
+            waiters = waiters_by_holder.get(k.target_sessionid, [])
+            if waiters:
+                notes.append(
+                    "> 会话 %s 的这条语句预计解除：%s 的阻塞"
+                    % (k.target_sessionid, "、".join(str(w) for w in waiters)))
+        if notes:
+            section += "\n" + "\n".join(notes)
     else:
         section = ("## 快速恢复语句\n\n"
                    "> **未生成任何 kill 语句**——原因见下，不代表当前"
                    "无需处理：\n")
 
-    reasons = []
-    if unconfirmed_roots:
-        reasons.append(
+    if kill_failures:
+        lines = []
+        for p, reason in kill_failures:
+            h = as_int(p.get("holder_sessionid"))
+            waiters = waiters_by_holder.get(h) or [p.get("waiter_sessionid")]
+            lines.append("> - 会话 %s（挡住 %s）：%s"
+                         % (h, "、".join(str(w) for w in waiters), reason))
+        section += "\n" + (
+            "> **%d 个根 holder 的 kill 语句未能生成**（pid/sessionid "
+            "缺失或不是合法数字，为避免编造数据已跳过，请人工核对该会话）：\n"
+            % len(kill_failures) + "\n".join(lines))
+
+    data_gap = _dedup_by_waiter_and_holder(buckets["data_gap"])
+    if data_gap:
+        section += "\n" + (
             "> **%d 对阻塞关系因阻塞链数据缺失，未能确认根 holder，"
             "未生成对应 kill 语句**（`lockwait.pairs` 与 `lockwait.chain` "
             "是两条独立查询，覆盖面可能不一致；不能因为 chain 没提到就"
             "当作「不是根」处理，也不能猜它是根去生成语句）：\n"
-            % len(unconfirmed_roots)
+            % len(data_gap)
             + "\n".join(
                 "> - 会话 %s ← %s（%s %s）"
                 % (p.get("waiter_sessionid"), p.get("holder_sessionid"),
                    p.get("locktype"), p.get("lock_object") or "")
-                for p in unconfirmed_roots))
-    if kill_failures:
-        reasons.append(
-            "> **%d 个根 holder 的 kill 语句未能生成**（pid/sessionid "
-            "缺失或不是合法数字，为避免编造数据已跳过，请人工核对该会话）：\n"
-            % len(kill_failures)
-            + "\n".join("> - 会话 %s：%s" % (p.get("holder_sessionid"), reason)
-                       for p, reason in kill_failures))
-    if not kills and not reasons:
-        # 兜底：pairs 非空、没有已确认的根、也没有 unconfirmed、也没有
-        # kill_failures——只剩一种情况能落到这里：chain 已经确认了某个
-        # waiter 的根，但那个根会话没有作为 holder 出现在**任何**一条
-        # pairs 里（它可能持有的是链条上游、这次 pairs 明细没覆盖到的
-        # 另一把锁）。既不是「数据缺口」（chain 其实给出了根），也不是
-        # 「生成失败」（根本没有材料可以尝试生成），但同样不能被漏掉。
-        reasons.append(
-            "> 阻塞链数据已确认了根会话，但该会话未出现在「阻塞明细」的"
-            "持有者列里（它可能持有的是链条上游、不在本次 pairs 明细"
-            "范围内的另一把锁），因此没有材料生成 kill 语句，需人工"
-            "进一步排查。\n")
+                for p in data_gap))
 
-    for r in reasons:
-        section += "\n" + r
+    intermediate = _dedup_by_waiter_and_holder(buckets["intermediate"])
+    if intermediate:
+        section += "\n" + (
+            "> %d 对是阻塞链的中间节点（真正的根另有确认，见上文/下方"
+            "对应根的语句或说明；杀中间节点不解堵，因此不单独生成"
+            "语句）：\n" % len(intermediate)
+            + "\n".join(
+                "> - 会话 %s ← %s（根是会话 %s）"
+                % (p.get("waiter_sessionid"), p.get("holder_sessionid"),
+                   rep.roots[as_int(p.get("waiter_sessionid"))])
+                for p in intermediate))
+
+    orphan_root = _dedup_by_waiter_and_holder(buckets["orphan_root"])
+    if orphan_root:
+        section += "\n" + (
+            "> **%d 对阻塞关系的根会话已被阻塞链数据确认，但该根未出现在"
+            "「阻塞明细」的持有者列里**（它可能持有的是链条上游、不在"
+            "本次 pairs 明细范围内的另一把锁），没有材料生成 kill 语句，"
+            "需人工进一步排查：\n" % len(orphan_root)
+            + "\n".join(
+                "> - 会话 %s ← %s（根是会话 %s，未出现在明细持有者列里）"
+                % (p.get("waiter_sessionid"), p.get("holder_sessionid"),
+                   rep.roots[as_int(p.get("waiter_sessionid"))])
+                for p in orphan_root))
+
     return section
 
 
