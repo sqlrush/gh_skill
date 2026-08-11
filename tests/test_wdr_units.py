@@ -52,9 +52,28 @@ def test_evidence_json_round_trip():
     assert back.dims[0].rows == [["1", "2"]]
 
 
-def test_finding_omits_empty_sql_id():
+def test_finding_always_emits_all_nine_keys():
+    """曾经的行为：`sql_id` 为空就整个键都不出现在 `to_dict()` 里。
+
+    Finding 归一到 `common.finding` 之后这条不再成立 —— `to_dict()` 现在是
+    **跨进程契约**：`gaussdb-health` 会把每个 skill 当子进程拉起来，解析它
+    `--format json` 的输出。键集合随内容变化，意味着每个消费者都得同时兼容
+    「有这个键」和「没有这个键」两种形状；不兼容时的失败模式是把缺的字段
+    读成「没有值」——静默，不是报错。键集合稳定正是 Task 1 的全部意义所在，
+    把 `to_dict()` 改回按内容有条件地出键，等于把这件事撤销。
+
+    代价是真实的，但小且可接受：wdr 的 json 输出从此会多出
+    `sql_id: ""`、`skill: ""`（原先未设置时这两个键根本不出现）。
+    用 `d["sql_id"]` 读的代码不受影响；只有 `"sql_id" in d` 这种存在性判断
+    的语义变了。
+    """
     f = Finding("d", "C", Severity.NOTICE, "m", "v", "t", "e")
-    assert "sql_id" not in f.to_dict()
+    d = f.to_dict()
+    assert set(d) == {"dimension", "code", "severity", "metric", "value",
+                      "threshold", "evidence", "sql_id", "skill"}
+    assert d["sql_id"] == "", "未设置时留空串，而不是省略这个键"
+    assert d["skill"] == "", "未设置时留空串，而不是没有这个键"
+
     f2 = Finding("d", "C", Severity.NOTICE, "m", "v", "t", "e", sql_id="9")
     assert f2.to_dict()["sql_id"] == "9"
 

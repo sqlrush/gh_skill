@@ -228,3 +228,22 @@ def test_non_analyze_templates_never_execute_user_sql(rel):
     assert "ANALYZE TRUE" not in sql, "%s 会真执行用户 SQL" % rel
     assert "{{" not in sql.split("EXPLAIN", 1)[1].split(")", 1)[0], (
         "%s 的 EXPLAIN 选项里有占位符 —— 选项不能由调用方控制" % rel)
+
+
+# ===========================================================================
+# Finding 不能三家各存一份 —— 汇总层要靠它跨进程解析
+# ===========================================================================
+
+@pytest.mark.parametrize("skill", ["health", "wdr", "memanalyze"])
+def test_finding_is_not_redefined_per_skill(skill):
+    """三个 skill 曾各存一份字段相同的 Finding。
+
+    汇总层出现之后这不只是重复：health 解析子 skill 的 json，三份定义
+    哪份多加一个字段，汇总侧读到的就和产出侧对不上 —— 而 json 对不上的
+    表现往往是**少一条风险**，不是报错。
+    """
+    src = (_ROOT / "skills" / ("gaussdb-" + skill) / "scripts"
+           / "model.py").read_text(encoding="utf-8")
+    code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
+    assert "class Finding" not in code, "%s 又自己定义了一份 Finding" % skill
+    assert "from common.finding import" in code, "%s 没走共用的 Finding" % skill

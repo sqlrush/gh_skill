@@ -6,31 +6,11 @@ Ordering matters: higher int = worse.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import IntEnum
 
-
-class Severity(IntEnum):
-    OK = 0
-    NOTICE = 1
-    WARN = 2
-    CRITICAL = 3
-
-    def label(self) -> str:
-        return {
-            Severity.CRITICAL: "🔴严重",
-            Severity.WARN: "🟠告警",
-            Severity.NOTICE: "🟡关注",
-        }.get(self, "🟢健康")
-
-
-def worst(severities: list[Severity]) -> Severity:
-    """Return the highest (worst) severity, OK if empty."""
-    w = Severity.OK
-    for s in severities:
-        if s > w:
-            w = s
-    return w
-
+# Finding 与 Severity 统一在 common/finding.py —— 本文件曾存一份完全相同的
+# 定义，health / wdr / memanalyze 三家各一份。汇总层要跨进程解析这个形状，
+# 三份定义迟早分叉，而分叉的表现是**少一条风险**，不是报错。
+from common.finding import Finding, Severity, worst  # noqa: F401
 
 # Dimension names (also the ## section titles in the evidence pack).
 DIM_OVERVIEW = "Overview"
@@ -45,25 +25,6 @@ DIM_LOGS = "Checkpoint / WAL / Archiving"
 DIM_REPL = "Replication / Standby"
 DIM_SCHEMA = "Schema / Objects"
 DIM_CONCURRENCY = "Transactions / Concurrency"
-
-
-@dataclass(frozen=True)
-class Finding:
-    """One deterministic, threshold-crossing observation. ``code`` is a stable
-    identifier the skill's verification gate and report cross-reference."""
-    dimension: str
-    code: str
-    severity: Severity
-    metric: str
-    value: str
-    threshold: str
-    evidence: str
-
-    def to_dict(self) -> dict:
-        return {"dimension": self.dimension, "code": self.code,
-                "severity": int(self.severity), "metric": self.metric,
-                "value": self.value, "threshold": self.threshold,
-                "evidence": self.evidence}
 
 
 @dataclass
