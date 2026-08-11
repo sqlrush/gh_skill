@@ -12,8 +12,8 @@ python3 -m grmp_middleware.dump_whitelist
 
 | 项 | 值 |
 |---|---|
-| 脚本总数 | 91 |
-| id 范围 | 1 ~ 91 |
+| 脚本总数 | 94 |
+| id 范围 | 1 ~ 94 |
 
 > `id` 是**环境相关数据，不是契约**。skill 从不持有它 —— 运行时调
 > 接口一按 `cmd_name` 现查。客户环境重新发布后 id 会不同，属正常。
@@ -23,18 +23,20 @@ python3 -m grmp_middleware.dump_whitelist
 | 命名空间 | 条数 | 脚本 |
 |---|---|---|
 | **explain** | 2 | `plan_text`, `plan_text_analyze` |
-| **health** | 19 | `archive_mode`, `bgwriter`, `bloat`, `conn_concentration`, `conn_states`, `db_concurrency`, `db_info`, `invalid_index`, `lock_chain`, `long_xact`, `lwlock`, `overview`, `prepared_xacts`, `replication`, `slow_sql`, `stale_stats`, `unused_index`, `waits`, `stats_window` |
+| **health** | 19 | `archive_mode`, `bgwriter`, `bloat`, `conn_concentration`, `conn_states`, `db_concurrency`, `db_info`, `invalid_index`, `lock_chain`, `long_xact`, `lwlock`, `overview`, `prepared_xacts`, `replication`, `slow_sql`, `stale_stats`, `stats_window`, `unused_index`, `waits` |
+| **lockwait** | 2 | `chain`, `pairs` |
 | **memanalyze** | 11 | `activity`, `cols_bare`, `cols_qualified`, `context`, `gucs`, `instance`, `session`, `wlm_operator`, `wlm_operator_hist`, `wlm_sql`, `wlm_sql_hist` |
 | **perf** | 9 | `bgwriter`, `db_stat`, `instance_time`, `locks`, `memory`, `sessions`, `table_stat`, `wait_events`, `wait_status` |
 | **procinfo** | 2 | `key_gucs`, `proc_def` |
-| **proctune** | 11 | `column_stats`, `db_version`, `indexes`, `key_gucs`, `plan_json`, `plan_text`, `plan_text_analyze`, `proc_def`, `sql_from_history`, `sql_from_statement`, `tables` |
+| **proctune** | 10 | `column_stats`, `db_version`, `indexes`, `key_gucs`, `plan_text`, `plan_text_analyze`, `proc_def`, `sql_from_history`, `sql_from_statement`, `tables` |
 | **session** | 3 | `active_only`, `by_user`, `top_by` |
 | **slowsql** | 1 | `slow_sql` |
 | **sqlfetch** | 2 | `from_history`, `from_statement` |
 | **sqlreview** | 5 | `from_history`, `from_statement`, `indexes`, `tables`, `top_sql` |
-| **sqltune** | 11 | `column_stats`, `from_history`, `from_statement`, `indexes`, `key_gucs`, `plan_json`, `plan_text`, `plan_text_analyze`, `tables`, `version`, `stats_freshness` |
+| **sqltune** | 11 | `column_stats`, `from_history`, `from_statement`, `indexes`, `key_gucs`, `plan_json`, `plan_text`, `plan_text_analyze`, `stats_freshness`, `tables`, `version` |
 | **topproc** | 1 | `top_procs` |
 | **topsql** | 1 | `top_sql` |
+| **waitevent** | 2 | `events`, `instance_time` |
 | **wdr** | 13 | `cache`, `checkpoint`, `db_stat`, `db_summary`, `file_io`, `load_profile`, `native_report`, `node_name`, `snapshots`, `top_sql`, `waits`, `wdr_enabled`, `window` |
 
 ---
@@ -333,9 +335,22 @@ WHERE c.relkind = 'r' AND n.nspname NOT IN {{schema_filter}}
 ORDER BY c.relpages DESC LIMIT {{limit}};
 ```
 
-### `health.unused_index`
+### `health.stats_window`
 
 - id `19` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+无参数
+
+```sql
+SELECT COALESCE(to_char(stats_reset, 'YYYY-MM-DD HH24:MI:SS'), 'never') AS stats_reset,
+       COALESCE(EXTRACT(EPOCH FROM (now() - stats_reset)), -1) AS window_seconds
+FROM pg_stat_database
+WHERE datname = current_database();
+```
+
+### `health.unused_index`
+
+- id `20` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -365,7 +380,7 @@ LIMIT {{limit}};
 
 ### `health.waits`
 
-- id `20` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `21` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -377,9 +392,63 @@ GROUP BY wait_status
 ORDER BY cnt DESC;
 ```
 
+### `lockwait.chain`
+
+- id `22` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+无参数
+
+```sql
+SELECT w.sessionid       AS sessionid,
+       w.block_sessionid AS block_sessionid
+  FROM pg_thread_wait_status w
+ WHERE w.block_sessionid IS NOT NULL
+   AND w.block_sessionid <> 0
+   AND w.block_sessionid <> w.sessionid;
+```
+
+### `lockwait.pairs`
+
+- id `23` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `limit` | INTEGER |
+
+```sql
+SELECT w.pid                         AS waiter_pid,
+       COALESCE(w.sessionid, 0)      AS waiter_sessionid,
+       w.mode                        AS waiter_mode,
+       h.pid                         AS holder_pid,
+       COALESCE(h.sessionid, 0)      AS holder_sessionid,
+       h.mode                        AS holder_mode,
+       w.locktype                    AS locktype,
+       COALESCE(n.nspname || '.' || c.relname, '')  AS lock_object,
+       COALESCE(w.locktag, '')       AS locktag,
+       round(EXTRACT(EPOCH FROM (now() - wa.query_start))::numeric, 1) AS waiter_wait_s,
+       COALESCE(wa.usename, '')      AS waiter_user,
+       COALESCE(wa.application_name, '') AS waiter_app,
+       COALESCE(substr(wa.query, 1, 300), '')       AS waiter_query,
+       COALESCE(ha.state, '')        AS holder_state,
+       COALESCE(ha.usename, '')      AS holder_user,
+       COALESCE(ha.application_name, '') AS holder_app,
+       round(EXTRACT(EPOCH FROM (now() - ha.xact_start))::numeric, 1) AS holder_xact_age_s,
+       COALESCE(substr(ha.query, 1, 300), '')       AS holder_query
+  FROM pg_locks w
+  JOIN pg_locks h
+    ON h.locktag = w.locktag AND h.granted AND h.pid <> w.pid
+  LEFT JOIN pg_class c     ON c.oid = w.relation
+  LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
+  LEFT JOIN pg_stat_activity wa ON wa.pid = w.pid
+  LEFT JOIN pg_stat_activity ha ON ha.pid = h.pid
+ WHERE w.granted = false
+ ORDER BY waiter_wait_s DESC NULLS FIRST -- 未知时长（见上）排最前，不许沉底
+ LIMIT {{limit}};
+```
+
 ### `memanalyze.activity`
 
-- id `21` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `24` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -389,7 +458,7 @@ SELECT sessionid, pid, usename, application_name, state, query FROM pg_stat_acti
 
 ### `memanalyze.cols_bare`
 
-- id `22` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `25` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -408,7 +477,7 @@ ORDER BY a.attnum;
 
 ### `memanalyze.cols_qualified`
 
-- id `23` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `26` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -427,7 +496,7 @@ ORDER BY a.attnum;
 
 ### `memanalyze.context`
 
-- id `24` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `27` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -443,7 +512,7 @@ LIMIT {{limit}};
 
 ### `memanalyze.gucs`
 
-- id `25` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `28` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -461,7 +530,7 @@ ORDER BY name;
 
 ### `memanalyze.instance`
 
-- id `26` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `29` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -471,7 +540,7 @@ SELECT memorytype, memorymbytes FROM gs_total_memory_detail;
 
 ### `memanalyze.session`
 
-- id `27` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `30` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -484,7 +553,7 @@ ORDER BY peak_mem DESC NULLS LAST LIMIT {{limit}};
 
 ### `memanalyze.wlm_operator`
 
-- id `28` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `31` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -497,7 +566,7 @@ ORDER BY max_peak_memory DESC NULLS LAST LIMIT {{limit}};
 
 ### `memanalyze.wlm_operator_hist`
 
-- id `29` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `32` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -510,7 +579,7 @@ ORDER BY max_peak_memory DESC NULLS LAST LIMIT {{limit}};
 
 ### `memanalyze.wlm_sql`
 
-- id `30` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `33` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -523,7 +592,7 @@ ORDER BY max_peak_memory DESC NULLS LAST LIMIT {{limit}};
 
 ### `memanalyze.wlm_sql_hist`
 
-- id `31` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `34` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -536,7 +605,7 @@ ORDER BY max_peak_memory DESC NULLS LAST LIMIT {{limit}};
 
 ### `perf.bgwriter`
 
-- id `32` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `35` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -551,7 +620,7 @@ from pg_stat_bgwriter;
 
 ### `perf.db_stat`
 
-- id `33` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `36` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -566,7 +635,7 @@ order by xact_commit desc;
 
 ### `perf.instance_time`
 
-- id `34` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `37` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -578,7 +647,7 @@ order by value desc;
 
 ### `perf.locks`
 
-- id `35` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `38` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -598,7 +667,7 @@ limit {{limit}};
 
 ### `perf.memory`
 
-- id `36` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `39` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -613,7 +682,7 @@ limit {{limit}};
 
 ### `perf.sessions`
 
-- id `37` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `40` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -633,7 +702,7 @@ limit {{limit}};
 
 ### `perf.table_stat`
 
-- id `38` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `41` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -652,7 +721,7 @@ limit {{limit}};
 
 ### `perf.wait_events`
 
-- id `39` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `42` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -668,7 +737,7 @@ limit {{limit}};
 
 ### `perf.wait_status`
 
-- id `40` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `43` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -684,7 +753,7 @@ limit {{limit}};
 
 ### `procinfo.key_gucs`
 
-- id `41` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `44` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -703,7 +772,7 @@ ORDER BY name;
 
 ### `procinfo.proc_def`
 
-- id `42` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `45` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -723,7 +792,7 @@ LIMIT 1;
 
 ### `proctune.column_stats`
 
-- id `43` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `46` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -740,7 +809,7 @@ WHERE tablename IN ({{names}});
 
 ### `proctune.db_version`
 
-- id `44` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `47` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -750,7 +819,7 @@ SELECT version() AS version;
 
 ### `proctune.indexes`
 
-- id `45` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `48` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -768,7 +837,7 @@ WHERE t.relname IN ({{names}});
 
 ### `proctune.key_gucs`
 
-- id `46` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `49` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -785,21 +854,9 @@ WHERE name IN (
 ORDER BY name;
 ```
 
-### `proctune.plan_json`
-
-- id `47` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `sql` | STRING |
-
-```sql
-EXPLAIN (FORMAT JSON, COSTS TRUE) {{sql}}
-```
-
 ### `proctune.plan_text`
 
-- id `48` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `50` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -811,7 +868,7 @@ EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
 
 ### `proctune.plan_text_analyze`
 
-- id `49` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `51` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -823,7 +880,7 @@ EXPLAIN (ANALYZE true, BUFFERS true, FORMAT TEXT) {{sql}}
 
 ### `proctune.proc_def`
 
-- id `50` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `52` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -843,7 +900,7 @@ LIMIT 1;
 
 ### `proctune.sql_from_history`
 
-- id `51` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `53` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -860,7 +917,7 @@ LIMIT 1;
 
 ### `proctune.sql_from_statement`
 
-- id `52` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `54` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -876,7 +933,7 @@ LIMIT 1;
 
 ### `proctune.tables`
 
-- id `53` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `55` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -895,7 +952,7 @@ WHERE c.relname IN ({{names}}) AND c.relkind IN ('r','v','p','m');
 
 ### `session.active_only`
 
-- id `54` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `56` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -911,7 +968,7 @@ limit {{limit}};
 
 ### `session.by_user`
 
-- id `55` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `57` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -925,7 +982,7 @@ where usename = '{{username}}';
 
 ### `session.top_by`
 
-- id `56` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `58` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -941,7 +998,7 @@ limit {{limit}};
 
 ### `slowsql.slow_sql`
 
-- id `57` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `59` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -967,7 +1024,7 @@ LIMIT {{limit}};
 
 ### `sqlfetch.from_history`
 
-- id `58` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `60` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -984,7 +1041,7 @@ LIMIT 1;
 
 ### `sqlfetch.from_statement`
 
-- id `59` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `61` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1000,7 +1057,7 @@ LIMIT 1;
 
 ### `sqlreview.from_history`
 
-- id `60` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `62` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1017,7 +1074,7 @@ LIMIT 1;
 
 ### `sqlreview.from_statement`
 
-- id `61` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `63` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1033,7 +1090,7 @@ LIMIT 1;
 
 ### `sqlreview.indexes`
 
-- id `62` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `64` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1068,7 +1125,7 @@ ORDER BY t.relname, i.relname;
 
 ### `sqlreview.tables`
 
-- id `63` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `65` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1098,7 +1155,7 @@ ORDER BY c.relname;
 
 ### `sqlreview.top_sql`
 
-- id `64` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `66` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1114,7 +1171,7 @@ LIMIT {{limit}};
 
 ### `sqltune.column_stats`
 
-- id `65` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `67` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1131,7 +1188,7 @@ WHERE tablename IN ({{names}});
 
 ### `sqltune.from_history`
 
-- id `66` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `68` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1148,7 +1205,7 @@ LIMIT 1;
 
 ### `sqltune.from_statement`
 
-- id `67` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `69` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1164,7 +1221,7 @@ LIMIT 1;
 
 ### `sqltune.indexes`
 
-- id `68` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `70` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1186,7 +1243,7 @@ WHERE t.relname IN ({{names}});
 
 ### `sqltune.key_gucs`
 
-- id `69` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `71` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -1205,7 +1262,7 @@ ORDER BY name;
 
 ### `sqltune.plan_json`
 
-- id `70` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `72` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1217,7 +1274,7 @@ EXPLAIN (ANALYZE false, BUFFERS false, FORMAT JSON) {{sql}}
 
 ### `sqltune.plan_text`
 
-- id `71` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `73` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1229,7 +1286,7 @@ EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
 
 ### `sqltune.plan_text_analyze`
 
-- id `72` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `74` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1239,9 +1296,27 @@ EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
 EXPLAIN (ANALYZE true, BUFFERS true, FORMAT TEXT) {{sql}}
 ```
 
+### `sqltune.stats_freshness`
+
+- id `75` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `names` | STRING |
+
+```sql
+SELECT schemaname, relname,
+       n_live_tup, n_dead_tup,
+       COALESCE(to_char(last_analyze, 'YYYY-MM-DD HH24:MI:SS'), 'never') AS last_analyze,
+       COALESCE(to_char(last_autoanalyze, 'YYYY-MM-DD HH24:MI:SS'), 'never') AS last_autoanalyze,
+       analyze_count, autoanalyze_count
+FROM pg_stat_user_tables
+WHERE relname IN ({{names}});
+```
+
 ### `sqltune.tables`
 
-- id `73` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `76` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1260,7 +1335,7 @@ WHERE c.relname IN ({{names}}) AND c.relkind IN ('r','v','p','m');
 
 ### `sqltune.version`
 
-- id `74` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `77` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -1270,7 +1345,7 @@ SELECT version() AS version;
 
 ### `topproc.top_procs`
 
-- id `75` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `78` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1290,7 +1365,7 @@ LIMIT {{limit}};
 
 ### `topsql.top_sql`
 
-- id `76` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `79` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1311,9 +1386,57 @@ ORDER BY {{order}}
 LIMIT {{limit}};
 ```
 
+### `waitevent.events`
+
+- id `80` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `b` | INTEGER |
+| `e` | INTEGER |
+| `top` | INTEGER |
+
+```sql
+WITH b AS (SELECT snap_type AS wait_class, snap_event AS event, sum(snap_wait) AS waits, sum(snap_total_wait_time) AS wt
+             FROM snapshot.snap_global_wait_events WHERE snapshot_id={{b}} GROUP BY snap_type, snap_event),
+     e AS (SELECT snap_type AS wait_class, snap_event AS event, sum(snap_wait) AS waits, sum(snap_total_wait_time) AS wt
+             FROM snapshot.snap_global_wait_events WHERE snapshot_id={{e}} GROUP BY snap_type, snap_event)
+SELECT e.wait_class,
+       e.event,
+       SUM(e.waits-b.waits) AS waits,
+       SUM(e.wt-b.wt)       AS wait_us
+FROM e JOIN b USING (wait_class, event)
+WHERE upper(e.wait_class) NOT IN ('STATUS','NONE')
+GROUP BY e.wait_class, e.event
+HAVING SUM(e.wt-b.wt) > 0
+ORDER BY wait_us DESC LIMIT {{top}};
+```
+
+### `waitevent.instance_time`
+
+- id `81` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `b` | INTEGER |
+| `e` | INTEGER |
+
+```sql
+WITH b AS (SELECT snap_stat_name AS stat_name, sum(snap_value) AS v
+             FROM snapshot.snap_global_instance_time
+            WHERE snapshot_id = {{b}} GROUP BY snap_stat_name),
+     e AS (SELECT snap_stat_name AS stat_name, sum(snap_value) AS v
+             FROM snapshot.snap_global_instance_time
+            WHERE snapshot_id = {{e}} GROUP BY snap_stat_name)
+SELECT e.stat_name AS stat_name,
+       (e.v - b.v)  AS delta_us
+  FROM e JOIN b USING (stat_name)
+ ORDER BY delta_us DESC;
+```
+
 ### `wdr.cache`
 
-- id `77` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `82` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1338,7 +1461,7 @@ ORDER BY phys_read DESC LIMIT {{top}};
 
 ### `wdr.checkpoint`
 
-- id `78` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `83` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1357,7 +1480,7 @@ FROM e JOIN b USING (snap_node_name);
 
 ### `wdr.db_stat`
 
-- id `79` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `84` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1382,7 +1505,7 @@ FROM e JOIN b USING (snap_datname);
 
 ### `wdr.db_summary`
 
-- id `80` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `85` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1402,7 +1525,7 @@ FROM e JOIN b USING (snap_datname);
 
 ### `wdr.file_io`
 
-- id `81` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `86` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1425,7 +1548,7 @@ ORDER BY reads DESC LIMIT {{top}};
 
 ### `wdr.load_profile`
 
-- id `82` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `87` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1444,7 +1567,7 @@ FROM e JOIN b USING (sid);
 
 ### `wdr.native_report`
 
-- id `83` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `88` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1459,7 +1582,7 @@ SELECT generate_wdr_report({{begin}}, {{end}}, 'all', '{{scope}}', '{{node}}') A
 
 ### `wdr.node_name`
 
-- id `84` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `89` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -1469,7 +1592,7 @@ SHOW pgxc_node_name;
 
 ### `wdr.snapshots`
 
-- id `85` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `90` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1485,7 +1608,7 @@ FROM snapshot.snapshot ORDER BY snapshot_id DESC LIMIT {{limit}};
 
 ### `wdr.top_sql`
 
-- id `86` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `91` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1517,7 +1640,7 @@ ORDER BY elapsed_us DESC LIMIT {{top}};
 
 ### `wdr.waits`
 
-- id `87` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `92` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1542,7 +1665,7 @@ ORDER BY wait_us DESC LIMIT {{top}};
 
 ### `wdr.wdr_enabled`
 
-- id `88` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `93` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -1552,7 +1675,7 @@ SHOW enable_wdr_snapshot;
 
 ### `wdr.window`
 
-- id `89` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `94` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1565,36 +1688,5 @@ SELECT to_char(b.start_ts,'YYYY-MM-DD HH24:MI') AS b_start,
        round(EXTRACT(EPOCH FROM (e.start_ts-b.start_ts))/60)::bigint AS dur
 FROM (SELECT start_ts FROM snapshot.snapshot WHERE snapshot_id={{begin}}) b,
      (SELECT start_ts FROM snapshot.snapshot WHERE snapshot_id={{end}}) e;
-```
-
-### `health.stats_window`
-
-- id `90` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-无参数
-
-```sql
-SELECT COALESCE(to_char(stats_reset, 'YYYY-MM-DD HH24:MI:SS'), 'never') AS stats_reset,
-       COALESCE(EXTRACT(EPOCH FROM (now() - stats_reset)), -1) AS window_seconds
-FROM pg_stat_database
-WHERE datname = current_database();
-```
-
-### `sqltune.stats_freshness`
-
-- id `91` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `names` | STRING |
-
-```sql
-SELECT schemaname, relname,
-       n_live_tup, n_dead_tup,
-       COALESCE(to_char(last_analyze, 'YYYY-MM-DD HH24:MI:SS'), 'never') AS last_analyze,
-       COALESCE(to_char(last_autoanalyze, 'YYYY-MM-DD HH24:MI:SS'), 'never') AS last_autoanalyze,
-       analyze_count, autoanalyze_count
-FROM pg_stat_user_tables
-WHERE relname IN ({{names}});
 ```
 

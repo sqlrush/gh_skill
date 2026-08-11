@@ -39,6 +39,23 @@ _EVENT_ROWS = [
      "waits": "3", "wait_us": "150000"},
 ]
 
+# 一次真实的跨实例重启：十项全部为负（计数器整体清零重来），不是只挑
+# 一两项。同样要十项齐全，理由见上面 _TIME_ROWS 的注释。两个 restart 测试
+# （JSON 的 findings 契约、markdown 的渲染分支）共用这份数据，好让它们
+# 明确是在检查同一个场景的两个不同出口。
+_RESTART_TIME_ROWS = [
+    {"stat_name": "DB_TIME", "delta_us": "-500"},
+    {"stat_name": "EXECUTION_TIME", "delta_us": "-450"},
+    {"stat_name": "CPU_TIME", "delta_us": "-100"},
+    {"stat_name": "DATA_IO_TIME", "delta_us": "-80"},
+    {"stat_name": "NET_SEND_TIME", "delta_us": "-20"},
+    {"stat_name": "PARSE_TIME", "delta_us": "-5"},
+    {"stat_name": "PLAN_TIME", "delta_us": "-5"},
+    {"stat_name": "REWRITE_TIME", "delta_us": "-5"},
+    {"stat_name": "PL_EXECUTION_TIME", "delta_us": "-5"},
+    {"stat_name": "PL_COMPILATION_TIME", "delta_us": "-5"},
+]
+
 
 class _Runner:
     def __init__(self, snap_ids=(1, 2, 3, 4, 5, 6), time_rows=None, event_rows=None):
@@ -128,28 +145,41 @@ def test_io_heavy_window_produces_a_finding(monkeypatch, capsys):
 
 def test_restarted_window_reports_unavailable_not_percentages(monkeypatch, capsys):
     """**跨实例重启的窗口只报不可用。** 负增量算出的比例是假的，
-    报出去比不报更糟 —— 它看起来是个正常数字。"""
-    # 同样要十项齐全（见 _TIME_ROWS 上面的说明）；全部给负数才是一次真实的
-    # 计数器清零重来，不是只挑一两项。
-    rows = [
-        {"stat_name": "DB_TIME", "delta_us": "-500"},
-        {"stat_name": "EXECUTION_TIME", "delta_us": "-450"},
-        {"stat_name": "CPU_TIME", "delta_us": "-100"},
-        {"stat_name": "DATA_IO_TIME", "delta_us": "-80"},
-        {"stat_name": "NET_SEND_TIME", "delta_us": "-20"},
-        {"stat_name": "PARSE_TIME", "delta_us": "-5"},
-        {"stat_name": "PLAN_TIME", "delta_us": "-5"},
-        {"stat_name": "REWRITE_TIME", "delta_us": "-5"},
-        {"stat_name": "PL_EXECUTION_TIME", "delta_us": "-5"},
-        {"stat_name": "PL_COMPILATION_TIME", "delta_us": "-5"},
-    ]
+    报出去比不报更糟 —— 它看起来是个正常数字。
+
+    这条测的是 JSON 出口，即 dbtime.judge_dbtime() 的判定契约（Task 12 的
+    冻结逻辑）：重启窗口只产出 DBTIME_RESTART，不产出任何阈值类 finding。
+    它**不会**跑到本任务写的 markdown 渲染代码（_window_block 的提前返回
+    分支）——那条路径由下面 test_restarted_window_markdown_shows_unavailable_
+    not_percentages 单独守。两条测试都留着，因为它们各自守住不同的出口，
+    缺一个都会让另一个出口的重启处理失去自动化保护。
+    """
     monkeypatch.setattr(waitevent.access, "for_conn",
-                        lambda *a, **k: _Runner(time_rows=rows))
+                        lambda *a, **k: _Runner(time_rows=_RESTART_TIME_ROWS))
     waitevent.main(["-c", "x", "--format", "json"])
     payload = json.loads(capsys.readouterr().out)
     codes = {f["code"] for f in payload["findings"]}
     assert "DBTIME_RESTART" in codes
     assert not (codes & {"DBTIME_IO_HEAVY", "DBTIME_CPU_HEAVY", "DBTIME_NET_HEAVY"})
+
+
+def test_restarted_window_markdown_shows_unavailable_not_percentages(monkeypatch, capsys):
+    """跨重启窗口在**默认 markdown 格式**下必须只报不可用，一个百分号都
+    不能出现在输出里。
+
+    这条守的是 `waitevent.py` 自己写的渲染代码（`_window_block` 里
+    `bd.restarted` 的提前返回分支），不是 dbtime.py 的判定逻辑——JSON 格式
+    根本不会调用 render_markdown()，所以上面那条 JSON 测试测不到这里。
+    这是本任务风险最高的一段代码（重启窗口算出的比例看起来和正常数字一样，
+    报出去比不报更危险），必须有测试直接盯着它渲染出的文本。
+    """
+    monkeypatch.setattr(waitevent.access, "for_conn",
+                        lambda *a, **k: _Runner(time_rows=_RESTART_TIME_ROWS))
+    rc = waitevent.main(["-c", "x"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "该窗口跨越了实例重启，数据不可用" in out
+    assert "%" not in out, "重启窗口的 markdown 输出里出现了百分号——算出来的比例是假的"
 
 
 def test_lock_wait_share_produces_a_finding(monkeypatch, capsys):
