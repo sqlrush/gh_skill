@@ -104,7 +104,11 @@ def run_sub_skill(skill: str, conn: str, timeout: int,
 
     try:
         findings = findings_from_json(proc.stdout)
-    except ValueError as exc:
+    except (ValueError, TypeError) as exc:
+        # ValueError：形状不对（缺字段/类型不对的列表或字典）。
+        # TypeError：形状对但值不对——比如 severity 是 null，
+        # Severity(int(None)) 抛的是 TypeError 不是 ValueError。
+        # 两种都是「解析不出来」，都不能变成一个真的 raise。
         return SubSkillResult(skill=skill, ok=False, findings=[],
                                error="解析子 skill 输出失败：%s" % exc)
 

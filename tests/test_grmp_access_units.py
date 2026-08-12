@@ -308,7 +308,25 @@ def test_whitelist_path_stays_quiet_when_timeout_was_not_asked_for(monkeypatch, 
     assert capsys.readouterr().err == ""
 
 
-_DECLARES_TIMEOUT_OPTION = re.compile(r'\.add_argument\(\s*["\']--timeout["\']')
+_DECLARES_TIMEOUT_OPTION = re.compile(
+    r'\.add_argument\((?:(?!\)).)*?["\']--timeout["\']', re.DOTALL)
+
+
+def test_declares_timeout_option_matches_regardless_of_flag_order():
+    """--timeout 可以不是 add_argument() 的第一个位置参数。
+
+    这条曾经真的错过：最初的正则要求 --timeout 紧跟在左括号后面，
+    而这个仓库里到处都是 add_argument("-c", "--conn", ...) 这种
+    短选项在前的写法（health.py:67、lockwait.py:634、proctune.py:383）。
+    照那种写法声明 add_argument("-t", "--timeout", ...) 会让最初那版
+    正则直接看不见——而这恰恰是这条守卫本该抓的那类回归。
+    """
+    assert _DECLARES_TIMEOUT_OPTION.search(
+        'ap.add_argument("--timeout", type=int, default=None)')
+    assert _DECLARES_TIMEOUT_OPTION.search(
+        'ap.add_argument("-t", "--timeout", type=int, default=None)')
+    assert not _DECLARES_TIMEOUT_OPTION.search(
+        'ap.add_argument("--limit", type=int, default=20)')
 
 
 def test_every_skill_that_offers_timeout_actually_passes_it_down():
@@ -316,16 +334,19 @@ def test_every_skill_that_offers_timeout_actually_passes_it_down():
 
     这条是防复发的：以后新增 skill 或改写入口，忘了传就红。
 
-    只认 argparse 里显式的 `add_argument("--timeout", ...)`，不认「文本里
-    出现过 --timeout 这个词」。声明和提及是两回事：转发者——比如
-    gaussdb-health/scripts/aggregate.py 为子进程拼 subprocess argv 时会
-    写出字面量 "--timeout"——并没有把 --timeout 定义成*自己*的命令行选项，
-    也没有义务接住 args.timeout 或调用 set_statement_timeout，它只是把收
-    到的 timeout 值转发给别的进程，这本身就是「交给取数层」的一种方式，
-    只是通过这条守卫最初没预料到的机制。按字面量扫描会把转发者也计入
-    「收下却没用」，误伤跟这条守卫想防的回归（真正声明了 --timeout、
-    却在解析后直接把 args.timeout 扔掉）是两回事。以后别把这条改回纯
-    字符串扫描——那样又会把任何提到 --timeout 的转发代码一并抓进来。
+    只认 argparse 里显式的 `add_argument(..., "--timeout", ...)`——
+    `--timeout` 在调用里出现在哪个位置不重要（`add_argument("-t",
+    "--timeout", ...)` 这种短选项在前的写法在这个仓库里很常见，必须也
+    抓得到），但**不认**「文本里出现过 --timeout 这个词」。声明和提及是
+    两回事：转发者——比如 gaussdb-health/scripts/aggregate.py 为子进程
+    拼 subprocess argv 时会写出字面量 "--timeout"——并没有把 --timeout
+    定义成*自己*的命令行选项，也没有义务接住 args.timeout 或调用
+    set_statement_timeout，它只是把收到的 timeout 值转发给别的进程，这
+    本身就是「交给取数层」的一种方式，只是通过这条守卫最初没预料到的
+    机制。按字面量扫描会把转发者也计入「收下却没用」，误伤跟这条守卫
+    想防的回归（真正声明了 --timeout、却在解析后直接把 args.timeout
+    扔掉）是两回事。以后别把这条改回「只认第一个参数」或纯字符串扫描
+    ——前者会漏掉短选项在前的声明，后者会把转发代码一并抓进来。
     """
     skills = _ROOT / "skills"
     offenders = []

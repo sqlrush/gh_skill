@@ -1,4 +1,5 @@
 """子进程汇总模块的单元测试。全部用假 runner 注入，不启动真实子进程、不连库。"""
+import json
 import pathlib
 import subprocess
 import sys
@@ -148,6 +149,26 @@ def test_malformed_findings_shape_is_a_failure_not_an_empty_list():
     assert r.findings == []
 
 
+def test_null_severity_is_a_failure_not_a_crash():
+    """所有必填字段都在（缺字段检查通不过不了这条），但 severity 是 null。
+
+    common/finding.py 里 `Severity(int(raw["severity"]))`，`int(None)` 抛的
+    是 **TypeError**，不是 `ValueError`。run_sub_skill 如果只接住
+    ValueError，这条 TypeError 会直接冒出去，砸穿「绝不 raise」这条模块
+    存在的理由——而且是最糟的版本：形状对的了（字段都全乎），值错了，
+    照样得是 ok=False，不能变成一个真的 Traceback。
+    """
+    bad = json.dumps({"skill": "gaussdb-vacuum", "findings": [{
+        "dimension": "vacuum", "code": "V001", "severity": None,
+        "metric": "dead_tuples", "value": "1", "threshold": "1",
+        "evidence": "x",
+    }]})
+    r = aggregate.run_sub_skill("gaussdb-vacuum", "og", 30, runner=_fake(rc=0, out=bad))
+    assert r.ok is False
+    assert "解析" in r.error
+    assert r.findings == []
+
+
 def test_runner_raising_unexpectedly_is_recorded_not_raised():
     """subprocess 起不来（脚本路径错、权限问题……）也不能掀翻 health。"""
     def runner(argv, **kwargs):
@@ -160,13 +181,17 @@ def test_runner_raising_unexpectedly_is_recorded_not_raised():
 
 
 def test_conn_and_format_are_passed_through():
-    """子进程必须用同一个连接、同一种输出格式，否则查的是别的库/解析不了。"""
+    """子进程必须用同一个连接、同一种输出格式、同一个超时值，否则查的是
+    别的库/解析不了/子 skill 用了自己的默认超时（也就是没超时）。"""
     runner = _fake(rc=0, out=findings_to_json([], skill="gaussdb-vacuum"))
     aggregate.run_sub_skill("gaussdb-vacuum", "og-grmp", 45, runner=runner)
     assert len(runner.calls) == 1
     argv, _kwargs = runner.calls[0]
     assert "-c" in argv and argv[argv.index("-c") + 1] == "og-grmp"
     assert "--format" in argv and argv[argv.index("--format") + 1] == "json"
+    # --timeout 必须真的转发给子进程，值必须是调用方传进来的那个 timeout；
+    # 丢了这一项，子 skill 会悄悄用回自己的默认值（通常是不设超时）。
+    assert "--timeout" in argv and argv[argv.index("--timeout") + 1] == str(45)
     assert str(aggregate.script_path("gaussdb-vacuum")) in argv
 
 
