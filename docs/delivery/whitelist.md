@@ -1764,6 +1764,7 @@ SELECT 'long_xact' AS source,
  WHERE xact_start IS NOT NULL
    AND state IN ('active','idle in transaction')
    AND COALESCE(connection_info,'') <> ''
+   AND pid <> pg_backend_pid()
 UNION ALL
 SELECT 'prepared_xact' AS source,
        gid AS identifier,

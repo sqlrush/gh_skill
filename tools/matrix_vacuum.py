@@ -10,7 +10,7 @@
 该提示"无法设置语句超时"，gsql 模式不该提示。两边断言同一句话会漏掉
 这条分叉本身要不要还在。
 
-**本矩阵额外守四件 `gaussdb-vacuum` 特有的事，普通冒烟测试不会管：**
+**本矩阵额外守五件 `gaussdb-vacuum` 特有的事，普通冒烟测试不会管：**
 
   1. **`plan_data` 必须出现在风险表里，且带着命中的规则码。**
      `gsbench_e2e_20260801_100g.plan_data` 是这一阶段唯一现实的高死元组
@@ -26,20 +26,35 @@
      这里只断言小节标题出现（真实实例当前是否有长事务/复制槽会随时间
      变化，不作为矩阵的强约束条件，见 `tests/test_vacuum_entry_units.py`
      里用假 runner 钉死的无条件行为）。
-  4. **两条路径查的是同一份数据库状态，findings 的 code 集合应该一致——**
-     **除了一个已确认、可 100% 复现的例外：`VACUUM_XMIN_BLOCKED`。**
-     `scripts/registry/vacuum/oldest_xmin.yaml` 的 `long_xact` 分支要求
-     `connection_info <> ''`；gsql/libpq 直连驱动会给**自己这个 session**
-     填上 `connection_info = {"driver_name":"libpq",...}`，于是这条 SELECT
+  4. **两条路径查的是同一份数据库状态，findings 的 code 集合应该一致。**
+     这条曾经有过一个已确认、可 100% 复现的例外：`scripts/registry/vacuum/
+     oldest_xmin.yaml` 的 `long_xact` 分支原先只判断 `connection_info <>
+     ''`，而 gsql/libpq 直连驱动会给**自己这个 session** 填上
+     `connection_info = {"driver_name":"libpq",...}`，于是这条 SELECT
      在 gsql 模式下**永远会把执行查询的这个会话自己**当成一条"活跃事务"
-     命中——`pid` 精确等于 `pg_backend_pid()`，`xmin_age_s` 恒为 0。
+     命中——`pid` 精确等于 `pg_backend_pid()`，`xmin_age_s` 恒为 0；
      pg8000（`-c og` 用的驱动）对自己这一行的 `connection_info` 是空串，
      不会自证。已用 `common.access.connection_for()` 直接查证过两条路径的
-     `pg_stat_activity` 自身行，见 task-17-report.md——这是 `oldest_xmin.yaml`
-     里一个真实、可复现的缺陷（`long_xact` 分支缺一句
-     `AND pid <> pg_backend_pid()`），不是本文件的问题，也不在本任务的
-     文件范围内（registry YAML 不归这次改），所以本矩阵**不**对
-     `VACUUM_XMIN_BLOCKED` 做跨模式相等断言，其余 code 仍然严格要求相等。
+     `pg_stat_activity` 自身行，见 task-17-report.md「Fix round 1」一节。
+     `oldest_xmin.yaml` 的 `long_xact` 分支现已补上
+     `AND pid <> pg_backend_pid()`，这条例外已撤销，本矩阵恢复严格相等；
+     用例 5（下面第 5 点）专门守住这个修复不被悄悄撤销。
+  5. **gsql 模式绝不能把执行查询本身的会话当成阻塞源上报。** 这正是第 4
+     点里那个 bug 的直接、独立守护——即便哪天 `run_cross_consistency` 因为
+     别的原因被改弱，这条用例依然单独盯着这一件事。见
+     `run_self_blocker_case()` 的判据，以及函数 docstring 里留痕的第一版
+     失败教训：**判据不能是"查报出来的 pid 现在还活不活"。**
+     `DirectRunner.run()`（`common/grmp/runner.py`）每次开连接、执行完
+     立刻关闭，自证幽灵产生它的那条连接在报告打印出来那一刻已经关闭，
+     "查不到就是幽灵"听起来是个干净的判据——但实测直接翻车：本实例的
+     pid/线程号池很小、回收很快，矩阵自己在同一次运行里已经连了十几条
+     连接，故意撤掉守护重跑一遍后，这条用例反而给出了假阳性的
+     PASS——那个已关闭的幽灵 pid，检查那一刻已被矩阵自己后续某条连接
+     复用。现在的判据改成**内容签名**：自证幽灵这一行的 `detail` 带着
+     `pg_stat_activity.query` 的原始文本，而那正是 `oldest_xmin.yaml`
+     自己那条 SQL，`detail` 里必然原样出现它的起始片段
+     `'long_xact' AS source`——这个子串只可能来自这一处，不受任何时序或
+     pid 复用影响。
 
 **运行本工具前必须先部署**（把仓库当前代码同步到 `GDAA_SKILLS_DIR` 指向
 的目录），否则测的是上一次部署时的旧代码：
@@ -82,7 +97,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 # GSDB_HOME 决定 common.config.resolve() 去哪个目录找 config.yaml/凭据。
 # 本矩阵不需要在主进程里建真实连接（不像 matrix_lockwait 要编排三层锁链、
 # matrix_waitevent 要现取快照 id）——vacuum 只读，子进程各自用独立的 env
-# dict 建连接，这一行只是保持与另外两个矩阵同样的约定。
+# dict 建连接，「gsql 不自证阻塞源」用例判定用的是报告文本里的内容签名
+# （见 `_SELF_REFERENCE_SIGNATURE`），同样不需要主进程另开真实连接。
 _GDAA_HOME = os.path.expanduser(os.environ.get("GDAA_HOME_FOR_MATRIX", "~/.gdaa"))
 os.environ.setdefault("GSDB_HOME", _GDAA_HOME)
 
@@ -222,9 +238,47 @@ def check_json(rc, out, err, mode):
     return True, ""
 
 
+def _count_risk_rows(out: str):
+    """数「## 风险表」小节里的数据行数。返回 -1 表示连小节标题都找不到——
+    调用方要把这个和「小节存在、但表头/数据行结构变了」区分开。
+
+    这条解析存在的理由：`check_limit1` 原先只断言 `rc == 0`，`--limit`
+    整个被忽略也照样 PASS——这正是这个计划里反复出现的「断言看不见它要
+    盯的那个回归」模式。数据行数才是 `--limit` 唯一能验证到的东西：
+    `--limit N` 传给的是 `vacuum.dead_tuples` 的 SQL LIMIT，风险表的行数
+    是这批被 LIMIT 截断的原始行的子集（只保留命中规则的），所以
+    「风险表行数 <= limit」在任何命中情况下都成立，不需要真数据恰好命中
+    规则才能验证到。
+    """
+    lines = out.splitlines()
+    try:
+        start = next(i for i, l in enumerate(lines) if l.strip() == "## 风险表")
+    except StopIteration:
+        return -1
+    header_idx = next(
+        (i for i in range(start, len(lines))
+         if lines[i].startswith("|") and "命中规则" in lines[i]), None)
+    if header_idx is None:
+        # 没有表头——是「未发现死元组风险表」分支，数据行数为 0。
+        return 0
+    count = 0
+    for i in range(header_idx + 2, len(lines)):   # +2：跳过表头行与分隔行
+        if lines[i].startswith("|"):
+            count += 1
+        else:
+            break
+    return count
+
+
 def check_limit1(rc, out, err, mode):
     if rc != 0:
         return False, "rc=%d（期望 0）：%s" % (rc, (err or out)[:200])
+    n = _count_risk_rows(out)
+    if n < 0:
+        return False, "输出里找不到「## 风险表」小节，无法核对 --limit 1 是否生效"
+    if n > 1:
+        return False, ("--limit 1 之后风险表仍有 %d 行——--limit 可能没有真正"
+                       "传到底层查询" % n)
     return True, ""
 
 
@@ -314,24 +368,102 @@ def run_cross_consistency(rows: list) -> None:
              % (name, mode, "PASS" if ok else "FAIL", dt, note[:70]))
 
     if len(codes_by_mode) == 2:
-        # VACUUM_XMIN_BLOCKED 单独排除在严格相等之外——已确认、可 100%
-        # 复现的 gsql/libpq 自证 bug（见文件头注释第 4 点），不是本矩阵
-        # 或 vacuum.py 要捕捉的回归。其余 code（R1/R2/R3）仍要求严格相等：
-        # 那些没有这个已知例外，一旦不一致就是真的回归。
-        _KNOWN_DIVERGENT = {"VACUUM_XMIN_BLOCKED"}
-        api_codes = codes_by_mode["api"] - _KNOWN_DIVERGENT
-        gsql_codes = codes_by_mode["gsql"] - _KNOWN_DIVERGENT
+        # 曾经有一个已确认的例外（VACUUM_XMIN_BLOCKED，gsql/libpq 自证
+        # bug，见文件头注释第 4 点）——oldest_xmin.yaml 的 long_xact 分支
+        # 已经补上 AND pid <> pg_backend_pid()，这个例外已撤销：现在两条
+        # 路径的 code 集合要求严格相等，不再排除任何 code。哪天这个 bug
+        # 被悄悄带回来，这里会重新变红（用例 5「gsql 不自证阻塞源」是更
+        # 直接的守护，这里是第二道）。
+        api_codes, gsql_codes = codes_by_mode["api"], codes_by_mode["gsql"]
         ok = (api_codes == gsql_codes)
-        note = "" if ok else (
-            "（已排除已知的 VACUUM_XMIN_BLOCKED gsql 自证例外后）"
-            "api findings code 集合=%r 与 gsql 的=%r 仍不一致"
-            % (sorted(api_codes), sorted(gsql_codes)))
+        note = "" if ok else ("api findings code 集合=%r 与 gsql 的=%r 不一致"
+                              % (sorted(api_codes), sorted(gsql_codes)))
         rows.append((name, "cross", "PASS" if ok else "FAIL", note))
         print("%-24s %-5s %-5s %5s  %s"
              % (name, "cross", "PASS" if ok else "FAIL", "-", note[:70]))
     else:
         rows.append((name, "cross", "FAIL", "至少一个模式没能取到 findings，无法比较"))
         print("  [FAIL] %s / cross —— 至少一个模式没能取到 findings，无法比较" % name)
+
+
+_LONG_XACT_PID_RE = re.compile(r"长事务（标识 (\d+)）")
+
+
+def _extract_long_xact_pids(out: str) -> list:
+    """从「回收阻塞源」小节里挑出「长事务」条目的标识（pid），只用于报错
+    消息里报出具体是哪个标识——不用于判定本身（判定见下）。见 vacuum.py
+    的 `_XMIN_SOURCE_LABELS`：`source='long_xact'` 渲染成
+    「长事务（标识 <pid>）：...」。只认这一种来源——prepared_xact/
+    replication_slot 两支没有 pid 列，不可能自证（见
+    scripts/registry/vacuum/oldest_xmin.yaml 头部注释，已逐列核对过
+    information_schema）。
+    """
+    return _LONG_XACT_PID_RE.findall(out)
+
+
+# 自证幽灵的确定性签名。修复前，gsql/libpq 驱动会把执行 oldest_xmin 这条
+# SELECT 本身的会话当成一条 long_xact 阻塞源报出来；那一行的 detail 带着
+# pg_stat_activity.query 的原始文本，而那个会话当时正在执行的，就是
+# oldest_xmin.yaml 自己那条 SQL——所以 detail 里会原样出现这条 SQL 的
+# 起始片段 `'long_xact' AS source`。已实测核实（见
+# task-17-report.md「Fix round 1」）：gsql 模式下故意撤掉
+# `AND pid <> pg_backend_pid()` 之后，报出来的那一行 detail 就是
+# `query=SELECT json_agg(...) FROM (SELECT 'long_xact' AS source, ...`。
+_SELF_REFERENCE_SIGNATURE = "'long_xact' AS source"
+
+
+def run_self_blocker_case(rows: list) -> None:
+    """Finding 1 的专门守护：gsql 模式绝不能把执行查询本身的会话当成阻塞源
+    上报。
+
+    **第一版实现（已废弃，留痕说明为什么不能用）：** 曾经尝试"查报出来的
+    pid 现在还活不活"——`DirectRunner.run()` 每次开连接、执行完立刻
+    `close()`（见 `common/grmp/runner.py`），自证幽灵产生它的那条连接在
+    报告打印出来的那一刻已经关闭，看起来是个干净的判据。实测直接翻车：
+    这个环境的 pid/线程号池很小、回收很快，矩阵自己在同一次运行里已经
+    连了十几条连接，故意撤掉 SQL 里的守护重新跑一遍后，"gsql 不自证
+    阻塞源"这条用例反而给出了假阳性的 PASS——报出来的那个已经关闭的
+    幽灵 pid，在检查那一刻已经被矩阵自己后续某条连接复用，"pid 还活着"
+    这个判据本身就不成立。「跨模式一致」那条用例（靠比较两条路径的
+    finding code 集合）在同一次实测里正确地报了 FAIL，证明问题确实
+    在这条用例的判据上，不是随机抖动。
+
+    **现在的判据：内容签名，不依赖任何时序。** 自证幽灵这一行的 detail
+    带着 `pg_stat_activity.query` 的原始文本，而那个会话当时正在执行的
+    就是 `oldest_xmin.yaml` 自己那条 SQL——`detail` 里必然原样出现这条
+    SQL 的起始片段 `'long_xact' AS source`（`_SELF_REFERENCE_SIGNATURE`，
+    已用故意撤掉守护后的真实输出核实过，见 task-17-report.md）。这个
+    子串只可能来自这一处，不可能是巧合，也不受 pid 复用影响。
+    """
+    name = "gsql 不自证阻塞源"
+    try:
+        env = _gsql_env()
+    except ModeSetupError as exc:
+        rows.append((name, "gsql", "FAIL", "模式环境没搭好：%s" % exc))
+        print("  [FAIL] %s / gsql —— %s" % (name, exc))
+        return
+    rc, out, err, dt = run_vacuum(env, GSQL_CONN, [])
+    floor = _judge_floor(rc, out, err, expect_reject=False)
+    if floor is not None:
+        ok, note = floor
+    elif rc != 0:
+        ok, note = False, "rc=%d（期望 0）：%s" % (rc, (err or out)[:200])
+    elif _SELF_REFERENCE_SIGNATURE in out:
+        pids = _extract_long_xact_pids(out) or ["?"]
+        ok, note = False, (
+            "长事务阻塞源（标识 %s）的 detail 里出现了 %r——这段 SQL 片段"
+            "只可能来自 oldest_xmin.yaml 自己那条查询，说明这一行是执行"
+            "查询本身的会话把自己当成了阻塞源上报（Finding 1 的 bug，见"
+            "oldest_xmin.yaml 的 long_xact 分支）"
+            % (pids, _SELF_REFERENCE_SIGNATURE))
+    else:
+        pids = _extract_long_xact_pids(out)
+        ok, note = True, (
+            "本次没有长事务类阻塞源（当前 DB 状态下这是预期结果）" if not pids
+            else "报告了 %d 个长事务，detail 里没有自证签名" % len(pids))
+    rows.append((name, "gsql", "PASS" if ok else "FAIL", note))
+    print("%-24s %-5s %-5s %5.1fs %s"
+         % (name, "gsql", "PASS" if ok else "FAIL", dt, note[:70]))
 
 
 def main() -> int:
@@ -344,10 +476,12 @@ def main() -> int:
     rows: list = []
     run_baseline(rows)
     run_cross_consistency(rows)
+    run_self_blocker_case(rows)
 
     fails = [r for r in rows if r[2] == "FAIL"]
     print("\n" + "=" * 78)
-    print("共 %d 例（%d 用例 × 2 模式 + 1 跨模式核对），PASS %d，FAIL %d"
+    print("共 %d 例（%d 用例 × 2 模式 + 1 跨模式核对 + 1 gsql 自证核对），"
+         "PASS %d，FAIL %d"
          % (len(rows), len(BASELINE_CASES), len(rows) - len(fails), len(fails)))
     for name, mode, verdict, note in fails:
         print("  [FAIL] %s / %s —— %s" % (name, mode, note))

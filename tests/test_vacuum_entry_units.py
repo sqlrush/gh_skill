@@ -288,6 +288,22 @@ def test_long_xact_blocker_with_a_real_age_is_not_reported_as_unknown():
             assert "未知" not in line
 
 
+def test_xmin_blocker_line_carries_the_raw_detail():
+    """detail（usename/state/query 之类的原始上下文）要跟着标识、年龄一起
+    出现——这不只是给人看的补充信息，也是 tools/matrix_vacuum.py 的
+    「gsql 不自证阻塞源」用例赖以判定的信号来源（pid 是否还活着在这个
+    环境里不可靠，见该文件的注释）。"""
+    rep = vacuum.collect(
+        _Runner(xmin=[_xmin_row(source="long_xact", identifier="2259",
+                                xmin_age_s="3600",
+                                detail="usename=app state=active "
+                                       "query=SELECT 'long_xact' AS source")]),
+        limit=20, th=_th())
+    md = vacuum.render_markdown(rep)
+    assert "usename=app" in md
+    assert "'long_xact' AS source" in md
+
+
 # ---------------------------------------------------------------------------
 # 8. NULL 与 0 是两个相反的事实：last_autovacuum_age_s 为 NULL 代表「从未
 #    autovacuum 过」，为 0 代表「刚跑完」。协议把 NULL 渲染成空串。
@@ -308,6 +324,46 @@ def test_just_ran_table_shows_zero_not_never():
     md = vacuum.render_markdown(rep)
     assert "从未运行" not in md
     assert "0 秒前" in md
+
+
+def test_a_large_last_autovacuum_age_renders_as_itself():
+    """第三个分支：既不是「从未运行」（NULL），也不该被「刚跑完」那条
+    （0 秒）特殊值分支吞掉——一个大数字要原样显示成它自己。
+
+    不能拿 `"0 秒前" not in md` 当反向断言：93000 本身以 0 结尾，
+    「93000 秒前」这串文本天然就含有子串「0 秒前」，那样写会是一次假的
+    substring 巧合失败，测的不是真实行为。改成直接核对具体表格单元格：
+    整行只有一个「…秒前」数字，且这个数字就是 93000，不是 0。
+    """
+    row = _dead_row(n_live_tup="1000", n_dead_tup="1000", table_bytes=str(200 * MB),
+                    last_autovacuum_age_s="93000")
+    rep = vacuum.collect(_Runner(dead=[row]), limit=20, th=_th())
+    assert vacuum._last_autovac_display(rep.tables[0]) == "93000 秒前"
+    md = vacuum.render_markdown(rep)
+    assert "从未运行" not in md
+    assert "93000 秒前" in md
+
+
+# ---------------------------------------------------------------------------
+# --limit 必须真正传到 vacuum.dead_tuples 的 SQL LIMIT 参数——不能只测
+# 「rc==0」（那种断言看不见 --limit 被忽略）。真实数据库里这一阶段只有
+# plan_data 一张表会命中任何规则，风险表的行数无论 --limit 传没传都可能
+# 恰好是 1，单靠矩阵端到端跑没法在这个具体环境里分辨「--limit 真的生效」
+# 与「--limit 被忽略、恰好只有一张表命中」两种情况；这里在 collect() 这一层
+# 直接钉住参数确实被转发，不依赖任何具体的真实数据形状。
+# ---------------------------------------------------------------------------
+
+def test_collect_forwards_the_limit_argument_to_the_dead_tuples_query():
+    seen = {}
+
+    class _RecordingRunner(_Runner):
+        def run(self, script, values=None):
+            if script == vacuum.DEAD_SCRIPT:
+                seen["values"] = values
+            return super().run(script, values)
+
+    vacuum.collect(_RecordingRunner(), limit=7, th=_th())
+    assert seen["values"] == {"limit": 7}
 
 
 # ---------------------------------------------------------------------------

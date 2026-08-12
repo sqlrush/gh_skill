@@ -227,9 +227,19 @@ def _xmin_blockers_section(rep: VacuumReport) -> str:
         source = x.get("source", "?")
         label = _XMIN_SOURCE_LABELS.get(source, source)
         identifier = x.get("identifier", "?")
-        lines.append(
-            "- %s（标识 %s）：%s —— `VACUUM` 无法回收它快照之前产生的死"
-            "元组" % (label, identifier, _xmin_age_display(x)))
+        line = ("- %s（标识 %s）：%s —— `VACUUM` 无法回收它快照之前产生的死"
+               "元组" % (label, identifier, _xmin_age_display(x)))
+        # detail 带着 usename/state/query 之类的原始上下文——不只是给人看
+        # 的补充信息：它也是唯一能证明"这一行确实是一个独立于取数会话
+        # 本身的真实事务"的证据。见 tools/matrix_vacuum.py 的
+        # 「gsql 不自证阻塞源」用例：不能只查 pid 是否还活着就判定，某些
+        # 环境下（本实例 pid/线程号池很小、回收很快）一个已经关闭的自证
+        # 连接留下的 pid 可能在检查这一刻已经被别的、完全无关的新连接
+        # 复用，单看 pid 活不活会给出假阳性的"通过"。
+        detail = x.get("detail")
+        if not is_null(detail):
+            line += "（%s）" % render.truncate(str(detail), 160)
+        lines.append(line)
     lines.append("")
     return "\n".join(lines)
 

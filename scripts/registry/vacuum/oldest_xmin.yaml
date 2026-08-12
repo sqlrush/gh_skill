@@ -7,15 +7,41 @@
 #                        （实测 information_schema.columns 逐列核对过），
 #                        只能用"事务开始了多久"近似"这个事务挡了多久"，
 #                        与既有的 health.long_xact 口径一致。
+#
+#                        **`pid <> pg_backend_pid()` 是修复过的一个真实缺陷，
+#                        不是可有可无的防御性写法。** 没有这一句时，任何
+#                        经 gsql/libpq 驱动直连发起的这条查询，都会把
+#                        **执行这条 SELECT 本身的会话**当成一条挡着回收的
+#                        长事务报出来——libpq 驱动会给自己这个 session 填上
+#                        非空的 connection_info（形如
+#                        `{"driver_name":"libpq",...}`），拿 pg8000 驱动
+#                        （`driver: pg8000`）发起同一条查询则不会（那条驱动
+#                        对自己这一行的 connection_info 是空串），已用
+#                        `pg_backend_pid()` 对照两条路径各自的 pg_stat_activity
+#                        自身行核实过。后果不是多一行噪音：R4 会因此被点燃，
+#                        报告说"有事务挡着回收，VACUUM 现在跑也没用"——
+#                        这条**压制了本该给出的正确建议**，还会把 DBA 支去
+#                        找一个根本不存在的事务。见
+#                        tools/matrix_vacuum.py 的「gsql 不自证阻塞源」用例。
 #   prepared_xact     —— pg_prepared_xacts：两阶段事务只要 PREPARE 了就
 #                        持有 xmin 且**没有活着的 backend**，long_xact 那段
 #                        查 pg_stat_activity 完全看不到它 —— 这正是本仓库
 #                        另有 health.prepared_xacts 这条脚本存在的场景。
+#                        这张视图**没有 pid 列**（实测
+#                        information_schema.columns 核对过：只有
+#                        transaction/gid/prepared/owner/database），查询本身
+#                        没有办法把自己混进这段结果——不需要、也加不出
+#                        类似 long_xact 那句自证防护。
 #   replication_slot  —— pg_replication_slots：复制槽用 xmin/catalog_xmin
 #                        钉住回收下限，但这张视图**没有任何时间戳列**
 #                        （同样逐列核对过），无法算出秒数。xmin_age_s 这里
 #                        故意留 NULL —— 不编造一个假的秒数；detail 把
 #                        xmin/catalog_xmin 原始值带出来，供后续判断。
+#                        这张视图同样**没有 pid 列**（实测核对过：只有
+#                        slot_name/plugin/slot_type/datoid/database/active/
+#                        xmin/catalog_xmin/restart_lsn/dummy_standby/
+#                        confirmed_flush），一条 ad hoc 查询会话本身也不是
+#                        一个复制槽，同样不存在自证的可能，不需要防护。
 #
 # 末尾 ORDER BY ... NULLS FIRST：未知时长（复制槽那段）排最前、不许沉底，
 # 抄的是 scripts/registry/lockwait/pairs.yaml 里同一条理由 —— 万一以后有人
@@ -33,6 +59,7 @@ sql: |
    WHERE xact_start IS NOT NULL
      AND state IN ('active','idle in transaction')
      AND COALESCE(connection_info,'') <> ''
+     AND pid <> pg_backend_pid()
   UNION ALL
   SELECT 'prepared_xact' AS source,
          gid AS identifier,
