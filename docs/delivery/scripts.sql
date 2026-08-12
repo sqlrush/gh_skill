@@ -673,12 +673,3 @@ INSERT INTO grmp.script_config (id, script_type, script_name, database_type, ref
 FROM (SELECT start_ts FROM snapshot.snapshot WHERE snapshot_id={{begin}}) b,
      (SELECT start_ts FROM snapshot.snapshot WHERE snapshot_id={{end}}) e;
 ', '[{"key":"begin","value":"","type":"INTEGER","autoAcquire":false},{"key":"end","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
-INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'sqltune.tables', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT n.nspname, c.relname, c.relpages,
-       c.reltuples::bigint AS reltuples,
-       pg_relation_size(c.oid) / current_setting(''block_size'')::bigint AS curpages,
-       c.relkind,
-       pg_total_relation_size(c.oid) / 1024.0 / 1024.0 AS size_mb
-FROM pg_class c
-LEFT JOIN pg_namespace n ON c.relnamespace = n.oid
-WHERE c.relname IN ({{names}}) AND c.relkind IN (''r'',''v'',''p'',''m'');
-', '[{"key":"names","value":"","type":"STRING","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
