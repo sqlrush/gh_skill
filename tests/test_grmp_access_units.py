@@ -6,6 +6,7 @@
 skill 不感知自己走的是中间件还是直连。这一点是本阶段的全部价值：
 skill 代码在本地与客户环境完全相同，不需要为两边各留一套。
 """
+import re
 import sys
 import pathlib
 
@@ -307,16 +308,30 @@ def test_whitelist_path_stays_quiet_when_timeout_was_not_asked_for(monkeypatch, 
     assert capsys.readouterr().err == ""
 
 
+_DECLARES_TIMEOUT_OPTION = re.compile(r'\.add_argument\(\s*["\']--timeout["\']')
+
+
 def test_every_skill_that_offers_timeout_actually_passes_it_down():
-    """任何声明了 --timeout 的 skill，都得把它交给取数层。
+    """任何**声明了** --timeout 的 skill，都得把它交给取数层。
 
     这条是防复发的：以后新增 skill 或改写入口，忘了传就红。
+
+    只认 argparse 里显式的 `add_argument("--timeout", ...)`，不认「文本里
+    出现过 --timeout 这个词」。声明和提及是两回事：转发者——比如
+    gaussdb-health/scripts/aggregate.py 为子进程拼 subprocess argv 时会
+    写出字面量 "--timeout"——并没有把 --timeout 定义成*自己*的命令行选项，
+    也没有义务接住 args.timeout 或调用 set_statement_timeout，它只是把收
+    到的 timeout 值转发给别的进程，这本身就是「交给取数层」的一种方式，
+    只是通过这条守卫最初没预料到的机制。按字面量扫描会把转发者也计入
+    「收下却没用」，误伤跟这条守卫想防的回归（真正声明了 --timeout、
+    却在解析后直接把 args.timeout 扔掉）是两回事。以后别把这条改回纯
+    字符串扫描——那样又会把任何提到 --timeout 的转发代码一并抓进来。
     """
     skills = _ROOT / "skills"
     offenders = []
     for entry in sorted(skills.glob("gaussdb-*/scripts/*.py")):
         text = entry.read_text(encoding="utf-8")
-        if '"--timeout"' not in text:
+        if not _DECLARES_TIMEOUT_OPTION.search(text):
             continue
         if "timeout=args.timeout" in text or "set_statement_timeout" in text:
             continue
