@@ -37,6 +37,7 @@ from common.grmp.statement import (  # noqa: E402
     ensure_explainable,
 )
 import render  # noqa: E402
+import systables  # noqa: E402
 from evidence import (  # noqa: E402
     Evidence,
     collect,
@@ -211,6 +212,9 @@ def _guard_sql(sql_text: str, analyze: bool) -> None:
 
 def _tune(runner, db, *, original_sql: str, binds: list[str], do_analyze: bool,
           sql_id: str = "", source: str = "", schema: str = "") -> TuneResult:
+    verdict = systables.system_verdict(original_sql)
+    if verdict.is_system:
+        raise systables.SystemSQLSkipped(verdict.system_objects)
     types = coltypes.infer_types(runner, original_sql)
     sub = substitute(original_sql, binds, types=types)
     coltypes.validate_binds(sub.substitutions, types)
@@ -413,6 +417,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(json.dumps(_to_jsonable(tr), ensure_ascii=False, indent=2))
         else:
             print(sqltune_report(tr), end="")
+        return 0
+    except systables.SystemSQLSkipped as exc:
+        # 策略性跳过是确定性结论,不是失败——exit 0,免得现场 agent 当错误反复重试。
+        if args.format == "json":
+            print(json.dumps(systables.skip_json(exc.objects), ensure_ascii=False, indent=2))
+        else:
+            print(systables.skip_report(exc.objects), end="")
         return 0
     # access.QueryError 归一了两条路径的取数失败（中间件 GrmpError / 直连
     # DBError），skill 只认这一个类型；common.DBError 仍要留着 —— 会话那条口子
