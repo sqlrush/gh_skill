@@ -1,20 +1,31 @@
-"""The 12 read-only health collectors — port of internal/probe/health/*.go.
+"""The 8 read-only health collectors — port of internal/probe/health/*.go.
 
 Each collector takes (runner, thresholds, top) and returns a DimResult. Collectors
 never raise: on query failure they return degraded(dim, reason) so one missing
 view / permission gap cannot abort the whole check.
+
+**waits / lwlock / bloat / locks 不在这里了。** 它们交给了各自专门的 skill
+自己查、自己判断阈值：
+
+    waits, lwlock -> gaussdb-waitevent（多窗口 DB time 分解 + 等待事件下钻，
+                      两者是同一份报告里锁/轻量锁耗时占比的两个切面，拆不开）
+    bloat         -> gaussdb-vacuum（死元组 / autovacuum 健康度评估）
+    locks         -> gaussdb-lockwait（锁堵塞分析：谁挡了谁、阻塞链的根在哪）
+
+health 通过 aggregate.py 以子进程调用它们、把它们的 findings 并入自己的
+汇总报告，不再自己维护这 4 份 SQL 与阈值判断 —— 两份采集迟早会给出不一致
+的数字，而这种不一致是静默的。详见 aggregate.py 顶部的说明、health.py 里
+的 `_sub_skill_in_scope`（--include/--exclude 仍认这四个老维度名，只是
+改成路由到对应子 skill）。
 """
 from __future__ import annotations
 
 from model import (
-    DIM_BLOAT, DIM_CONCURRENCY, DIM_CONN, DIM_LOCKS, DIM_LOGS, DIM_LWLOCK,
-    DIM_OVERVIEW, DIM_REPL, DIM_SCHEMA, DIM_SLOWSQL, DIM_WAITS, DIM_XACT,
-    DimResult, Finding, Severity, degraded,
+    DIM_CONCURRENCY, DIM_CONN, DIM_LOGS, DIM_OVERVIEW, DIM_REPL, DIM_SCHEMA,
+    DIM_SLOWSQL, DIM_XACT, DimResult, Finding, Severity, degraded,
 )
 from thresholds import Thresholds, go_duration
-from util import (
-    escalate, f2, human_bytes, i64, sev_by_duration, summarize_err, trunc,
-)
+from util import f2, human_bytes, i64, sev_by_duration, summarize_err, trunc
 
 # common is resolved on sys.path by the entry script (health.py).
 import common  # noqa: E402
@@ -36,7 +47,7 @@ for parent in _HERE.parents:
 from common import access  # noqa: E402
 # 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
 # 类型还原一律走这里，不用裸 int()/float()/bool()。
-from common.grmp.values import as_bool, as_float, as_int, is_null  # noqa: E402
+from common.grmp.values import as_bool, as_int, is_null  # noqa: E402
 
 
 
@@ -90,43 +101,6 @@ def collect_overview(runner, th: Thresholds, _top: int) -> DimResult:
                                   "pg_stat_database blks_hit/read"))
     d.headline = (f"命中率 {cache_hit:.1f}%、连接 {backends}/{max_conn}、"
                   f"{'恢复中' if in_recovery else '未在恢复'}、最老事务 {oldest_str}")
-    return d
-
-
-# --- wait events -------------------------------------------------------------
-
-
-
-def collect_waits(runner, th: Thresholds, top: int) -> DimResult:
-    try:
-        rows = runner.run("health.waits")
-    except access.QueryError as exc:
-        return degraded(DIM_WAITS, summarize_err(exc))
-    d = DimResult(dimension=DIM_WAITS, available=True, headers=["wait_status", "会话数"])
-    total = top_cnt = 0
-    top_wait = ""
-    for n, row in enumerate(rows):
-        ws, cnt = row["wait_status"], as_int(row["cnt"])
-        total += cnt
-        if n < top:
-            d.rows.append([ws, i64(cnt)])
-        if cnt > top_cnt:
-            top_cnt, top_wait = cnt, ws
-    if total >= 5 and top_cnt > 0:
-        conc = 100.0 * top_cnt / total
-        sev = Severity.OK
-        if conc > th.wait_conc_warn:
-            sev = Severity.WARN
-        elif conc > th.wait_conc_notice:
-            sev = Severity.NOTICE
-        if sev != Severity.OK:
-            thr = th.wait_conc_warn if sev == Severity.WARN else th.wait_conc_notice
-            d.findings.append(Finding(DIM_WAITS, "WAIT_CONCENTRATION", sev, "等待集中度",
-                                      f"{conc:.0f}% 在 {top_wait}",
-                                      f">{thr:.0f}%（共{total}等待）", "pg_thread_wait_status"))
-        d.headline = f"{total} 会话等待，{conc:.0f}% 在 {top_wait}"
-    else:
-        d.headline = f"等待会话 {total}（无显著集中）"
     return d
 
 
@@ -232,178 +206,6 @@ def collect_xact(runner, th: Thresholds, top: int) -> DimResult:
         d.headline = f"{n_rows} 个客户端事务，均在阈值内（最长 {max_secs:.0f}s）"
     else:
         d.headline = "无活动客户端事务"
-    return d
-
-
-# --- dead tuples & bloat -----------------------------------------------------
-
-
-
-def collect_bloat(runner, th: Thresholds, top: int) -> DimResult:
-    try:
-        rows = runner.run("health.bloat", {"limit": top})
-    except access.QueryError as exc:
-        return degraded(DIM_BLOAT, summarize_err(exc))
-    d = DimResult(dimension=DIM_BLOAT, available=True,
-                  headers=["table", "live", "dead", "dead%", "autovacuum前(s)", "autovacuum"])
-    worst_ratio = 0.0
-    worst_tbl = ""
-    for row in rows:
-        sch, rel = row["schemaname"], row["relname"]
-        live, dead = as_int(row["n_live_tup"]), as_int(row["n_dead_tup"])
-        age = row["last_autovacuum_age_s"]
-        autovac = as_bool(row["autovac_enabled"])
-        ratio = 100.0 * dead / max(live + dead, 1)
-        age_str = "—" if is_null(age) else f"{as_float(age):.0f}"
-        av_str = "on" if autovac else "off"
-        d.rows.append([f"{sch}.{rel}", i64(live), i64(dead), f2(ratio), age_str, av_str])
-        if dead > th.dead_tup_min:
-            sev = Severity.OK
-            if ratio > th.dead_ratio_warn:
-                sev = Severity.WARN
-            elif ratio > th.dead_ratio_notice:
-                sev = Severity.NOTICE
-            if sev != Severity.OK:
-                thr = th.dead_ratio_warn if sev == Severity.WARN else th.dead_ratio_notice
-                d.findings.append(Finding(
-                    DIM_BLOAT, "BLOAT_DEAD_RATIO", sev, f"{sch}.{rel} dead_ratio",
-                    f2(ratio) + "%", f">{thr:.0f}% 且 dead>{th.dead_tup_min}",
-                    f"pg_stat_user_tables dead={dead} live={live} autovacuum={av_str}"))
-                if ratio > worst_ratio:
-                    worst_ratio, worst_tbl = ratio, f"{sch}.{rel}"
-    d.headline = f"{worst_tbl} dead {worst_ratio:.0f}%" if worst_tbl else "无显著膨胀"
-    return d
-
-
-# --- lightweight locks -------------------------------------------------------
-
-
-
-
-def collect_lwlock(runner, th: Thresholds, top: int) -> DimResult:
-    try:
-        rows = runner.run("health.lwlock", {"limit": top})
-    except access.QueryError as exc:
-        return degraded(DIM_LWLOCK, summarize_err(exc))
-    d = DimResult(dimension=DIM_LWLOCK, available=True, headers=["lwlock", "等待会话数"])
-    hot = ""
-    hot_cnt = 0
-    for row in rows:
-        evt, cnt = row["evt"], as_int(row["cnt"])
-        d.rows.append([evt, i64(cnt)])
-        if cnt >= th.lwlock_sessions and cnt > hot_cnt:
-            hot, hot_cnt = evt, cnt
-    if hot:
-        d.findings.append(Finding(DIM_LWLOCK, "LWLOCK_HOT", Severity.NOTICE, "热点轻量锁",
-                                  f"{hot} ×{hot_cnt} 会话", f"≥{th.lwlock_sessions} 会话",
-                                  "pg_thread_wait_status lwlock"))
-        d.headline = f"热点 {hot}（{hot_cnt} 会话等待）"
-    else:
-        d.headline = "无持续 LWLock 热点"
-    return d
-
-
-# --- transaction locks & blocking chains -------------------------------------
-
-
-
-def _chain_depth(session, blocked_by: dict, limit: int = 32) -> int:
-    """从某个等待者往上追到根，返回它上面压着几层。
-
-    带环保护：真实现场出现过互相等待（虽然内核会检测死锁并中断其中一方，
-    但快照可能正好抓在检测之前）。没有 seen 集合的话这里会死循环，
-    而健康检查挂住比报错更难排查。
-    """
-    depth, seen, cur = 0, {session}, blocked_by.get(session)
-    while cur is not None and cur not in seen and depth < limit:
-        depth += 1
-        seen.add(cur)
-        cur = blocked_by.get(cur)
-    return depth
-
-
-def collect_locks(runner, th: Thresholds, top: int) -> DimResult:
-    """锁等待的逐条明细 + 阻塞链结构。
-
-    原先只输出「根阻塞 pid / 链深 / 被阻数 / 状态 / 时长」五个数 —— 三层堆积、
-    十几个会话在报告里只剩一行。要能据此行动，至少得知道：等的是什么锁、
-    锁在哪个对象上、阻塞者是谁、它在跑什么、开着事务多久了。
-    """
-    try:
-        rows = runner.run("health.lock_chain", {"limit": max(top, 50)})
-    except access.QueryError as exc:
-        return degraded(DIM_LOCKS, summarize_err(exc))
-
-    d = DimResult(dimension=DIM_LOCKS, available=True,
-                  headers=["等待会话", "锁模式", "锁对象", "阻塞会话",
-                           "阻塞方状态", "事务时长(s)", "阻塞方语句"])
-    if not rows:
-        d.headline = "无阻塞"
-        return d
-
-    blocked_by, by_waiter = {}, {}
-    for row in rows:
-        waiter = as_int(row["waiter_session"])
-        blocked_by[waiter] = as_int(row["blocker_session"])
-        by_waiter[waiter] = row
-
-    # 根 = 阻塞了别人、自己却没被阻塞的会话
-    roots = {b for b in blocked_by.values() if b not in blocked_by}
-    waiters_of = {r: 0 for r in roots}
-    depth_of = {r: 0 for r in roots}
-    for waiter in blocked_by:
-        cur, hops = waiter, 0
-        seen = {waiter}
-        while cur in blocked_by and blocked_by[cur] not in seen and hops < 32:
-            cur = blocked_by[cur]
-            seen.add(cur)
-            hops += 1
-        if cur in waiters_of:
-            waiters_of[cur] += 1
-            depth_of[cur] = max(depth_of[cur], _chain_depth(waiter, blocked_by))
-
-    worst_sev, worst_line = Severity.OK, ""
-    for waiter, row in sorted(by_waiter.items(),
-                              key=lambda kv: -_f(kv[1]["blocker_xact_age_s"])):
-        blocker = as_int(row["blocker_session"])
-        state = row["blocker_state"]
-        secs = (_f(row["blocker_state_age_s"]) if state == "idle in transaction"
-                else _f(row["blocker_xact_age_s"]))
-        d.rows.append([i64(waiter), row["lockmode"] or "?",
-                       (row["locktag"] or "?")[:28], i64(blocker),
-                       state or "?", f"{secs:.0f}",
-                       (row["blocker_query"] or "").replace("\n", " ")[:70]])
-
-    for root in sorted(roots, key=lambda r: -waiters_of.get(r, 0)):
-        row = next((r for r in by_waiter.values()
-                    if as_int(r["blocker_session"]) == root), None)
-        if row is None:
-            continue
-        state = row["blocker_state"]
-        secs = (_f(row["blocker_state_age_s"]) if state == "idle in transaction"
-                else _f(row["blocker_xact_age_s"]))
-        depth, n_waiters = depth_of.get(root, 1), waiters_of.get(root, 1)
-        sev = sev_by_duration(secs, th.block_notice, th.block_warn, th.block_crit)
-        if depth > th.block_chain_warn_depth and sev < Severity.WARN:
-            sev = Severity.WARN
-        if state == "idle in transaction":
-            # 事务开着却什么都不干 —— 阻塞纯属占着不放，比正在执行的更该处理
-            sev = escalate(sev)
-        if sev == Severity.OK:
-            continue
-        query = (row["blocker_query"] or "").replace("\n", " ")[:120]
-        d.findings.append(Finding(
-            DIM_LOCKS, "LOCK_BLOCKING_CHAIN", sev,
-            f"阻塞源 session {root}（{state or '状态未知'}）",
-            f"{n_waiters} 个会话被阻，链深 {depth}，事务已开 {secs:.0f}s",
-            ">阻塞时长/链深阈值",
-            f"锁模式 {row['lockmode'] or '?'}，对象 {row['locktag'] or '?'}；"
-            f"阻塞方语句：{query or '(取不到)'}"))
-        if sev > worst_sev:
-            worst_sev = sev
-            worst_line = (f"阻塞源 session {root}({state})，"
-                          f"{n_waiters} 个会话被阻，链深 {depth}，{secs:.0f}s")
-    d.headline = worst_line if worst_line else f"{len(rows)} 处等待，均未达阈值"
     return d
 
 
@@ -709,15 +511,16 @@ def collect_concurrency(runner, th: Thresholds, _top: int) -> DimResult:
 # --- registry ----------------------------------------------------------------
 
 def registry():
-    """Ordered (key, collector_fn) list — order is the report's section order."""
+    """Ordered (key, collector_fn) list — order is the report's section order.
+
+    Only the 8 dimensions health still collects itself. waits/lwlock/bloat/locks
+    are gone — see the module docstring for where they went and health.py's
+    `_sub_skill_in_scope` for how --include/--exclude still route those 4 names.
+    """
     return [
         ("overview", collect_overview),
-        ("waits", collect_waits),
         ("slowsql", collect_slowsql),
         ("xact", collect_xact),
-        ("bloat", collect_bloat),
-        ("lwlock", collect_lwlock),
-        ("locks", collect_locks),
         ("conn", collect_conn),
         ("logs", collect_logs),
         ("repl", collect_repl),

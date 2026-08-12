@@ -12,7 +12,7 @@ python3 -m grmp_middleware.dump_whitelist
 
 | 项 | 值 |
 |---|---|
-| 脚本总数 | 98 |
+| 脚本总数 | 94 |
 | id 范围 | 1 ~ 100 |
 
 > `id` 是**环境相关数据，不是契约**。skill 从不持有它 —— 运行时调
@@ -23,7 +23,7 @@ python3 -m grmp_middleware.dump_whitelist
 | 命名空间 | 条数 | 脚本 |
 |---|---|---|
 | **explain** | 2 | `plan_text`, `plan_text_analyze` |
-| **health** | 19 | `archive_mode`, `bgwriter`, `bloat`, `conn_concentration`, `conn_states`, `db_concurrency`, `db_info`, `invalid_index`, `lock_chain`, `long_xact`, `lwlock`, `overview`, `prepared_xacts`, `replication`, `slow_sql`, `stale_stats`, `unused_index`, `waits`, `stats_window` |
+| **health** | 15 | `archive_mode`, `bgwriter`, `conn_concentration`, `conn_states`, `db_concurrency`, `db_info`, `invalid_index`, `long_xact`, `overview`, `prepared_xacts`, `replication`, `slow_sql`, `stale_stats`, `unused_index`, `stats_window` |
 | **lockwait** | 2 | `chain`, `pairs` |
 | **memanalyze** | 11 | `activity`, `cols_bare`, `cols_qualified`, `context`, `gucs`, `instance`, `session`, `wlm_operator`, `wlm_operator_hist`, `wlm_sql`, `wlm_sql_hist` |
 | **perf** | 9 | `bgwriter`, `db_stat`, `instance_time`, `locks`, `memory`, `sessions`, `table_stat`, `wait_events`, `wait_status` |
@@ -88,26 +88,6 @@ SELECT setting FROM pg_settings WHERE name='archive_mode';
 SELECT checkpoints_timed, checkpoints_req FROM pg_stat_bgwriter;
 ```
 
-### `health.bloat`
-
-- id `5` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `limit` | INTEGER |
-
-```sql
-SELECT t.schemaname, t.relname, t.n_live_tup, t.n_dead_tup,
-       EXTRACT(EPOCH FROM (now()-t.last_autovacuum)) AS last_autovacuum_age_s,
-       CASE WHEN 'autovacuum_enabled=false' = ANY(c.reloptions) THEN false ELSE true END AS autovac_enabled
-FROM pg_stat_user_tables t
-JOIN pg_class c ON c.oid = t.relid
-WHERE t.n_dead_tup > 0
-  AND t.schemaname NOT IN ('pg_catalog','information_schema','snapshot','dbe_perf','dbe_pldeveloper','cstore')
-ORDER BY t.n_dead_tup::numeric/GREATEST(t.n_live_tup+t.n_dead_tup,1) DESC
-LIMIT {{limit}};
-```
-
 ### `health.conn_concentration`
 
 - id `6` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
@@ -167,39 +147,6 @@ where datname not in ('template1','postgres','template0');
 SELECT count(*) AS cnt FROM pg_index WHERE NOT indisvalid;
 ```
 
-### `health.lock_chain`
-
-- id `11` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `limit` | INTEGER |
-
-```sql
-SELECT w.sessionid AS waiter_session,
-       w.tid AS waiter_tid,
-       COALESCE(w.wait_status, '') AS wait_status,
-       COALESCE(w.wait_event, '') AS wait_event,
-       COALESCE(w.lockmode, '') AS lockmode,
-       COALESCE(w.locktag, '') AS locktag,
-       w.block_sessionid AS blocker_session,
-       COALESCE(b.state, '') AS blocker_state,
-       COALESCE(b.usename, '') AS blocker_user,
-       COALESCE(b.application_name, '') AS blocker_app,
-       COALESCE(EXTRACT(EPOCH FROM (now() - b.xact_start)), 0) AS blocker_xact_age_s,
-       COALESCE(EXTRACT(EPOCH FROM (now() - b.state_change)), 0) AS blocker_state_age_s,
-       COALESCE(substr(b.query, 1, 200), '') AS blocker_query,
-       COALESCE(substr(a.query, 1, 200), '') AS waiter_query
-FROM pg_thread_wait_status w
-LEFT JOIN pg_stat_activity b ON b.sessionid = w.block_sessionid
-LEFT JOIN pg_stat_activity a ON a.sessionid = w.sessionid
-WHERE w.block_sessionid IS NOT NULL
-  AND w.block_sessionid <> 0
-  AND w.block_sessionid <> w.sessionid
-ORDER BY blocker_xact_age_s DESC
-LIMIT {{limit}};
-```
-
 ### `health.long_xact`
 
 - id `12` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
@@ -219,23 +166,6 @@ FROM pg_stat_activity
 WHERE state IN ('active','idle in transaction') AND xact_start IS NOT NULL
   AND COALESCE(connection_info,'') <> ''
 ORDER BY xact_start
-LIMIT {{limit}};
-```
-
-### `health.lwlock`
-
-- id `13` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `limit` | INTEGER |
-
-```sql
-SELECT COALESCE(wait_event,'<lwlock>') AS evt, count(*) AS cnt
-FROM pg_thread_wait_status
-WHERE lower(wait_status) LIKE '%lwlock%'
-GROUP BY wait_event
-ORDER BY cnt DESC
 LIMIT {{limit}};
 ```
 
@@ -364,20 +294,6 @@ WHERE pg_relation_size(s.indexrelid) > {{min_bytes}}
   AND s.schemaname NOT IN {{schema_filter}}
 ORDER BY s.idx_scan ASC, pg_relation_size(s.indexrelid) DESC
 LIMIT {{limit}};
-```
-
-### `health.waits`
-
-- id `20` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-无参数
-
-```sql
-SELECT wait_status, count(*) AS cnt
-FROM pg_thread_wait_status
-WHERE wait_status IS NOT NULL AND wait_status NOT IN ('none','wait cmd')
-GROUP BY wait_status
-ORDER BY cnt DESC;
 ```
 
 ### `memanalyze.activity`
