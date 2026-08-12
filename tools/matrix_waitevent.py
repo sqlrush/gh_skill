@@ -199,16 +199,71 @@ def _judge_floor(rc, out, err, expect_reject):
     return None
 
 
+# DB time 九项名字，取自 dbtime.py 的 _ITEM_ORDER（`waitevent.py` 的
+# `_items_table()` 就是按这个顺序把 `bd.items` 铺成表格行）。本矩阵是黑盒
+# 验收，刻意不 import 被测代码的私有常量，独立维护这份拷贝——两处顺序不
+# 用一致，这里只要求"九个名字都出现在同一段连续区块里"，不比对次序。
+_DB_TIME_ITEM_NAMES = (
+    "EXECUTION_TIME", "CPU_TIME", "DATA_IO_TIME", "NET_SEND_TIME",
+    "PARSE_TIME", "PLAN_TIME", "REWRITE_TIME",
+    "PL_EXECUTION_TIME", "PL_COMPILATION_TIME",
+)
+_DB_TIME_LINE_PREFIX = "DB_TIME = "         # waitevent.py: "DB_TIME = %d us"
+_EVENTS_HEADING_PREFIX = "### 等待事件"      # waitevent.py: _events_block() 的开头
+
+
+def _check_items_are_flat(out: str):
+    """DB time 九项必须落在「DB_TIME = ...」这一行与等待事件小节之间的**同一段
+    连续区块**里，区块内不能出现任何标题行（#/##/### ...）——出现标题行说明
+    九项被重新分组、加了层级，读者会去对着标题做包含关系的减法，在
+    `CPU_TIME+DATA_IO_TIME+NET_SEND_TIME<=EXECUTION_TIME`（已实测不成立）
+    那一侧得到无意义的数字，且没有任何报错提示。
+
+    只断言表头文案「平铺，互不隶属」测不出这种回归：换掉表头文案本身、或者
+    保留表头但在 CPU/IO/NET 周围插一个小标题，纯文本 substring 匹配一样会
+    通过——这正是本检查要单独补上的那一半。
+    """
+    lines = out.splitlines()
+    db_time_idx = next((i for i, l in enumerate(lines)
+                        if l.startswith(_DB_TIME_LINE_PREFIX)), None)
+    if db_time_idx is None:
+        return False, "输出里找不到「%s」这一行，没法定位九项区块" % _DB_TIME_LINE_PREFIX
+    events_idx = next((i for i, l in enumerate(lines)
+                       if l.startswith(_EVENTS_HEADING_PREFIX)), None)
+    if events_idx is None:
+        return False, "输出里找不到「%s」，没法定位九项区块的终点" % _EVENTS_HEADING_PREFIX
+    if events_idx <= db_time_idx:
+        return False, "「%s」出现在「%s」之前，窗口结构不对" % (_EVENTS_HEADING_PREFIX, _DB_TIME_LINE_PREFIX)
+
+    block = lines[db_time_idx:events_idx]
+    heading_lines = [l for l in block if l.lstrip().startswith("#")]
+    if heading_lines:
+        return False, ("DB_TIME 与等待事件小节之间出现了标题行 %r——九项可能被"
+                       "重新分组加了层级，不再是一张平铺表" % heading_lines[:3])
+
+    missing = [name for name in _DB_TIME_ITEM_NAMES
+              if not any(name in l for l in block)]
+    if missing:
+        return False, ("DB_TIME 与等待事件之间的区块里缺少 %r——九项不在同一段"
+                       "连续区块里" % missing)
+    return True, ""
+
+
 def check_default(rc, out, err, mode):
     if rc != 0:
         return False, "rc=%d（期望 0）：%s" % (rc, (err or out)[:200])
     if "DB_TIME" not in out:
         return False, "输出未包含 DB_TIME"
     # 这是本矩阵要守的第一件事：DB time 九项必须平铺渲染，不能暗示一棵
-    # 已被证伪的包含树。`_items_table()` 只在平铺路径下才会写出这个表头。
+    # 已被证伪的包含树。表头文案只能测出粗粒度回归（连表头一起被改掉/
+    # 删掉的整体改版）；结构检查测的是细粒度回归（表头不变、但在九项
+    # 中间插了标题或分组）——两者互补，缺一个都会漏掉对应那一种回归。
     if "平铺，互不隶属" not in out:
         return False, ("输出里没有「平铺，互不隶属」这个渲染签名——"
                        "DB time 九项可能被画成了树，读者会去做无意义的减法")
+    ok, note = _check_items_are_flat(out)
+    if not ok:
+        return False, note
     return True, ""
 
 
