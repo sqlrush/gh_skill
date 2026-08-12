@@ -211,6 +211,37 @@ def test_no_include_or_exclude_means_every_sub_skill_is_in_scope():
         assert health._sub_skill_in_scope(s, set(), set())
 
 
+# --- --include/--exclude 接口稳定性：四个老名字不能悄悄失效 ---------------
+
+
+def test_all_four_legacy_dimension_names_stay_accepted_and_correctly_routed():
+    """brief 的硬要求：locks/waits/lwlock/bloat 这四个名字在 --include/
+    --exclude 里必须继续有效，用户已有的命令行不能因为这次内部重组而失效。
+
+    这条测试防的是"其余测试全绿，只有这个命令行接口静默失效"——比如以后
+    有人从 SUB_SKILL_DIMS 里删掉了 "locks": ("locks",) 这一条（或者把它的
+    元组改空），本文件前面几条分散的路由测试未必会全部覆盖到这个删除，
+    这里用一个显式的期望表把四个名字一次性钉死，任何一个从接受集合里
+    掉出去都必须让本测试变红。
+    """
+    expect_owner = {
+        "locks": "gaussdb-lockwait",
+        "waits": "gaussdb-waitevent",
+        "lwlock": "gaussdb-waitevent",
+        "bloat": "gaussdb-vacuum",
+    }
+    for name, owner in expect_owner.items():
+        assert health._sub_skill_in_scope(owner, {name}, set()), (
+            "--include %s 应该触发 %s，但没有——这个老维度名可能从接受"
+            "集合里掉出去了" % (name, owner))
+        for other in aggregate.SUB_SKILLS:
+            if other != owner:
+                assert not health._sub_skill_in_scope(other, {name}, set()), (
+                    "--include %s 不该触发 %s" % (name, other))
+        assert not health._sub_skill_in_scope(owner, set(), {name}), (
+            "--exclude %s 应该排除 %s，但没有" % (name, owner))
+
+
 # --- 退出码 ---------------------------------------------------------------
 
 

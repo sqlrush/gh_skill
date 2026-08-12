@@ -28,10 +28,12 @@ import util  # noqa: E402
 from model import DimResult, Finding, HealthEvidence, Severity  # noqa: E402
 
 
-def test_registry_has_12_collectors():
+def test_registry_has_the_eight_local_collectors_in_order():
+    """waits/bloat/lwlock/locks moved to sub-skills (aggregate.py); the other
+    eight stay local, in this order — the order is the report's section order."""
     keys = [k for k, _ in collectors.registry()]
-    assert keys == ["overview", "waits", "slowsql", "xact", "bloat", "lwlock",
-                    "locks", "conn", "logs", "repl", "schema", "concurrency"]
+    assert keys == ["overview", "slowsql", "xact", "conn", "logs", "repl",
+                    "schema", "concurrency"]
 
 
 def test_go_duration_matches_go():
