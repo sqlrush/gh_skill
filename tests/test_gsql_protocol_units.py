@@ -132,6 +132,32 @@ def test_parse_error_fallback():
 def test_parse_error_lowercase_token_not_sqlstate():
     assert gp.parse_gsql_error("gsql: ERROR:  error: boom") == "ERROR: error: boom"
 
+# openGauss 的 VERBOSITY=verbose 把消息挪到下一行(GAUSS-NNNNN 前缀),ERROR: 那行
+# 是空的。只读首行会得到光秃秃的 "ERROR: " —— 现场 agent 看不到原因,无从自纠。
+_OG_VERBOSE = (
+    "ERROR:  \n"
+    "GAUSS-08964: column \"nosuchcol\" does not exist\n"
+    "SQLSTATE: 42703\n"
+    "LINE 1: SELECT nosuchcol FROM pg_class\n"
+    "               ^\n"
+    "CONTEXT:  referenced column: nosuchcol\n"
+)
+
+def test_parse_error_opengauss_verbose_next_line():
+    assert gp.parse_gsql_error(_OG_VERBOSE) == (
+        'ERROR: column "nosuchcol" does not exist (SQLSTATE 42703)')
+
+def test_parse_error_opengauss_verbose_without_sqlstate():
+    err = "ERROR:  \nGAUSS-01234: something broke\n"
+    assert gp.parse_gsql_error(err) == "ERROR: something broke"
+
+def test_parse_error_empty_error_line_falls_back_to_raw():
+    # 既没有内联消息也没有 GAUSS- 行时,宁可回退原文,也不要返回空的 "ERROR: "。
+    err = "gsql: ERROR:  \nDETAIL:  只有细节没有主消息\n"
+    out = gp.parse_gsql_error(err)
+    assert out.strip() != "ERROR:"
+    assert "只有细节没有主消息" in out
+
 
 # --- openGauss 的 JSON 数字表示（实测钉住，别当成 bug 去"修"）------------
 

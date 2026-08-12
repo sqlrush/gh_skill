@@ -97,6 +97,10 @@ def wrap_select_json(sql: str) -> str:
 
 
 _ERR_RE = re.compile(r"ERROR:\s+(?:([0-9A-Z]{5}):\s+)?(.*)")
+# openGauss 的 VERBOSITY=verbose 把主消息挪到后续行:ERROR: 那行是空的,
+# 真正的消息带 GAUSS-NNNNN 前缀,SQLSTATE 再单占一行。
+_GAUSS_MSG_RE = re.compile(r"^GAUSS-\d+:\s*(.+)$")
+_SQLSTATE_RE = re.compile(r"^SQLSTATE:\s*([0-9A-Z]{5})\s*$")
 
 
 def parse_json_result(stdout: str) -> tuple[list[str], list[tuple]]:
@@ -171,11 +175,39 @@ def parse_text_result_with_header(stdout: str) -> tuple[list[str], list[tuple]]:
     return cols, [tuple(line.split("|")) for line in body]
 
 
+def _verbose_parts(lines: list[str]) -> tuple[str, str]:
+    """openGauss verbose 形态:从后续行里捡出主消息与 SQLSTATE。"""
+    msg = code = ""
+    for line in lines:
+        if not msg:
+            m = _GAUSS_MSG_RE.match(line.strip())
+            if m:
+                msg = m.group(1).strip()
+                continue
+        if not code:
+            m = _SQLSTATE_RE.match(line.strip())
+            if m:
+                code = m.group(1)
+    return msg, code
+
+
 def parse_gsql_error(stderr: str) -> str:
-    """尽量还原 'ERROR: <msg> (SQLSTATE <code>)'，否则回退原文。"""
-    for line in stderr.splitlines():
+    """尽量还原 'ERROR: <msg> (SQLSTATE <code>)'，否则回退原文。
+
+    两种形态都要认:PG 式把消息写在 ERROR: 同一行;openGauss 的
+    VERBOSITY=verbose 把 ERROR: 那行留空,消息挪到 GAUSS-NNNNN 行、
+    SQLSTATE 另起一行。只认前者会返回光秃秃的 "ERROR: ",上层拿不到原因。
+    """
+    lines = stderr.splitlines()
+    for i, line in enumerate(lines):
         m = _ERR_RE.search(line)
-        if m:
-            code, msg = m.group(1), m.group(2).strip()
-            return f"ERROR: {msg} (SQLSTATE {code})" if code else f"ERROR: {msg}"
+        if not m:
+            continue
+        code, msg = m.group(1) or "", m.group(2).strip()
+        if not msg:
+            msg, verbose_code = _verbose_parts(lines[i + 1:])
+            code = code or verbose_code
+        if not msg:
+            break  # 连主消息都捞不到,回退原文比返回空 ERROR 有用
+        return f"ERROR: {msg} (SQLSTATE {code})" if code else f"ERROR: {msg}"
     return stderr.strip() or "gsql failed with no error output"
