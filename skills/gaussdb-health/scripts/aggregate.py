@@ -13,6 +13,20 @@ collectors.py / report.py / thresholds.py / util.py 也各有 3–4 份。
 「没查出风险」。两者的区别就是这个模块存在的意义——如果子进程崩了、
 超时了、或者吐出来的东西解析不了，而我们返回空 findings 列表，health
 会打印一份干净的报告，读者会以为那块没问题。这比 health 直接报错更糟。
+
+**为什么解析 `findings_from_json` 那步用 `except Exception` 兜底，不是
+按具体异常类型挨个接**：这是解析一个我们不控制的子进程吐出来的文本的
+信任边界。三轮走查已经从「碰巧发现」的方式摸出 `ValueError`（形状不
+对）→ `TypeError`（`severity` 是 `null`，`int(None)`）→ `OverflowError`
+（`severity` 是 `1e400`，`json.loads` 饱和成 `inf`，`int(inf)`）——没有
+理由相信这份清单已经穷尽。这个模块的承诺是「不管子 skill 吐出什么，
+health 都能把它记成失败」，不是「这几种已经想到的畸形能接住」；在信任
+边界上按类型枚举，意味着承诺只对已经想到的畸形成立，而这恰恰是这个
+模块不能有的属性。错误文案里带上异常类型名，是为了不把
+`findings_from_json` 自身的编程错误（比如以后重构出来的
+`AttributeError`）也误标成「子 skill 数据不对」——运维看到类型名就知道
+该往哪查。不捕 `BaseException`：`KeyboardInterrupt` / `SystemExit` 该
+往上抛还是要往上抛。
 """
 from __future__ import annotations
 
@@ -104,13 +118,17 @@ def run_sub_skill(skill: str, conn: str, timeout: int,
 
     try:
         findings = findings_from_json(proc.stdout)
-    except (ValueError, TypeError) as exc:
-        # ValueError：形状不对（缺字段/类型不对的列表或字典）。
-        # TypeError：形状对但值不对——比如 severity 是 null，
-        # Severity(int(None)) 抛的是 TypeError 不是 ValueError。
-        # 两种都是「解析不出来」，都不能变成一个真的 raise。
-        return SubSkillResult(skill=skill, ok=False, findings=[],
-                               error="解析子 skill 输出失败：%s" % exc)
+    except Exception as exc:
+        # 刻意用 except Exception，不再枚举具体异常类型：见模块文档字符
+        # 串顶部「为什么这里要用 except Exception」那一段。错误文案里带
+        # 上异常类型名（%s: %s），是为了把「子 skill 数据烂」和
+        # 「findings_from_json 自己有编程错误」区分开——不带类型名的话，
+        # 一个本该修代码的 bug 会被误标成「等对方修数据」，排查方向就错了。
+        # 不捕 BaseException：KeyboardInterrupt / SystemExit 该往上抛还是
+        # 要往上抛，不能被这里吞掉。
+        return SubSkillResult(
+            skill=skill, ok=False, findings=[],
+            error="解析子 skill 输出失败（%s）：%s" % (type(exc).__name__, exc))
 
     return SubSkillResult(skill=skill, ok=True, findings=findings, error="")
 

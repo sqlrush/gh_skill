@@ -169,6 +169,32 @@ def test_null_severity_is_a_failure_not_a_crash():
     assert r.findings == []
 
 
+def test_severity_value_that_overflows_int_is_a_failure_not_a_crash():
+    """severity 是一个合法的 JSON 数字，但大到 int() 转不了。
+
+    `1e400` 是合法的 JSON number 语法；`json.loads` 对超出 float 范围的
+    数字走 IEEE-754 的 string-to-double，直接饱和成 `inf`，不报错。
+    `common/finding.py` 的 `Severity(int(raw["severity"]))` 对 `inf` 调用
+    `int()` 抛的是 **OverflowError**（`ArithmeticError` 的子类）——
+    既不是 `ValueError` 也不是 `TypeError`。这是三轮走查里第三种被
+    发现的异常类型，也是促使把 `run_sub_skill` 的解析异常处理从「挨个
+    枚举」改成「在这个信任边界上 except Exception」的那个案例：
+    proc.stdout 是不受控子进程吐出来的文本，没理由相信我们已经想全了
+    它能坏成什么样。
+    """
+    bad = ('{"skill": "gaussdb-vacuum", "findings": [{"dimension": "vacuum", '
+           '"code": "V001", "severity": 1e400, "metric": "dead_tuples", '
+           '"value": "1", "threshold": "1", "evidence": "x"}]}')
+    r = aggregate.run_sub_skill("gaussdb-vacuum", "og", 30, runner=_fake(rc=0, out=bad))
+    assert r.ok is False
+    assert "解析" in r.error
+    # 错误文案里必须带着异常类型名——不然以后 findings_from_json 自己出个
+    # 编程错误（比如 AttributeError），也会被这条路径误标成「子 skill
+    # 数据不对」，把排查方向指错。
+    assert "OverflowError" in r.error
+    assert r.findings == []
+
+
 def test_runner_raising_unexpectedly_is_recorded_not_raised():
     """subprocess 起不来（脚本路径错、权限问题……）也不能掀翻 health。"""
     def runner(argv, **kwargs):
