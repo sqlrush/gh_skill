@@ -212,7 +212,6 @@ def api_endpoint() -> ApiEndpoint:
             "多环境请分别放在不同的 config.yaml 里。" % len(items))
     item = items[0]
     host = str(item.get("host", "") or "").strip()
-    host = self.resolve_host();
     if not host:
         raise ConfigError("api_connection.host 不能为空")
     try:
