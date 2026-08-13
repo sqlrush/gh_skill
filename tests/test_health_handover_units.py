@@ -143,6 +143,26 @@ def test_all_ok_sub_skills_report_as_fully_collected():
             "ok=True 的子 skill 不该出现在失败列表的项目符号里：%r" % line)
 
 
+def test_an_empty_scope_is_said_out_loud_not_left_blank():
+    """`--include overview` / `--exclude locks,waits,lwlock,bloat` 之后一个子
+    skill 都不在范围内——这一段必须**明说**是范围排除掉的，不能留白。
+
+    留白的后果与 ok/len(findings) 混淆是同一类：一份没有锁、等待、膨胀信息
+    的报告，和一份"这三块都查过、都干净"的报告长得一模一样。区别只在这句
+    话在不在。这条分支此前是 `_missing_section()` 三个分支里唯一没有测试
+    盯着的一个（退出码那条 test_exit_code_0_when_nothing_was_in_scope 只管
+    rc，不看报告说了什么）。
+    """
+    ev = HealthEvidence(conn="og")
+    out = report.render_health(ev, sub_results=[])
+    missing = _section(out, "本次未采集到的维度")
+    assert "没有子 skill 纳入范围" in missing, (
+        "一个子 skill 都不在范围内时，这一段必须说清楚是被 --include/--exclude "
+        "排除的，否则读者无法把它与「三块都查过且干净」区分开：%r" % missing)
+    assert "全部采集成功" not in missing, (
+        "一个都没跑，不能说成「全部采集成功」——这正好把「没查」念成「查过没事」")
+
+
 # --- Step 3：未纳入汇总的能力 --------------------------------------------
 
 

@@ -264,6 +264,36 @@ def check_include_locks(rc, out, err, mode):
     return True, ""
 
 
+def check_no_sub_skill_scope(rc, out, err, mode):
+    """`--include overview`：一个子 skill 都不在范围内，一个子进程都不该起。
+
+    这条盯的是"没查"与"查过没事"的区别在真实进程路径上还在不在——报告里
+    没有锁/等待/膨胀任何信息，唯一告诉读者为什么的就是那句话。单测
+    （test_an_empty_scope_is_said_out_loud_not_left_blank）钉的是渲染层，
+    这里钉的是端到端：`health.py: main()` 里"没有子 skill 在范围内就不调
+    collect_all()"那条捷径，不能顺手把这句话也一起跳过。
+    """
+    if rc != 0:
+        return False, "rc=%d（期望 0）：%s" % (rc, (err or out)[:200])
+    missing = _section(out, "本次未采集到的维度")
+    if not missing:
+        return False, "报告里没有「## 本次未采集到的维度」小节——不能因为这次" \
+                      "没有子 skill 在范围内就把这一段整个省掉"
+    if "没有子 skill 纳入范围" not in missing:
+        return False, "一个子 skill 都不在范围内，这一段却没说清楚是被 " \
+                      "--include/--exclude 排除的：%r" % missing[:200]
+    if "全部采集成功" in missing:
+        return False, "一个子 skill 都没跑，却写着「全部采集成功」——" \
+                      "把「没查」念成了「查过没事」"
+    if _VACUUM_SOURCE_MARK in out:
+        return False, "--include overview 不该纳入 gaussdb-vacuum，报告里却出现了" \
+                      "它的来源指针 %r" % _VACUUM_SOURCE_MARK
+    if "## 未纳入汇总的能力" not in out:
+        return False, "「## 未纳入汇总的能力」是结构性说明，与本次跑了谁无关，" \
+                      "不该消失"
+    return True, ""
+
+
 def check_bad_conn(rc, out, err, mode):
     if rc != 2:
         return False, "rc=%d（期望 2：连接名不存在应被干净拒绝）：%s" \
@@ -277,6 +307,8 @@ BASELINE_CASES = (
     ("--format json", None, ["--format", "json"], False, check_json),
     ("--include locks", None, ["--include", "locks", "--format", "json"],
      False, check_include_locks),
+    ("--include overview（无子 skill）", None, ["--include", "overview"],
+     False, check_no_sub_skill_scope),
     ("连接名不存在", BOGUS_CONN, [], True, check_bad_conn),
 )
 
