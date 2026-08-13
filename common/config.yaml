@@ -1,6 +1,7 @@
 connection_mode: api
 api_connection:
   - host: ucmp-grmp-web-d.sdc.cs.icbc
+    host_env: GRMP_API_HOST
     port: 80
     # 令牌两种放法，**环境变量优先**：
     #   token_env: 变量名（推荐）—— 令牌是长期有效、无重放保护的静态凭据，

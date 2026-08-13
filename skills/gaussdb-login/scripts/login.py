@@ -97,7 +97,7 @@ def _api_connection(ip: str, database: str, endpoint) -> Connection:
     """
     return Connection(
         name="%s-%s" % (_safe_name(ip), _safe_name(database)),
-        type="gaussdb", host=endpoint.host, port=endpoint.port,
+        type="gaussdb", host=endpoint.resolve_host(), port=endpoint.port,
         database=database, user="grmp", driver="grmp",
         data_ip=ip, app="api",
     )
@@ -248,13 +248,17 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         if current_mode == MODE_API:
             endpoint = config.api_endpoint()
+            if not endpoint.resolve_host():
+                return _fail(
+                    "中间件端点需要配置host或环境变量%s，这两各值都没有配置, 请配置任意一个\n"
+                    % (endpoint.host_env))
             if not endpoint.resolve_token():
                 return _fail(
-                    "中间件端点 %s:%s 已配置，但取不到令牌。\n"
+                    "中间件端点 %s:%s 已配置，但%s 有设置，则 %s:%s 为准，但取不到令牌。\n"
                     "把它放进环境变量 %s（推荐），或写在 api_connection.token 里。\n"
                     "令牌是长期有效、无重放保护的静态凭据，放环境变量能少一份"
                     "落盘副本。"
-                    % (endpoint.host, endpoint.port, endpoint.token_env))
+                    % (endpoint.host, endpoint.port, endpoint.host_env,endpoint.resolve_host,endpoint.port, endpoint.token_env))
             if args.list:
                 print("模式：api（GRMP 中间件）\n端点：%s:%s\n"
                       % (endpoint.host, endpoint.port))
@@ -265,7 +269,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                                       ("--database", args.database)) if not v]
             if missing:
                 print("模式：api（GRMP 中间件）")
-                print("端点：%s:%s\n" % (endpoint.host, endpoint.port))
+                print("端点：%s:%s\n" % (endpoint.resolve_host(), endpoint.port))
                 print("还需要：%s\n" % "、".join(missing))
                 print("请提供**实例 IP** 与**数据库名**：")
                 print("    gaussdb-login --ip <实例IP> --database <数据库名>\n")

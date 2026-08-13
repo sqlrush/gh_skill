@@ -63,6 +63,7 @@ class ApiEndpoint:
 
     host: str
     port: int
+    host_env: str = "GRMP_API_HOST"
     token: str = ""             # 内联令牌（客户配置格式如此）
     token_env: str = "GRMP_AUTH_TOKEN"
 
@@ -74,6 +75,15 @@ class ApiEndpoint:
         只是因为客户的配置格式就是这样，不代表推荐这么放。
         """
         return os.environ.get(self.token_env, "") or self.token
+
+    def resolve_host(self) -> str:
+        """取HOST IP：环境变量优先于配置文件里的内联值。
+
+        环境变量优先是有意的：内联HOST随配置文件进版本库、进备份、被随手
+        cat；而客户环境里它是**长期有效、无重放保护**的静态凭据。支持内联
+        只是因为客户的配置格式就是这样，不代表推荐这么放。
+        """
+        return os.environ.get(self.host_env, "") or self.host
 
 
 class ConfigError(Exception):
@@ -202,6 +212,7 @@ def api_endpoint() -> ApiEndpoint:
             "多环境请分别放在不同的 config.yaml 里。" % len(items))
     item = items[0]
     host = str(item.get("host", "") or "").strip()
+    host = self.resolve_host();
     if not host:
         raise ConfigError("api_connection.host 不能为空")
     try:
@@ -211,8 +222,11 @@ def api_endpoint() -> ApiEndpoint:
                           % item.get("port")) from None
     if port < 1 or port > 65535:
         raise ConfigError("api_connection.port %d 越界" % port)
+
     return ApiEndpoint(
-        host=host, port=port,
+        host=host, 
+        port=port,
+        host_env=str(item.get("host_env", "") or "GRMP_API_HOST"),
         token=str(item.get("token", "") or ""),
         token_env=str(item.get("token_env", "") or "GRMP_AUTH_TOKEN"),
     )

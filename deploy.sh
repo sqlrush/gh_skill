@@ -133,6 +133,7 @@ if [ "${SKIP_CFG:-0}" = "0" ]; then
 
   if [ "${MODE_SEL:-1}" = "2" ]; then
     ask "中间件 host" "ucmp-grmp-web-d.sdc.cs.icbc"; API_HOST="$REPLY_VAL"
+    ask "中间件 host_dev" "GRMP_API_HOST"; HOST_ENV="$REPLY_VAL"
     ask "中间件 port" "80"; API_PORT="$REPLY_VAL"
     ask "令牌环境变量名" "GRMP_AUTH_TOKEN"; TOK_ENV="$REPLY_VAL"
     run "cat > \"$CFG\" <<YAML
@@ -141,15 +142,18 @@ connection_mode: api
 
 api_connection:
   - host: $API_HOST
+    host_env: $HOST_ENV
     port: $API_PORT
     # 令牌放环境变量，不落盘 —— 它是长期有效、无重放保护的静态凭据
     token_env: $TOK_ENV
 YAML"
     ok "已写入 ${CFG}（api 模式）"
     say ""
-    warn "还要设置令牌（本次会话 + 持久化各一次）："
+    warn "还要设置令牌和API HOST（本次会话 + 持久化各一次）："
     say "      export $TOK_ENV='<令牌>'"
     say "      echo \"export $TOK_ENV='<令牌>'\" >> $GHOME/grmp.env && chmod 600 $GHOME/grmp.env"
+    say "      export $HOST_ENV='<HOST>'"
+    say "      echo \"export $HOST_ENV='<HOST>'\" >> $GHOME/grmp.env && chmod 600 $GHOME/grmp.env"
   else
     ask "应用分组名" "app1"; APP="$REPLY_VAL"
     ask "连接名" "og-prod"; CNAME="$REPLY_VAL"

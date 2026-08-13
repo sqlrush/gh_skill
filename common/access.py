@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import replace
 from typing import Any, Optional
 
 from .config import Connection, find, resolve
@@ -34,6 +35,7 @@ __all__ = ["for_conn", "runner_for", "session_for", "session_for_conn",
            "UnregisteredSqlUnsupported"]
 
 TOKEN_ENV = "GRMP_AUTH_TOKEN"
+HOST_ENV = "GRMP_API_HOST"
 
 DIRECT_DRIVERS = frozenset({"gsql", "pg8000"})
 
@@ -236,6 +238,11 @@ def runner_for(
                 file=sys.stderr, flush=True,
             )
         token = os.environ.get(TOKEN_ENV)
+
+        # 如果设置了HOST_ENV 变量，则以变量的值为主，未设置则以配置文件里的host为主
+        if os.environ.get(HOST_ENV):
+            conn = replace(conn, host=os.environ.get(HOST_ENV))        
+ 
         if not token:
             # fail fast：令牌只从环境变量读，不落盘、不进代码。
             # 拖到第一次请求才失败，错误会表现成「中间件返回鉴权失败」，
@@ -243,6 +250,12 @@ def runner_for(
             raise AccessError(
                 "连接 %s 使用 grmp 驱动，但环境变量 %s 未设置。"
                 % (conn.name, TOKEN_ENV)
+            )
+        if not conn.host:
+            # 排查方向会被带到中间件那边去。
+            raise AccessError(
+                "连接 %s 使用 grmp 驱动，但环境变量 %s 未设置。"
+                % (conn.name, HOST_ENV)
             )
         if not conn.data_ip:
             raise AccessError(
