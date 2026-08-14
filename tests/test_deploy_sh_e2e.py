@@ -53,9 +53,12 @@ def _gsql_answers(dest, ghome, rc, *, app="app1", conn="og-prod"):
             "gaussdb", "pg8000", ""]
 
 
-def _api_answers(dest, ghome, rc, *, host="127.0.0.1", port="8769"):
+def _api_answers(dest, ghome, rc, *, host="127.0.0.1", port="8769",
+                 host_env="GRMP_API_HOST"):
+    # 顺序必须与 deploy.sh 的提问顺序一字不差：多一问少一问都会让后面的答案
+    # 整体错位（a57f37f 加了 host_env 那问,答案没跟上,port 就吃到了令牌变量名）。
     return [str(dest), str(ghome), "y", str(rc), "2",
-            host, port, "GRMP_AUTH_TOKEN"]
+            host, host_env, port, "GRMP_AUTH_TOKEN"]
 
 
 @pytest.fixture()

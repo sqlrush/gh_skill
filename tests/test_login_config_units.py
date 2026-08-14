@@ -415,9 +415,15 @@ def _login_mod():
     return mod
 
 
-class _Endpoint:
-    host = "grmp.example"
-    port = 8080
+def _Endpoint():
+    """用真的 ApiEndpoint 当替身,别手写。
+
+    手写替身会随生产类的接口漂移:a57f37f 给 ApiEndpoint 加了 resolve_host()
+    之后,原来那个只有 host/port 两个属性的假类就让四个用例一起红了,
+    而生产代码其实是好的。
+    """
+    from common.config import ApiEndpoint
+    return ApiEndpoint(host="grmp.example", port=8080)
 
 
 def test_api_connection_maps_ip_to_dataip_and_keeps_database():
