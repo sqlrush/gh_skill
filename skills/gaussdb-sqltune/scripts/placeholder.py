@@ -10,6 +10,16 @@ import re
 from dataclasses import dataclass, field
 
 _TO_CHAR_FORMAT_RE = re.compile(r"(?i)to_char\s*\(\s*[a-z_][a-z0-9_.]*\s*,\s*$")
+_NUMERIC_LITERAL_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$")
+_SINGLE_QUOTED_LITERAL_RE = re.compile(r"^'(?:''|[^'])*'$", re.S)
+_STRING_TYPES = frozenset({
+    "text", "varchar", "character varying", "character", "char", "bpchar",
+    "name", "nvarchar", "nvarchar2", "varchar2", "clob",
+})
+_RAW_SQL_LITERALS = frozenset({
+    "null", "true", "false", "current_date", "current_time", "current_timestamp",
+    "localtime", "localtimestamp",
+})
 
 
 @dataclass(frozen=True)
@@ -33,7 +43,9 @@ def substitute(sql_text: str, binds: list[str] | None = None,
     """Replace placeholders with deterministic literals.
 
     Priority per position: bind (caller-supplied real value) > type (catalog
-    column type, see coltypes.infer_types) > text heuristics.
+    column type, see coltypes.infer_types) > text heuristics. Bind values are
+    CLI data values, not SQL fragments: known text/date/time contexts are
+    quoted and escaped before substitution.
     """
     binds = binds or []
     types = types or []
@@ -48,7 +60,8 @@ def substitute(sql_text: str, binds: list[str] | None = None,
         context = left_ctx.strip()
         typed = value_for_type(types[i]) if i < len(types) else None
         if i < len(binds) and binds[i] != "":
-            value, source = binds[i], "bind"
+            type_name = types[i] if i < len(types) else None
+            value, source = _format_bind_value(binds[i], type_name, left_ctx), "bind"
         elif typed is not None:
             value, source = typed, "type"
         else:
@@ -62,6 +75,46 @@ def substitute(sql_text: str, binds: list[str] | None = None,
         out = out[:start] + subs[i].value + out[end:]
 
     return SubstituteResult(sql=out, substitutions=subs, placeholders=len(subs))
+
+
+def _format_bind_value(value: str, type_name: str | None, left_ctx: str) -> str:
+    """Turn a CLI bind data value into a SQL literal when its context is known.
+
+    Shell quotes are consumed before Python receives argv. For example, the
+    command-line value '2024-01-01 00:00:00' reaches this function without the
+    quotes, but a ``TIMESTAMP ?`` expression still requires a SQL-quoted value.
+    Explicit SQL literals remain supported for callers that already pass them.
+    """
+    raw = value.strip()
+    if not raw or _is_explicit_sql_literal(raw):
+        return raw
+    if _needs_quoted_bind(type_name, left_ctx):
+        return "'" + raw.replace("'", "''") + "'"
+    return raw
+
+
+def _is_explicit_sql_literal(value: str) -> bool:
+    if _SINGLE_QUOTED_LITERAL_RE.match(value):
+        return True
+    if value.lower() in _RAW_SQL_LITERALS:
+        return True
+    return _NUMERIC_LITERAL_RE.match(value) is not None
+
+
+def _needs_quoted_bind(type_name: str | None, left_ctx: str) -> bool:
+    if type_name:
+        normalized = type_name.strip().lower()
+        if normalized in _STRING_TYPES or normalized.startswith("varchar("):
+            return True
+        if normalized == "date" or normalized.startswith("timestamp") \
+                or normalized.startswith("time") or normalized == "smalldatetime":
+            return True
+    trimmed = left_ctx.lower().rstrip(" \t\r\n")
+    return (_ends_with_keyword(trimmed, "timestamp")
+            or _ends_with_keyword(trimmed, "date")
+            or _ends_with_keyword(trimmed, "time")
+            or _ends_with_keyword(trimmed, "like")
+            or _ends_with_keyword(trimmed, "ilike"))
 
 
 def _find_all_placeholder_positions(sql: str) -> list[tuple[int, int]]:
@@ -221,6 +274,7 @@ def placeholder_contexts(sql_text: str) -> list[str]:
 
 
 _IDENT_ONLY_RE = re.compile(r"^[a-z_][a-z0-9_$]*$")
+_PLACEHOLDER_TOKEN_RE = re.compile(r"^(?:\?|\$\d+|:\d+)$")
 # Tokens between the column and its placeholder that carry no column name.
 _NON_COLUMN_TOKENS = frozenset({"in", "any", "some", "all", "not", "between", "and", "("})
 # Identifier-shaped SQL keywords that mean "no comparison column here".
@@ -241,7 +295,11 @@ def comparison_column(left_ctx: str) -> str | None:
     """
     for raw in reversed(left_ctx.lower().split()):
         t = raw.rstrip("=<>!,()").lstrip("(")
-        if t == "" or t in _NON_COLUMN_TOKENS:
+        # For the second and later item in IN (?, ?, ...) or BETWEEN ? AND ?,
+        # the left context includes earlier placeholders. They are not column
+        # names and must be skipped to reach the column at the start of the
+        # comparison.
+        if t == "" or t in _NON_COLUMN_TOKENS or _PLACEHOLDER_TOKEN_RE.match(t):
             continue
         if t in _NONCOLUMN_KEYWORDS:
             return None

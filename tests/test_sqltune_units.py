@@ -57,6 +57,27 @@ def test_substitute_bind_override():
     assert r.substitutions[0].source == "bind"
 
 
+def test_substitute_bind_serializes_timestamp_and_text_values():
+    r = placeholder.substitute(
+        "SELECT * FROM t WHERE created_at >= TIMESTAMP ? AND name = ?",
+        ["2024-01-01 00:00:00", "O'Reilly"],
+        [None, "varchar"],
+    )
+    assert [s.value for s in r.substitutions] == [
+        "'2024-01-01 00:00:00'", "'O''Reilly'",
+    ]
+    assert "TIMESTAMP '2024-01-01 00:00:00'" in r.sql
+
+
+def test_substitute_bind_preserves_explicit_literals_and_numbers():
+    r = placeholder.substitute(
+        "SELECT * FROM t WHERE created_at >= TIMESTAMP ? AND level = ?",
+        ["'2024-01-01 00:00:00'", "2"],
+        ["timestamp without time zone", "smallint"],
+    )
+    assert [s.value for s in r.substitutions] == ["'2024-01-01 00:00:00'", "2"]
+
+
 def test_substitute_skips_string_literals():
     # The ? inside the literal must NOT be treated as a placeholder.
     r = placeholder.substitute("SELECT '?' , id FROM t WHERE id = ?", [])
@@ -67,6 +88,13 @@ def test_substitute_dollar_and_colon():
     r = placeholder.substitute("SELECT * FROM t WHERE a = $1 AND b = :2", [])
     assert r.placeholders == 2
     assert ":2" not in r.sql and "$1" not in r.sql
+
+
+def test_comparison_column_handles_repeated_in_placeholders():
+    sql = "SELECT * FROM customer c WHERE c.customer_level IN (?, ?, ?, ?)"
+    columns = [placeholder.comparison_column(ctx)
+               for ctx in placeholder.placeholder_contexts(sql)]
+    assert columns == ["customer_level"] * 4
 
 
 # --- table extraction --------------------------------------------------------
