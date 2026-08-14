@@ -64,6 +64,18 @@ def _unambiguous(pairs) -> dict:
     return {col: next(iter(types)) for col, types in seen.items() if len(types) == 1}
 
 
+def _unquote(value: str) -> str:
+    """剥掉最外层 SQL 单引号,让 `--bind "'2'"` 这种老写法照常过数值校验。
+
+    2026-08-14 之前脚本不会自己加引号,现场模型学到的唯一可行写法就是把引号
+    写进值里；接口改进不该把老用法判成错位。`'L1'` 剥完仍不是数字,照拦。
+    """
+    v = value.strip()
+    if len(v) >= 2 and v.startswith("'") and v.endswith("'"):
+        return v[1:-1].replace("''", "'")
+    return v
+
+
 def validate_binds(substitutions, types: list) -> None:
     """--bind 的值与推断类型明显不符时执行前拦截（治 bind 顺序错位）。
 
@@ -76,7 +88,7 @@ def validate_binds(substitutions, types: list) -> None:
             continue
         t = types[i] if i < len(types) else None
         if t and placeholder.is_numeric_type(t) \
-                and not _NUMERIC_LITERAL_RE.match(s.value.strip()):
+                and not _NUMERIC_LITERAL_RE.match(_unquote(s.value)):
             problems.append(
                 f"  bind #{i + 1} = {s.value!r} 但该占位符对应 {t} 列"
                 f"（上下文: …{s.context[-50:]}）")
@@ -104,5 +116,7 @@ def enrich_type_error(message: str, substitutions):
                 "对照下列位置检查传值顺序:")
     else:
         hint = ("提示: 该值是 sqltune 自动填的合成值,列类型猜错了。"
-                "可用 --bind 按占位符顺序传真实值绕过猜测。可能位置:")
+                "若用户能给出真实值,可用 --bind 按占位符顺序传入绕过猜测"
+                "(没有就不要臆造——编出来的值会改变选择性,索引/改写的 cost "
+                "倍数会跟着失真)。可能位置:")
     return message + "\n" + hint + "\n" + "\n".join(lines)

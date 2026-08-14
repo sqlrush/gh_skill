@@ -197,3 +197,22 @@ def test_enrich_type_error_unrelated_value_returns_none():
 def test_enrich_type_error_non_type_error_returns_none():
     r = placeholder.substitute("SELECT * FROM orders WHERE a_id = ?", [])
     assert coltypes.enrich_type_error("ERROR: relation does not exist", r.substitutions) is None
+
+
+def test_quoted_numeric_bind_is_not_flagged_as_a_type_mismatch():
+    """`--bind "'2'"` 传给整数列不该被当成错位。
+
+    现场模型在 2026-08-14 那轮学会了「把引号写进值里」,那是当时唯一走得通的
+    写法;现在引号由脚本自己加,但这种旧写法仍要照常放行——不能因为一次接口
+    改进就把老用法判成错误。真正的错位('L1' 之类)必须继续拦。
+    """
+    r = placeholder.substitute("SELECT 1 FROM t WHERE lv = ?", ["'2'"], ["smallint"])
+    coltypes.validate_binds(r.substitutions, ["smallint"])   # 不抛即通过
+
+    bad = placeholder.substitute("SELECT 1 FROM t WHERE lv = ?", ["L1"], ["smallint"])
+    try:
+        coltypes.validate_binds(bad.substitutions, ["smallint"])
+    except ValueError as exc:
+        assert "错位" in str(exc)
+    else:
+        raise AssertionError("'L1' 塞进 smallint 列必须被拦下")

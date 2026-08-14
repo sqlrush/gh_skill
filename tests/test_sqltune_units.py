@@ -78,6 +78,66 @@ def test_substitute_bind_preserves_explicit_literals_and_numbers():
     assert [s.value for s in r.substitutions] == ["'2024-01-01 00:00:00'", "2"]
 
 
+def test_bind_into_a_text_column_is_quoted_even_when_it_looks_numeric():
+    """列类型说了算,不能因为值长得像数字就放弃加引号。
+
+    账号/机构号/客户号这类"存在 varchar 列里的纯数字"是银行现场的主流形态;
+    原样拼进去 openGauss 报 operator does not exist: character varying = bigint。
+    """
+    r = placeholder.substitute("SELECT 1 FROM t WHERE acct_no = ?",
+                               ["6222021234567"], ["varchar"])
+    assert r.substitutions[0].value == "'6222021234567'"
+    r2 = placeholder.substitute("SELECT 1 FROM t WHERE org_no = ?",
+                                ["001"], ["character"])
+    assert r2.substitutions[0].value == "'001'"
+
+
+def test_bind_of_bare_text_is_quoted_when_the_column_type_is_unknown():
+    """类型探测失败时也不能把文本裸拼——那会变成标识符。
+
+    `x = ABC` 报的是 column "abc" does not exist,这个报错完全指不到 bind 上,
+    比不加引号本身更难排查。
+    """
+    r = placeholder.substitute("SELECT 1 FROM t WHERE x = ?", ["ABC"], [None])
+    assert r.substitutions[0].value == "'ABC'"
+
+
+def test_numeric_bind_stays_bare_so_limit_offset_keep_working():
+    """LIMIT/OFFSET 的参数必须是裸数字,不能被顺手引起来。"""
+    r = placeholder.substitute("SELECT 1 FROM t LIMIT ? OFFSET ?",
+                               ["1000", "10"], [None, None])
+    assert [s.value for s in r.substitutions] == ["1000", "10"]
+
+
+# --- 报告里的合成值声明 --------------------------------------------------------
+
+def _report_with(binds, types, sql="SELECT 1 FROM t WHERE a = ? AND b = ?"):
+    import sqltune
+    sub = placeholder.substitute(sql, binds, types)
+    ev = evidence.Evidence(sql=sub.sql, version="og", plan="Seq Scan", analyzed=False)
+    return sqltune.sqltune_report(sqltune.TuneResult(
+        original_sql=sql, substitution=sub, evidence=ev))
+
+
+def test_report_does_not_call_real_bind_values_synthetic():
+    """全部值都来自 --bind 时,报告不能再自称合成值。
+
+    SKILL.md 要求「基于合成值的倍数」必须附 caveat,报告若无条件声明合成,
+    模型就会给一份真实值跑出来的结论硬加免责,把结论说弱。
+    """
+    out = _report_with(["42", "7"], ["integer", "integer"])
+    assert "## Placeholder Substitution" in out          # 小节仍可被 SKILL.md 认出
+    assert "synthetic" not in out.lower()
+    assert "re-run with `--bind`" not in out
+
+
+def test_report_still_warns_when_any_value_is_synthetic():
+    """只要有一个值是猜的,合成值提醒必须还在——降级要说出口。"""
+    out = _report_with(["42"], ["integer", "integer"])
+    assert "synthetic" in out.lower()
+    assert "--bind" in out
+
+
 def test_substitute_skips_string_literals():
     # The ? inside the literal must NOT be treated as a placeholder.
     r = placeholder.substitute("SELECT '?' , id FROM t WHERE id = ?", [])
