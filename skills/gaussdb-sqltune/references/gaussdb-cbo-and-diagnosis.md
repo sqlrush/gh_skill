@@ -124,7 +124,7 @@ Streaming(type: BROADCAST dop: 2/1)
 - **谓词被函数包裹**：`to_char(d,'YYYY-MM-DD')=...`、`upper(c)=...`、`substr(...)`、`col+1=...` → 列索引失效。改法：改写成 sargable 形式（日期改范围 `d >= ... AND d < ...`），或建表达式索引。
 - **隐式类型转换**：列是 `varchar` 谓词给数字、列是 `bigint` 谓词给字符串字面量 → 转换阻断索引。改法：让字面量类型与列一致。
 - **估算行数过大**（统计失真）：见 §1.4。
-- **correlation 接近 0**：物理无序，Index Scan 随机 IO 太贵，CBO 主动弃索引。可考虑 Bitmap 或按该列 CLUSTER。
+- **correlation 接近 0**：物理无序，Index Scan 随机 IO 太贵，CBO 主动弃索引。温和解法是覆盖索引让其走 index-only（少回表）；CLUSTER 会整表重写并持 ACCESS EXCLUSIVE 锁，**不作为建议给出**，最多在「未验证想法」里注明需运维窗口评估。
 
 ### 3.3 `[GaussDB]` 原生索引验证手段
 

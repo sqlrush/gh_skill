@@ -16,7 +16,7 @@ metadata:
 **你呈现的每条游标 SELECT 改写都必须有 `verify.py` 的 ACCEPTED 背书；其余建议放进明确分开的「建议（未验证）」小节。**
 这个 skill 的职责很明确：**把过程里真正值得改的点找出来，说明为什么改、改哪一段、证据是什么、哪些收益已经被脚本验证过。**
 
-本技能用 Python 脚本（`{baseDir}/scripts/`）取数与验证：`proctune.py collect` 出建议层证据，`proctune.py tune-cursor` 对每个合规游标出证据+索引硬验证，`verify.py` 验游标 SELECT 改写。连接元数据读取 `$GSDB_HOME/config.yaml`（默认 `~/.gdaa/config.yaml`），凭据由脚本从 `{baseDir}/../common/credentials/` 自动解密。
+本技能用 Python 脚本（`{baseDir}/scripts/`）取数与验证：`proctune.py collect` 出建议层证据，`proctune.py tune-cursor` 对每个合规游标出证据+索引硬验证，`verify.py` 验游标 SELECT 改写。连接元数据读取 `$GSDB_HOME/config.yaml`，凭据由脚本从 `{baseDir}/../common/credentials/` 自动解密。
 
 命中以下请求时，必须使用本 skill 并实际执行脚本，不要只做概念解释：
 
@@ -40,7 +40,7 @@ metadata:
 
 1. **选择连接 —— 先登录，不要自己猜连接名。** 取数前确认已登录：
    `python3 {baseDir}/../gaussdb-login/scripts/login.py --status`。
-   没有会话就先调 **gaussdb-login**：它读 `$GSDB_HOME/config.yaml`（默认 `~/.gdaa/config.yaml`）的首行 `connection_mode`，是 `gsql` 就把可选连接列成菜单让用户挑，是 `api` 就引导用户给出要访问的数据库。
+   没有会话就先调 **gaussdb-login**：它读 `$GSDB_HOME/config.yaml`的首行 `connection_mode`，是 `gsql` 就把可选连接列成菜单让用户挑，是 `api` 就引导用户给出要访问的数据库。
    登录之后本 skill **不需要传 `-c`** —— 省略时自动用登录选定的那条连接；只有要临时换一个库时才显式传 `-c <连接名>`。
    **不要自己去读 config.yaml 挑名字**：不同应用下可能有同名连接，猜错会在另一个库上做诊断，而输出看起来完全正常。口令在 `{baseDir}/../common/credentials/*.enc`，由脚本解密，**你不要去读/解密它**。
 2. **采集证据——两条命令，中途不停。**

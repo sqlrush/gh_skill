@@ -15,7 +15,7 @@ metadata:
 轻量只读诊断。**本技能只采集并解读证据，不改写、不验证、不执行过程。** 要对游标 SELECT 做经验证的索引/改写优化，改用 `/gaussdb-proctune` 对同一过程做深度调优。
 这个 skill 的职责很明确：**把过程源码、结构热点、运行时归因拿出来，并用人能看懂的话解释“慢在什么位置、为什么慢、下一步该先查哪”。**
 
-本技能用 Python 脚本（`{baseDir}/scripts/`）取数：`procinfo.py` 出源码 + 结构发现 + 嵌入语句 + 运行时归因 + GUC。连接元数据读取 `$GSDB_HOME/config.yaml`（默认 `~/.gdaa/config.yaml`），凭据由脚本从 `{baseDir}/../common/credentials/` 自动解密。
+本技能用 Python 脚本（`{baseDir}/scripts/`）取数：`procinfo.py` 出源码 + 结构发现 + 嵌入语句 + 运行时归因 + GUC。连接元数据读取 `$GSDB_HOME/config.yaml`，凭据由脚本从 `{baseDir}/../common/credentials/` 自动解密。
 
 命中以下请求时，必须使用本 skill 并实际执行脚本，不要只做概念解释：
 
@@ -41,7 +41,7 @@ metadata:
 
 1. **选择连接 —— 先登录，不要自己猜连接名。** 取数前确认已登录：
    `python3 {baseDir}/../gaussdb-login/scripts/login.py --status`。
-   没有会话就先调 **gaussdb-login**：它读 `$GSDB_HOME/config.yaml`（默认 `~/.gdaa/config.yaml`）的首行 `connection_mode`，是 `gsql` 就把可选连接列成菜单让用户挑，是 `api` 就引导用户给出要访问的数据库。
+   没有会话就先调 **gaussdb-login**：它读 `$GSDB_HOME/config.yaml`的首行 `connection_mode`，是 `gsql` 就把可选连接列成菜单让用户挑，是 `api` 就引导用户给出要访问的数据库。
    登录之后本 skill **不需要传 `-c`** —— 省略时自动用登录选定的那条连接；只有要临时换一个库时才显式传 `-c <连接名>`。
    **不要自己去读 config.yaml 挑名字**：不同应用下可能有同名连接，猜错会在另一个库上做诊断，而输出看起来完全正常。口令在 `{baseDir}/../common/credentials/*.enc`，由脚本解密，**你不要去读/解密它**。
 2. **采集证据——一条命令。**

@@ -29,6 +29,7 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
         sys.path.insert(0, str(_anc))
         break
 
+import coltypes  # noqa: E402
 import common  # noqa: E402
 from common import access  # noqa: E402
 from common.grmp.statement import (  # noqa: E402
@@ -36,6 +37,7 @@ from common.grmp.statement import (  # noqa: E402
     ensure_explainable,
 )
 import render  # noqa: E402
+import systables  # noqa: E402
 from evidence import (  # noqa: E402
     Evidence,
     collect,
@@ -210,12 +212,28 @@ def _guard_sql(sql_text: str, analyze: bool) -> None:
 
 def _tune(runner, db, *, original_sql: str, binds: list[str], do_analyze: bool,
           sql_id: str = "", source: str = "", schema: str = "") -> TuneResult:
-    sub = substitute(original_sql, binds)
+    verdict = systables.system_verdict(original_sql)
+    if verdict.is_system:
+        raise systables.SystemSQLSkipped(verdict.system_objects)
+    types = coltypes.infer_types(runner, original_sql)
+    sub = substitute(original_sql, binds, types=types)
+    coltypes.validate_binds(sub.substitutions, types)
     if db is None:
         # 没有会话时 SQL 要递进 EXPLAIN 模板 —— 无论它从哪来都得过守卫。
         # 按 sql_id 取的 SQL 走的是另一条入口，早先漏了这一道。
         _guard_sql(sub.sql, do_analyze)
-    ev = collect(runner, db, sub.sql, do_analyze)
+    try:
+        ev = collect(runner, db, sub.sql, do_analyze)
+    except Exception as exc:
+        # 类型转换错时点名坏值出自哪个占位符;非类型错原样抛。
+        enriched = coltypes.enrich_type_error(str(exc), sub.substitutions)
+        if not enriched:
+            raise
+        try:
+            wrapped = type(exc)(enriched)
+        except Exception:  # 异常类构造签名特殊时,宁可保留原报错
+            raise exc
+        raise wrapped from exc
 
     verified: list[IndexCandidate] = []
     note = ""
@@ -270,11 +288,22 @@ def sqltune_report(tr: TuneResult) -> str:
 
     sub = tr.substitution
     if sub.placeholders > 0:
-        out += "## Placeholder Substitution (synthetic values)\n\n"
-        out += ("> Placeholders have been replaced with synthetic values to generate "
-                "an execution plan. **Plan shape is reliable; row counts and "
-                "selectivity estimates are approximate.**\n")
-        out += "> For precise analysis, re-run with `--bind` to supply real values.\n\n"
+        # 小节名固定以 "## Placeholder Substitution" 开头(SKILL.md 按它取节),
+        # 但**不能无条件自称合成值**:调用方全程用 --bind 传了真实值时,再劝
+        # 一句"re-run with --bind"会让模型给真实结论硬加一条合成值免责,
+        # 把已经可靠的倍数说弱。降级要说出口,没降级也别装。
+        if any(s.source != "bind" for s in sub.substitutions):
+            out += "## Placeholder Substitution (synthetic values)\n\n"
+            out += ("> Placeholders have been replaced with synthetic values to generate "
+                    "an execution plan. **Plan shape is reliable; row counts and "
+                    "selectivity estimates are approximate.**\n")
+            out += "> For precise analysis, re-run with `--bind` to supply real values.\n\n"
+        else:
+            out += "## Placeholder Substitution (real values from `--bind`)\n\n"
+            out += ("> Every placeholder was replaced with a real value supplied via "
+                    "`--bind`. **Row counts and selectivity reflect these actual "
+                    "parameters** — the approximate-value caveat does not apply "
+                    "to this report.\n\n")
         rows = [[str(i + 1), s.token, s.value, s.source, render.truncate(s.context, 60)]
                 for i, s in enumerate(sub.substitutions)]
         out += render.table(["#", "Token", "Value", "Source", "Context"], rows) + "\n"
@@ -399,6 +428,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(json.dumps(_to_jsonable(tr), ensure_ascii=False, indent=2))
         else:
             print(sqltune_report(tr), end="")
+        return 0
+    except systables.SystemSQLSkipped as exc:
+        # 策略性跳过是确定性结论,不是失败——exit 0,免得现场 agent 当错误反复重试。
+        if args.format == "json":
+            print(json.dumps(systables.skip_json(exc.objects), ensure_ascii=False, indent=2))
+        else:
+            print(systables.skip_report(exc.objects), end="")
         return 0
     # access.QueryError 归一了两条路径的取数失败（中间件 GrmpError / 直连
     # DBError），skill 只认这一个类型；common.DBError 仍要留着 —— 会话那条口子

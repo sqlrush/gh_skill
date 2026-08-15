@@ -1,6 +1,6 @@
 ﻿---
 name: gaussdb-sqltune
-version: 2.0.0
+version: 2.1.0
 description: "通过内置脚本对 OpenGauss/GaussDB 的慢 SQL 做深度调优和证据化验证。仅在用户要定位慢 SQL 根因、给出索引/改写/GUC 调优建议、验证某个优化方案是否真的带来收益，或基于 sql_id、Top SQL、slow SQL、WDR 结果继续调优时使用，包括“优化这条 SQL”“这条 SQL 为什么慢并怎么改”“看看建什么索引”“这个改写有没有收益”“给我一套能落地的优化建议”等请求。触发后运行 scripts/sqltune.py 和 scripts/verify.py，输出带证据链、可解释原因和已验证收益的调优结论；如果用户只是想看 explain、执行计划、plan 对比，不要优先使用本 skill。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -15,7 +15,7 @@ metadata:
 深度调优工作流。证据采集是「一条命令」（不要拆开，也不要为占位符停下来）。
 **你呈现的每条建议都必须有脚本的验证背书——绝不要把未验证的索引或改写当成确定的优化呈现。**
 
-本技能用 Python 脚本（`{baseDir}/scripts/`）取数与验证：`sqltune.py` 一次性出证据包+索引验证，`verify.py` 验改写。连接元数据读取 `$GSDB_HOME/config.yaml`（默认 `~/.gdaa/config.yaml`），凭据由脚本从 `{baseDir}/../common/credentials/` 自动解密。
+本技能用 Python 脚本（`{baseDir}/scripts/`）取数与验证：`sqltune.py` 一次性出证据包+索引验证，`verify.py` 验改写。连接元数据读取 `$GSDB_HOME/config.yaml`，凭据由脚本从 `{baseDir}/../common/credentials/` 自动解密。
 
 命中以下请求时，必须使用本 skill 并实际执行脚本，不要只做概念解释：
 
@@ -34,7 +34,7 @@ metadata:
 
 1. **选择连接 —— 先登录，不要自己猜连接名。** 取数前确认已登录：
    `python3 {baseDir}/../gaussdb-login/scripts/login.py --status`。
-   没有会话就先调 **gaussdb-login**：它读 `$GSDB_HOME/config.yaml`（默认 `~/.gdaa/config.yaml`）的首行 `connection_mode`，是 `gsql` 就把可选连接列成菜单让用户挑，是 `api` 就引导用户给出要访问的数据库。
+   没有会话就先调 **gaussdb-login**：它读 `$GSDB_HOME/config.yaml`的首行 `connection_mode`，是 `gsql` 就把可选连接列成菜单让用户挑，是 `api` 就引导用户给出要访问的数据库。
    登录之后本 skill **不需要传 `-c`** —— 省略时自动用登录选定的那条连接；只有要临时换一个库时才显式传 `-c <连接名>`。
    **不要自己去读 config.yaml 挑名字**：不同应用下可能有同名连接，猜错会在另一个库上做诊断，而输出看起来完全正常。口令在 `{baseDir}/../common/credentials/*.enc`，由脚本解密，**你不要去读/解密它**。
 2. **采集证据——一条命令，中途不停。**
@@ -55,9 +55,12 @@ metadata:
 
    这会自动取 SQL、自动替换占位符、采集完整证据包，**并自动用 hypopg 验证索引候选**。
    **不要单独取 SQL/采集，也不要向用户索要占位符的值。**
-   选项：`--bind '<value>'`（可重复，按占位符顺序）传真实值；`--analyze` 仅用于只读 SQL 或用户明确同意时。
+   选项：`--bind <value>`（可重复，按占位符顺序）传真实值；日期和字符串可直接传原始值，脚本会按已识别类型或 `TIMESTAMP ?` 等上下文自动转义并添加 SQL 单引号。`--analyze` 仅用于只读 SQL 或用户明确同意时。
+   **没有真实值时不要编。** `--bind` 只用于转达用户给出的值：臆造的值会改变选择性，索引/改写的 cost 倍数会跟着失真，等于给出一个看着有据、实则不成立的结论。默认那一跑（不带 `--bind`）本来就会按 catalog 列类型合成安全值，正常路径不需要 `--bind`。
 
-3. **合成值提醒。** 若输出含 `## Placeholder Substitution` 一节，说明计划「形状」可靠，但行数/选择性是近似值。要把这点说清楚，并指出索引/改写验证用的是这些合成值——可用 `--bind` 传真实值做精确验证。
+2b. **系统对象 SQL —— 直接结束。** 若输出是「# SQL Tune — 系统对象 SQL,按策略跳过」（脚本正常退出，不是报错），说明这条 SQL 只访问系统表/系统视图。**到此为止**：把跳过的原因和涉及的对象如实转达给用户，不要重跑、不要换 `--sql-stdin` 再试、不要绕开脚本自己分析，也不要给出任何索引/改写/参数建议。可以提示排查方向在监控采集频率与系统整体负载，但那不属于本技能的调优输出。
+
+3. **合成值提醒——看小节标题，别看有没有这一节。** `## Placeholder Substitution (synthetic values)` 表示至少有一个值是脚本合成的：计划「形状」可靠，但行数/选择性是近似值，要把这点说清楚，并指出索引/改写验证用的就是这些合成值。若标题是 `## Placeholder Substitution (real values from --bind)`，说明每个占位符都用了调用方给的真实值，**此时不要再加合成值免责**，那会把可靠的结论说弱。替换值的 Source 列：`bind` = 调用方给的真实值；`type` = 按 catalog 真实列类型生成（类型可靠）；`rule`/`default` = 纯文本启发式猜测。若报 `invalid input syntax`，报错里会点名坏值出自哪个占位符；若提示 bind 顺序错位，核对 `--bind` 传值顺序后重试——**手上没有真实值就不要用 `--bind` 顶上去**，把报错原样告诉用户并索要该占位符的真实值。
 
 4. **加载方法论。** 阅读 `{baseDir}/references/tuning-methodology.md`，对照证据各节按其检查清单分析（`## Execution Plan`、`## Tables`、`## Indexes`、`## Column Statistics`、`## Key Parameters (GUC)`、`## Deterministic Findings`）。深度判断按需查 GaussDB 专项知识：CBO 与诊断边界 → `{baseDir}/references/gaussdb-cbo-and-diagnosis.md`；改写候选 → `{baseDir}/references/gaussdb-rewrite-patterns.md`；A 兼容库（`sql_compatibility='A'`）→ `{baseDir}/references/gaussdb-a-compat-gotchas.md`；分区表/分布式 → `{baseDir}/references/gaussdb-partition-distribution.md`。
 
@@ -125,7 +128,7 @@ metadata:
      - `建议在 orders(order_id) 上补索引。因为 [P4] 这里对 orders 做了大范围扫描，过滤后只留下很少的数据，说明当前过滤条件没有被索引接住。脚本验证显示 cost 从 4.97e7 降到 2.08e7，约提升 2.39x，这个结果来自 Verified Index Candidates，属于已验证收益。`
 
    - **未验证想法**（明确分区）—— 没通过验证的建议（含 REJECT / 验证超时 / 合成值下不达标），注明原因，并提示 `--bind` 传真实值可能改变结论。
-   - **风险** —— CREATE INDEX 的锁时间、计划回退、GUC 调整的内存影响。
+   - **风险** —— CREATE INDEX 的锁时间（ShareLock 阻塞写，注明串行构建 + 建议低峰执行）、索引带来的写放大与空间占用、计划回退、会话级 GUC 调整的内存影响。
 
    如果需要快速成稿，尽量按这个骨架输出：
 
@@ -176,6 +179,7 @@ metadata:
 
 ## 规则
 
+- **系统对象 SQL 不调优（策略）。** 只访问 GaussDB/openGauss 系统表/系统视图（`pg_catalog`、`dbe_perf`、`information_schema`、`snapshot` 等 schema，及未限定的 `pg_*`/`gs_*` 对象）的慢 SQL，脚本会在采集前识别并输出「系统对象 SQL,按策略跳过」后**正常退出**（不是报错）。见到该输出就如实转达并结束：不要绕过脚本手工分析、不要重试、不要给系统表查询任何索引/改写/参数建议。此类慢 SQL 应从监控采集频率与系统整体压力入手，不属于本技能范围——用户坚持要分析时也只解释这一策略，不产出优化建议。
 - 没有脚本验证背书，绝不把索引或改写当成确定的优化呈现。已验证与未验证的内容放在明确分开的小节里。
 - **「已验证推荐」只放经背书的结论。** 任何 REJECT / 验证超时 / 未验证的改写一律归入「未验证想法」，**严禁挂在「已验证推荐」标题下**——即使内联写了「未验」也不行。
 - **计划走查和证据链摘要都要写成人话。** 先说“这里在做什么、为什么慢、影响了什么”，再补 cost/rows 等数字；不要只堆节点名、算子名、缩写和表格术语。
@@ -185,14 +189,25 @@ metadata:
 - **一个 cost 倍数只能归属于验证它的那一个对象。** 严禁把某索引（或第 7b 步多索引组合 verify）的战果安到另一条改写/另一个索引上；严禁把同一条验证结果当成两条独立推荐重复计数（例如把"索引 X 单独的 N×"又同时算给"改写 Y"）。组合（改写+索引）的倍数标注为「组合」，不拆给单独的改写或单独的索引。
 - **严禁编造未经 verify 的因果。** "必须和某改写一起落地""索引隐含消除 Sort/排序"这类断言，除非有对应 verify/EXPLAIN 证据否则不得写——一条 verify 只证明它自己那一条；尤其当某索引**单独**经 `## Verified Index Candidates` 即达标时，不得反过来声称"单加索引无效、必须配合改写"。
 - **索引去冗余。** 推荐多个索引时，前缀已被覆盖的不重复推荐（已荐 `(a,b)` 就不再单列 `(a)`）。
-- **合成值 caveat。** 倍数基于 `## Placeholder Substitution` 的合成值时，在「已验证推荐」里附一句：真实参数选择性不同、倍数会变，可 `--bind` 精确化。
+- **合成值 caveat。** 倍数基于 `## Placeholder Substitution (synthetic values)` 的合成值时，在「已验证推荐」里附一句：真实参数选择性不同、倍数会变，可 `--bind` 精确化。小节标题是 `(real values from --bind)` 时**不加**这句。
 - **报告只呈现结论，不呈现推演。** 「等等 / 换个角度 / 让我重新想」这类自我纠正、被推翻的中途判断不得进入交付报告；分析中若改了结论，回头同步改正计划树里的 `[P1]/[P2]` 标记与严重度，使报告自洽。
-- 一次 `sqltune.py` 调用产出整个证据包（含自动索引验证）。绝不在工作流中途停下来索要占位符的值。
+- 一次 `sqltune.py` 调用产出整个证据包（含自动索引验证）。正常路径绝不停下来索要占位符的值——默认的合成值就是为此存在的。**唯一例外**：脚本报了类型探测失败或 bind 错位、拿不到报告时，把报错原样转达用户并索要真实值；**不要用臆造的 `--bind` 值把流程"推过去"**，那产出的是一份基于不存在参数的结论。
 - **SQL 文本被截断时的回退。** 按 id 调用若报「SQL 被 openGauss 截断」（长 SQL 超过 `track_activity_query_size`，库里就没有完整文本——这是数据库侧的留存限制），**不要**硬试——向用户索要完整 SQL，改用 `--sql-stdin` 传入完整文本走调优。若用户能调大 `track_activity_query_size` 并让该 SQL 重新执行，之后按 id 也能取全。
 - 不要编造统计信息：每个结论都要引用脚本输出里的某个数字。
 - 默认**不**执行用户的 SQL（`--analyze` 关闭）。
 - 绝不在对话中回显密码或 DSN。
 - 遇到脚本报错，查阅 `{baseDir}/references/setup.md` 里的症状对照表。
+
+## 生产温和性红线
+
+面向的是客户**生产系统**，一切建议以「对生产影响最小」为先决条件：
+
+- **严禁推荐并行建索引**：`CREATE INDEX ... WITH (parallel_workers=N)` 及一切并行构建手段。并行构建对 CPU/IO 冲击大——建索引一律默认**串行**，建议在业务低峰/维护窗口执行，并在「风险」节写明锁影响（OpenGauss CREATE INDEX 持 ShareLock，阻塞写）。
+- **严禁推荐重整类操作**作为调优手段：VACUUM FULL、CLUSTER、REINDEX 大表、整表重建/重分布。
+- **GUC 只推会话级**。严禁推荐调大并行执行类参数（`max_parallel_workers_per_gather`、GaussDB 的 `query_dop` 等）——用并行换时延是把单条 SQL 的负载摊给整个系统，方向与温和性相反。全局 GUC 修改一律不作为建议给出，最多在「未验证想法」里注明「需运维评估」。
+- **ANALYZE 温和使用**：统计陈旧时建议 `ANALYZE <table>` 是允许的，但对大表注明放在低峰执行；不建议全库调高 `default_statistics_target`（按列调才可）。
+- 高收益但本质激进的方案（如必须重建大表）不得作为主建议——归入「未验证想法」，注明需要运维窗口与专项评估。
+- 同等收益的两个方案，永远选对生产更温和的那个。
 
 ## 安全红线
 
@@ -229,4 +244,3 @@ metadata:
   不要自行选边,也不要假装它们一致。
 - 库内优先级:`errata/`(修正)> `rules/`(条款)> `guides/`(指南)。
 <!-- KB-CONTRACT:END -->
-

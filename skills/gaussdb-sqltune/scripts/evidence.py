@@ -77,16 +77,15 @@ _SQL_KEYWORDS = frozenset({
 _WS = " \t\r\n"
 
 
-def extract_tables(sql_text: str) -> list[str]:
-    """Lowercase, deduped, schema-stripped table names in first-appearance order."""
+def extract_table_refs(sql_text: str) -> list[str]:
+    """Lowercase, deduped table refs in first-appearance order, schema kept."""
     seen: set[str] = set()
     out: list[str] = []
 
     def add(raw: str) -> None:
         name = raw.strip().lower()
-        if "." in name:
-            name = name[name.rindex(".") + 1:]
-        if name in ("", "(") or name in _SQL_KEYWORDS or name in seen:
+        tail = name[name.rindex(".") + 1:] if "." in name else name
+        if tail in ("", "(") or tail in _SQL_KEYWORDS or name in seen:
             return
         seen.add(name)
         out.append(name)
@@ -127,6 +126,18 @@ def extract_tables(sql_text: str) -> list[str]:
                     break
                 add(im2.group(0))
                 pos += len(im2.group(0))
+    return out
+
+
+def extract_tables(sql_text: str) -> list[str]:
+    """Lowercase, deduped, schema-stripped table names in first-appearance order."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for ref in extract_table_refs(sql_text):
+        name = ref[ref.rindex(".") + 1:] if "." in ref else ref
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
     return out
 
 

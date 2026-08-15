@@ -12,8 +12,8 @@ python3 -m grmp_middleware.dump_whitelist
 
 | 项 | 值 |
 |---|---|
-| 脚本总数 | 94 |
-| id 范围 | 1 ~ 100 |
+| 脚本总数 | 95 |
+| id 范围 | 1 ~ 101 |
 
 > `id` 是**环境相关数据，不是契约**。skill 从不持有它 —— 运行时调
 > 接口一按 `cmd_name` 现查。客户环境重新发布后 id 会不同，属正常。
@@ -33,7 +33,7 @@ python3 -m grmp_middleware.dump_whitelist
 | **slowsql** | 1 | `slow_sql` |
 | **sqlfetch** | 2 | `from_history`, `from_statement` |
 | **sqlreview** | 5 | `from_history`, `from_statement`, `indexes`, `tables`, `top_sql` |
-| **sqltune** | 11 | `column_stats`, `from_history`, `from_statement`, `indexes`, `key_gucs`, `plan_json`, `plan_text`, `plan_text_analyze`, `tables`, `version`, `stats_freshness` |
+| **sqltune** | 12 | `column_stats`, `from_history`, `from_statement`, `indexes`, `key_gucs`, `plan_json`, `plan_text`, `plan_text_analyze`, `tables`, `version`, `stats_freshness`, `column_types` |
 | **topproc** | 1 | `top_procs` |
 | **topsql** | 1 | `top_sql` |
 | **vacuum** | 4 | `autovac_settings`, `autovac_workers`, `dead_tuples`, `oldest_xmin` |
@@ -65,7 +65,7 @@ EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
 | `sql` | STRING |
 
 ```sql
-EXPLAIN (ANALYZE true, BUFFERS true, FORMAT TEXT) {{sql}}
+EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
 ```
 
 ### `health.archive_mode`
@@ -725,7 +725,7 @@ EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
 | `sql` | STRING |
 
 ```sql
-EXPLAIN (ANALYZE true, BUFFERS true, FORMAT TEXT) {{sql}}
+EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
 ```
 
 ### `proctune.proc_def`
@@ -1014,7 +1014,7 @@ ORDER BY c.relname;
 ```sql
 SELECT unique_sql_id::text, query
 FROM dbe_perf.statement
-WHERE n_calls > 0 AND query IS NOT NULL AND query <> ''
+WHERE n_calls > 0 AND query IS NOT NULL AND LENGTH(TRIM(query)) > 0
 ORDER BY total_elapse_time DESC
 LIMIT {{limit}};
 ```
@@ -1143,7 +1143,7 @@ EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
 | `sql` | STRING |
 
 ```sql
-EXPLAIN (ANALYZE true, BUFFERS true, FORMAT TEXT) {{sql}}
+EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
 ```
 
 ### `sqltune.tables`
@@ -1697,5 +1697,26 @@ SELECT 'replication_slot' AS source,
   FROM pg_replication_slots
  WHERE xmin IS NOT NULL OR catalog_xmin IS NOT NULL
 ORDER BY xmin_age_s DESC NULLS FIRST;
+```
+
+### `sqltune.column_types`
+
+- id `101` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `tables` | STRING |
+| `columns` | STRING |
+
+```sql
+SELECT a.attname, format_type(a.atttypid, NULL) AS type_name
+FROM pg_attribute a
+JOIN pg_class c ON c.oid = a.attrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relname IN ({{tables}})
+  AND a.attname IN ({{columns}})
+  AND a.attnum > 0 AND NOT a.attisdropped
+  AND c.relkind IN ('r','v','p','m')
+  AND n.nspname NOT IN ('pg_catalog','information_schema');
 ```
 

@@ -14,7 +14,7 @@ metadata:
 
 一次性、只读、可信的数据库健康检查。**确定性归脚本（采集 + 阈值发现），判断归你（LLM），但你的判断必须对脚本的 `## Deterministic Findings` 做证据锚定校验。** 报告抬头用确定性状态带，不编造单一分数。
 
-**本技能是汇总层，不是唯一的证据来源。** `{baseDir}/scripts/health.py` 自己只读采集 8 个本地维度（Overview / Slow SQL / 长事务 / 连接 / Checkpoint·WAL·归档 / 复制 / Schema / 并发），另外以子进程方式各跑一次 `gaussdb-lockwait`、`gaussdb-waitevent`、`gaussdb-vacuum` 三个 skill 的 `--format json` 输出，把它们的 `Deterministic Findings` 并入本报告——锁堵塞、等待事件/DB time、死元组/膨胀这三块的**完整证据、原始表、阻塞链/下钻分析都在对应子 skill 里**，本技能只搬运它们已经算出来的风险结论，并在每条这样的 finding 后面标注来源（`（详见 gaussdb-xxx）`）。**要看某一块的全部细节，直接单独跑那个子 skill，不要指望 health 的报告重现它。** 连接元数据读取 `$GSDB_HOME/config.yaml`（默认 `~/.gdaa/config.yaml`），凭据由脚本从 `{baseDir}/../common/credentials/` 自动解密。
+**本技能是汇总层，不是唯一的证据来源。** `{baseDir}/scripts/health.py` 自己只读采集 8 个本地维度（Overview / Slow SQL / 长事务 / 连接 / Checkpoint·WAL·归档 / 复制 / Schema / 并发），另外以子进程方式各跑一次 `gaussdb-lockwait`、`gaussdb-waitevent`、`gaussdb-vacuum` 三个 skill 的 `--format json` 输出，把它们的 `Deterministic Findings` 并入本报告——锁堵塞、等待事件/DB time、死元组/膨胀这三块的**完整证据、原始表、阻塞链/下钻分析都在对应子 skill 里**，本技能只搬运它们已经算出来的风险结论，并在每条这样的 finding 后面标注来源（`（详见 gaussdb-xxx）`）。**要看某一块的全部细节，直接单独跑那个子 skill，不要指望 health 的报告重现它。** 连接元数据读取 `$GSDB_HOME/config.yaml`，凭据由脚本从 `{baseDir}/../common/credentials/` 自动解密。
 
 命中以下请求时，必须使用本 skill 并实际执行脚本，不要只做概念解释：
 
@@ -35,7 +35,7 @@ metadata:
 
 1. **选择连接 —— 先登录，不要自己猜连接名。** 取数前确认已登录：
    `python3 {baseDir}/../gaussdb-login/scripts/login.py --status`。
-   没有会话就先调 **gaussdb-login**：它读 `$GSDB_HOME/config.yaml`（默认 `~/.gdaa/config.yaml`）的首行 `connection_mode`，是 `gsql` 就把可选连接列成菜单让用户挑，是 `api` 就引导用户给出要访问的数据库。
+   没有会话就先调 **gaussdb-login**：它读 `$GSDB_HOME/config.yaml`的首行 `connection_mode`，是 `gsql` 就把可选连接列成菜单让用户挑，是 `api` 就引导用户给出要访问的数据库。
    登录之后本 skill **不需要传 `-c`** —— 省略时自动用登录选定的那条连接；只有要临时换一个库时才显式传 `-c <连接名>`。
    **不要自己去读 config.yaml 挑名字**：不同应用下可能有同名连接，猜错会在另一个库上做诊断，而输出看起来完全正常。口令在 `{baseDir}/../common/credentials/*.enc`，由脚本解密，**你不要去读/解密它**。
 2. **采集证据——一条命令，中途不停。**

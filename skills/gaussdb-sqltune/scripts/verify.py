@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import re
 import sys
 from dataclasses import dataclass, field
 from typing import Optional
@@ -28,10 +29,14 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
         break
 
 import common  # noqa: E402
+import systables  # noqa: E402
 from common import access  # noqa: E402
 from cost import explain_cost, quote_columns, quote_ident, quote_sql_literal  # noqa: E402
 from evidence import is_dml  # noqa: E402
 from sqlfetch import count_placeholders  # noqa: E402
+
+# CREATE INDEX ... WITH (parallel_workers=N) —— openGauss 的并行建索引开关。
+_PARALLEL_BUILD_RE = re.compile(r"(?i)\bparallel_workers\s*=")
 
 # **本脚本一条 SQL 都迁不到 scripts/registry/。** 它做的三件事都以用户临时
 # 给的 SQL 为输入：
@@ -118,6 +123,21 @@ def _precheck(orig_sql: str, rewrite_sql: str, what: str) -> None:
         raise ValueError(f"verify {what}: rewriteSQL contains placeholder(s) — substitute before calling")
     if is_dml(orig_sql) != is_dml(rewrite_sql):
         raise ValueError(f"verify {what}: origSQL 和 rewriteSQL 语句类型不同（一个是 DML）")
+    v = systables.system_verdict(orig_sql)
+    if v.is_system:
+        raise ValueError(
+            f"verify {what}: 目标 SQL 只访问系统对象（{', '.join(v.system_objects)}）——"
+            f"按策略不对系统表/系统视图做调优，无需验证改写")
+
+
+def _check_index_ddl(ddls: list[str]) -> None:
+    """并行建索引对生产冲击大,策略上禁止——在验证入口就拦掉,别让它进报告。"""
+    bad = [d for d in ddls if _PARALLEL_BUILD_RE.search(d)]
+    if bad:
+        raise ValueError(
+            "索引 DDL 含并行构建选项，按生产温和性策略不予验证/推荐"
+            "（并行建索引对生产 CPU/IO 冲击大；请去掉该选项，建索引默认串行 + 低峰执行）:\n"
+            + "\n".join(f"  {d}" for d in bad))
 
 
 def verify_rewrite(db, orig_sql: str, rewrite_sql: str,
@@ -169,6 +189,7 @@ def verify_combined(db, orig_sql: str, rewrite_sql: str, explicit_indexes: list[
                     check_equiv: bool = True) -> CombinedVerdict:
     min_speedup = max(min_speedup, 1.0)
     _precheck(orig_sql, rewrite_sql, "combined")
+    _check_index_ddl(explicit_indexes)
     db.execute(f"SET statement_timeout = {_EQUIV_TIMEOUT_MS}")
 
     orig_cost = explain_cost(db, orig_sql)

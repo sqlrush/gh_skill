@@ -8,7 +8,7 @@ description: 按总耗时排序的 Top N 线上语句（供静态审查用）
 sql: |
   SELECT unique_sql_id::text, query
   FROM dbe_perf.statement
-  WHERE n_calls > 0 AND query IS NOT NULL AND query <> ''
+  WHERE n_calls > 0 AND query IS NOT NULL AND LENGTH(TRIM(query)) > 0
   ORDER BY total_elapse_time DESC
   LIMIT {{limit}};
 params:
