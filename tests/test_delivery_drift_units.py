@@ -43,10 +43,29 @@ def _all_scripts():
             for p in sorted(_REGISTRY.glob("*/*.yaml"))}
 
 
+_INSERT_NAME = re.compile(
+    r"^INSERT INTO \S+ \([^)]*\) VALUES \([^,]+, '[A-Z]+', '([a-z_]+\.[a-z_0-9]+)'",
+    re.MULTILINE)
+
+
 def _shipped_names(text):
-    """DML 头部清单里的脚本逻辑名。"""
-    return set(re.findall(r"^--\s+([a-z_]+\.[a-z_0-9]+)\s+->\s+id=", text,
-                          re.MULTILINE))
+    """DML 里实际带出的脚本逻辑名。
+
+    直接数 INSERT 行，不看头部注释。scripts.sql 已改成客户真实的 DML 形态
+    （手工维护，没有生成器写的 `-- name -> id=` 清单）——之前只读注释，
+    对这一份读出来是空集合，「缺了/多了/正文变了」三道闸全部空转、全绿。
+    """
+    return set(_INSERT_NAME.findall(text))
+
+
+def test_shipped_names_are_read_from_insert_rows_not_header():
+    """没有头部注释的 DML 也必须数得出脚本——否则闸门假绿。"""
+    text = ("INSERT INTO grmp.script_config (id, script_type, script_name) "
+            "VALUES (grmp.script_config_seq.nextval, 'SQL', 'foo.bar', 'x');\n"
+            "INSERT INTO grmp.grmp.script_config (id, script_type, script_name) "
+            "VALUES ('92', 'SQL', 'baz.qux', 'y');\n")
+    assert _shipped_names(text) == {"foo.bar", "baz.qux"}
+    assert _shipped_names("-- 只有注释\n") == set()
 
 
 def _delivery_text(filename):
