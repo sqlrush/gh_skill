@@ -178,19 +178,25 @@ def _verify_direct(conn: Connection) -> tuple:
 
 def _describe(conn: Connection, note: str, path) -> str:
     out = "# 已登录\n\n"
-    out += render.table(
+    if conn.driver == "grmp":
+        out += render.table(
         ["项", "值"],
-        [["模式", "api（GRMP 中间件）" if conn.driver == "grmp" else "gsql（直连）"],
+        [["模式", "api（GRMP 中间件"],
+         ["应用", conn.app or "—"],         
+         ["实例 IP（dataIp）", conn.data_ip],
+         ["数据库", conn.database] ,
+         ["验证", note]])
+    else:
+         out += render.table(
+        ["项", "值"],
+        [["模式", "gsql（直连）"],
          ["应用", conn.app or "—"],
-         ["连接名", conn.name],
-         ["中间件端点", "%s:%s" % (conn.host, conn.port)]
-         if conn.driver == "grmp" else
+         ["连接名",  conn.name]  ,
          ["目标", "%s:%s/%s" % (conn.host, conn.port, conn.database)],
-         ["实例 IP（dataIp）", conn.data_ip] if conn.driver == "grmp" else
          ["驱动", conn.driver],
-         ["数据库", conn.database] if conn.driver == "grmp" else
          ["用户", conn.user],
          ["验证", note]])
+   
     out += "\n会话已写入 `%s`。\n\n" % path
 
     if conn.driver == "grmp":
@@ -239,9 +245,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 return 0
             print(render.table(
                 ["项", "值"],
-                [["应用", live.app or "—"], ["连接名", live.name],
-                 ["目标", "%s:%s/%s" % (live.host, live.port, live.database)],
-                 ["驱动", live.driver]]))
+                [["应用", live.app or "—"], 
+                 ["实例 IP（dataIp）", live.data_ip],
+                 ["数据库", live.database]]))
             return 0
 
         current_mode = config.mode()
