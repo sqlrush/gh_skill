@@ -72,16 +72,39 @@ metadata:
 6. **改写建议——每条都先验证再呈现。**
    对每个你想推荐的 SQL 改写，先验证：
 
+   ```
+   **改写 SQL 生成前必须在内部检查 ORDER BY 字段：**
+   
+   - 普通查询中，ORDER BY 字段不要求必须出现在 SELECT 列表中。不能因为排序字段没有出现在 SELECT 列表中，就删除、补充或修改 ORDER BY 字段。
+   
+   - 改写 SQL 时，必须在内部检查 ORDER BY 中每个字段的实际来源，确保排序字段、字段来源、排序方向和 NULL 排序方式与原 SQL 的排序语义一致。
+   
+   - 如果排序字段在当前查询范围内只有一个可解析来源，`ORDER BY order_id ASC` 和 `ORDER BY o.order_id ASC` 都可以使用。不得仅因为原 SQL 使用了表别名，就强制改写后的 SQL 必须继续保留表别名；也不得仅为了简化格式，机械删除或增加表别名。
+   
+   - 如果多个表或表别名中存在同名字段，例如 `o.order_id` 和 `r.order_id` 都存在，则必须使用表别名明确字段来源，例如 `ORDER BY o.order_id ASC`。不得改成存在歧义的 `ORDER BY order_id ASC`。
+   
+   - 只有在确认删除表别名后，排序字段在当前查询范围内仍然只有唯一来源时，才允许将 `ORDER BY o.order_id ASC` 简化为 `ORDER BY order_id ASC`。
+   
+   - 如果改写过程中删除、增加或替换了表、子查询、CTE 或表别名，必须重新检查 ORDER BY 字段是否仍然解析到原来的字段来源。
+   
+   - 上述 ORDER BY 检查仅用于内部生成和校验 SQL。最终报告中不得回显“字段来源唯一”“ORDER BY 语义不变”“外层排序与原 SQL 一致”等检查过程说明。
+   
+   - 只有发现 ORDER BY 存在字段歧义、排序语义改变、无法解析或改写失败时，才向用户说明具体问题和修改原因。
+   
+   - 表别名本身通常不会导致查询变慢，不能以查询性能为理由机械增加或删除表别名。表别名是否保留，应根据字段来源是否唯一以及是否存在歧义决定。
+   ```
+   
    ```bash
    python3 {baseDir}/scripts/verify.py -c <conn> \
      --original 'SELECT ... (the substituted original) ...' \
      --rewrite  'SELECT ... (your rewrite) ...'
    ```
-
+   
    - 两侧都用**替换后**的 SQL（不含 `?` 占位符）——verify 会拒绝带占位符的 SQL。
    - **只有当 verify 判 ACCEPTED 时**（加速 ≥ 1.3× 且结果集等价）才把改写当成确定的优化呈现。引用其真实的 `cost X → Y (N×)` 和等价性结果。
    - 若 verify REJECTS（加速不足，或不等价），把它移到「未验证/被驳回想法」子节并注明驳回原因——**不要**当成确定的改进呈现。
-
+   - 即使改写尚未经过 verify，也不得输出字段来源不明确的 ORDER BY。原 SQL 中带表别名的排序字段必须原样保留表别名。
+   
 7. **组合验证——改写+索引的赢点。** 一个改写单独看常常很弱，却是某个索引生效的*前提*（例如 `TO_CHAR(col)=...` → `col >= ... AND col < ...` 才让日期索引可用）。当单独的改写不达标，或 `## Verified Index Candidates` 一无所获时，别急着放弃，先验证**组合**：
 
    ```bash
@@ -134,7 +157,7 @@ metadata:
 
    ```markdown
    ## 被分析的 SQL
-
+   
    ```sql
    ...
    ```
