@@ -1,6 +1,6 @@
 connection_mode: api
 api_connection:
-  - host: localhost
+  - host: ucmp-grmp-web-d.sdc.cs.icbc
     host_env: GRMP_API_HOST
     port: 80
     # 令牌两种放法，**环境变量优先**：
