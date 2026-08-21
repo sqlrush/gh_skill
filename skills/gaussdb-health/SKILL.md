@@ -1,6 +1,6 @@
 ﻿---
 name: gaussdb-health
-version: 3.0.0
+version: 2.0.0
 description: "通过内置脚本执行 OpenGauss/GaussDB 数据库健康检查。用户询问库是否健康、为什么慢或卡、是否有阻塞、长事务、膨胀、复制延迟、checkpoint 压力、归档问题、空闲会话、连接压力或无用索引时使用，包括“库健康吗”“为什么卡”“有没有阻塞”“有没有长事务”“有没有膨胀”“复制有没有延迟”等请求。触发后运行 scripts/health.py，采集真实证据和确定性发现，不要只给泛化排查建议。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -14,7 +14,7 @@ metadata:
 
 一次性、只读、可信的数据库健康检查。**确定性归脚本（采集 + 阈值发现），判断归你（LLM），但你的判断必须对脚本的 `## Deterministic Findings` 做证据锚定校验。** 报告抬头用确定性状态带，不编造单一分数。
 
-**本技能是汇总层，不是唯一的证据来源。** `{baseDir}/scripts/health.py` 自己只读采集 8 个本地维度（Overview / Slow SQL / 长事务 / 连接 / Checkpoint·WAL·归档 / 复制 / Schema / 并发），另外以子进程方式各跑一次 `gaussdb-lockwait`、`gaussdb-waitevent`、`gaussdb-vacuum` 三个 skill 的 `--format json` 输出，把它们的 `Deterministic Findings` 并入本报告——锁堵塞、等待事件/DB time、死元组/膨胀这三块的**完整证据、原始表、阻塞链/下钻分析都在对应子 skill 里**，本技能只搬运它们已经算出来的风险结论，并在每条这样的 finding 后面标注来源（`（详见 gaussdb-xxx）`）。**要看某一块的全部细节，直接单独跑那个子 skill，不要指望 health 的报告重现它。** 连接元数据读取 `$GSDB_HOME/config.yaml`，凭据由脚本从 `{baseDir}/../common/credentials/` 自动解密。
+本技能用 Python 脚本（`{baseDir}/scripts/health.py`）取数：只读、一次性跑全部 12 个采集器。连接元数据读取 `$GSDB_HOME/config.yaml`，凭据由脚本从 `{baseDir}/../common/credentials/` 自动解密。
 
 命中以下请求时，必须使用本 skill 并实际执行脚本，不要只做概念解释：
 
@@ -44,15 +44,8 @@ metadata:
    python3 {baseDir}/scripts/health.py -c <conn>
    ```
 
-   只读。本地 8 个采集器产固定小节：`## Overview`、`## Slow SQL`、`## Long & Idle Transactions`、`## Connections`、`## Checkpoint / WAL / Archiving`、`## Replication / Standby`、`## Schema / Objects`、`## Transactions / Concurrency`；另外后台跑三个子 skill，把它们的风险并入下面两个固定小节：
-   - **`## Deterministic Findings`**：本地 8 维 + 三个子 skill 的确定性发现按严重度合并排序（严重度/Code/指标/值/阈值/证据）；子 skill 来源的那些行证据末尾带 `（详见 gaussdb-lockwait / gaussdb-waitevent / gaussdb-vacuum）`，`维度` 列用的是对应子 skill 自己的维度名（`Locks` / `DB Time` / `Dead Tuples`），不是已经退役的 `Transaction Locks & Blocking Chains` / `Wait Events` / `Dead Tuples & Bloat` 这几个旧名字。
-   - **`## Collection Notes`**：哪些本地维度降级、哪个子 skill 采集失败，同一种形式呈现。
-
-   报告顶部还固定带两段，**任何一次运行都会出现，不依赖是否命中风险**：
-   - **`## 本次未采集到的维度`**：点名本次哪个子 skill 没采集成功、原因是什么；三个都成功时写清楚"全部采集成功"。
-   - **`## 未纳入汇总的能力`**：无条件列出 `gaussdb-explain`、`gaussdb-sqltune`、`gaussdb-sqlreview`、`gaussdb-sqlfetch`、`gaussdb-proctune` 这 5 个 skill——它们都需要用户指定具体 SQL / sql_id / 存储过程才能跑，health 拿不到这类输入，**这 5 项永远不在本报告覆盖范围内**；报告本身会说明这一点，不要等用户问起来才提，也不要因为这次报告很干净就暗示"都查过了"。
-
-   选项：`--include/--exclude <dims>` 裁剪维度。本地维度名：`overview,slowsql,xact,conn,logs,repl,schema,concurrency`；另外 `locks`、`waits`、`lwlock`、`bloat` 这四个名字继续有效，只是不再对应本地 collector，而是路由到子 skill（`locks`→`gaussdb-lockwait`，`waits`/`lwlock`→`gaussdb-waitevent`，`bloat`→`gaussdb-vacuum`）——已有的命令行不受影响。`--top N` 调列表条数；`--format json` 取结构化（额外带 `sub_skills`、`uncovered_capabilities` 两个字段）。**不要**为某一维度单独多跑命令；也不要看到 `--include locks` 就自己再单独跑一遍 lockwait——health 已经替你跑过了。
+   只读、一次性跑全部 12 个采集器，产固定小节的证据包：`## Overview`、`## Wait Events`、`## Slow SQL`、`## Long & Idle Transactions`、`## Dead Tuples & Bloat`、`## Lightweight Locks (LWLock)`、`## Transaction Locks & Blocking Chains`、`## Connections`、`## Checkpoint / WAL / Archiving`、`## Replication / Standby`、`## Schema / Objects`、`## Transactions / Concurrency`，外加 **`## Deterministic Findings`**（按阈值算出的确定性发现，含 严重度/Code/指标/值/阈值/证据）与 `## Collection Notes`（哪些维度降级）。
+   选项：`--include/--exclude <dims>` 裁剪维度；`--top N` 调列表条数；`--format json` 取结构化。**不要**为某一维度单独多跑命令。
 
 3. **加载方法论。** 阅读 `{baseDir}/references/gaussdb-health-methodology.md`，逐维度按其检查清单解读，并做跨维度关联。阈值口径查 `{baseDir}/references/health-thresholds.md`。涉及具体慢 SQL 深调时导向 `/gaussdb-sqltune`，存储过程导向 `/gaussdb-proctune`。
 
@@ -67,29 +60,17 @@ metadata:
 
 6. **报告。** 按以下顺序与版式产出：
    - **抬头状态带** —— `总体状态 <🟢健康/🟡关注/🟠告警/🔴严重>`，附一句「驱动：<最重发现的根因/摘要>」；下一行 `判断校验 <徽章>`。
-   - **维度概览矩阵** —— 本地 8 维各一行：维度、严重度徽章、关键指标（取该维 Headline / 关键数字）；三个子 skill 里本次采集成功的，各按它贡献的最高严重度补一行（维度名用它自己的：`Locks` / `DB Time` / `Dead Tuples`，注明来源 skill）；采集失败的不编一行，去 `## 本次未采集到的维度` 里找原因。
+   - **维度概览矩阵** —— 12 维各一行：维度、严重度徽章、关键指标（取该维 Headline / 关键数字）。
    - **按严重度排序的发现** —— 对每条确定性发现（重→轻）：**证据**（引用真实指标 vs 阈值）→ **根因** → **建议**（带 `风险:低/中/高` 与 `[需人工执行]`）。
    - **关键原始证据** —— 重要维度的原始表（如阻塞链树、Top 死元组表、等待 Top）。
    - **处置优先级** —— 用 **P0/P1/P2 文字**标优先级，各引证、带风险级；**不要用严重度 emoji（🔴🟠🟡）当优先级图标**（见规则）。每条行动项必须自带结论正文，见下条规则。
    - 收尾一句：本报告全部经脚本只读采集，所有结论已对确定性发现锚定校验。
-
-## 退出码
-
-| 退出码 | 含义 |
-|---|---|
-| 0 | 报告完整：本地 8 个维度与所有纳入范围的子 skill 均采集成功 |
-| 1 | 参数/形状被拒绝，或渲染层出错——**没有产出报告** |
-| 2 | 连接建立失败——**没有产出报告** |
-| 3 | 报告已经完整打印，但至少一个纳入范围的子 skill（锁 / 等待 / 死元组）采集失败——报告顶部 `## 本次未采集到的维度` 会点名是谁、原因是什么 |
-
-**退出码 3 存在的理由：** 一份缺了锁、等待信息却退出 0 的报告，对下游脚本/告警管道而言和一份干净报告没有区别——两者都是 `rc=0`。exit=3 让消费方不用解析报告正文就能从退出码本身分辨"报告完整"与"报告不完整但已经打印"。**报告不会因为退出码非 0 而被截断或省略**——3 是附加信息，不是替代输出；看到 3 时先读 stdout，报告就在那里，只是顶部会点名哪块没查到。
 
 ## 规则
 
 - **报告只呈现结论，不呈现推演。** 「等等 / 换个角度」这类自我纠正不得进入报告；若改了判断，回头同步矩阵里的严重度，使报告自洽。
 - **只读、绝不执行修复。** health 不执行 `kill` / `pg_terminate_backend` / `VACUUM` / 任何 DML；处置一律只给带风险级的建议，注明 `[需人工执行]`。
 - 不要编造统计：每个结论引用脚本输出里的某个数字。
-- **来自子 skill 的确定性发现，`（详见 gaussdb-xxx）` 指针是允许的落点，不必展开成全套上下文。** `## Deterministic Findings` 表里带这个后缀的行，是 `gaussdb-lockwait`/`gaussdb-waitevent`/`gaussdb-vacuum` 自己算出来的确定性证据——如实转述该行的 code/指标/值/证据，保留这个指针即可；**不要凭空替它扩写根因分析或具体改法**，那些内容在对应子 skill 自己的报告里，客户要看细节就直接单独跑那个 skill。下面这条「行动项必须自带结论正文」管的是另一种情形：你自己写的处置建议里引用了别的 skill 的结论（比如引用 sqltune 的改写建议），那种指针式引用才是不合格的。
 - **行动项必须自带结论正文，不能只留一个指针。** 「推动 sqlid 1136765424 的 sqltune 结论落地」这种写法是不合格的——读的人不知道结论是什么。凡引用别的 skill 或别处的结论，必须一并带上：**是哪条对象**（SQL 原文摘要 / 表名 / 索引名）、**当前状态**（计划形态与代价、扫描次数、页数）、**提议的改动**（哪条索引 / 哪种改写）、**预期效果**、**依据**。跨 skill 引用尤其如此：报告是要发给客户看的，sqlid 在那边解引用不了。
 - **累计型指标必须先给观测窗口。** `idx_scan` / `seq_scan` / `n_tup_*` 都是「自上次统计重置以来」的累计值。报告里出现它们时，先写出 `pg_stat_database.stats_reset` 的时间与至今时长——窗口 5 分钟的 `idx_scan=0` 和窗口 7 天的 `idx_scan=0` 是两回事，而两者长得一模一样。
 - **区分「观测到的」与「推断的」，措辞不要越界。** 「该索引在当前统计窗口内未被使用」是观测；「无用索引」是关于未来的断言，不要写。同理「统计陈旧」要说清凭哪两个数、差多少、阈值多少。建议删除索引前必须点明三条反例：统计重置或实例重启会让计数归零；月度/季度/年终报表用的索引可以数周为 0；主备分离时备机上的使用不计入本机计数器。
@@ -118,14 +99,14 @@ metadata:
 阈值与规则基线,**也不能**推翻脚本的确定性判定——脚本没报的违规,你不得凭知识库补报;
 脚本报了的,你不得凭知识库抹掉。
 
-**知识库位置**:`$GSDB_KB_DIR`(如已设置),否则 `{kbDir}`
+**知识库位置**:`$GSDB_KB_DIR`(如已设置),否则 `/workspace/.opencode/kb`
 (与 skills/ 同级的 `kb/` 目录,随 skill 一起安装,重装不会被删)。目录不存在 = 客户尚未导入规范,
 此时照常按本 skill 自身的知识作答,不必提及知识库。
 
 知识库存在时,涉及 GaussDB/openGauss **规范条款、设计取舍、口径定义**:
 
 - 先读知识库根目录 `INDEX.md` 选定条目,再只读相关文件的相关小节;
-  关键词定位用 `grep -rn "<关键词>" {kbDir}/errata {kbDir}/rules {kbDir}/guides`。
+  关键词定位用 `grep -rn "<关键词>" /workspace/.opencode/kb/errata /workspace/.opencode/kb/rules /workspace/.opencode/kb/guides`。
 - 知识库与你的**自带知识**冲突时,以知识库为准(客户的规范比通用经验更贴近他们的实际);
   知识库未覆盖时,明说「知识库未覆盖,以下为通用经验」,不得把通用经验伪装成客户规范。
 - 引用知识库的结论必须带规则 ID(如 `GS-IDX-003`)或 guide 文件名+小节;引用不出来的不要写。

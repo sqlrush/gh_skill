@@ -7,11 +7,30 @@ tags exactly so a Go-produced evidence pack and a Python one are interchangeable
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import IntEnum
 
-# Finding 与 Severity 统一在 common/finding.py —— 本文件曾存一份完全相同的
-# 定义，health / wdr / memanalyze 三家各一份。汇总层要跨进程解析这个形状，
-# 三份定义迟早分叉，而分叉的表现是**少一条风险**，不是报错。
-from common.finding import Finding, Severity, worst  # noqa: F401
+
+class Severity(IntEnum):
+    OK = 0
+    NOTICE = 1
+    WARN = 2
+    CRITICAL = 3
+
+    def label(self) -> str:
+        return {
+            Severity.CRITICAL: "🔴严重",
+            Severity.WARN: "🟠告警",
+            Severity.NOTICE: "🟡关注",
+        }.get(self, "🟢健康")
+
+
+def worst(severities: list[Severity]) -> Severity:
+    w = Severity.OK
+    for s in severities:
+        if s > w:
+            w = s
+    return w
+
 
 # Dimension names — also the ## section titles in the evidence pack.
 DIM_LOADPROFILE = "Load Profile"
@@ -23,14 +42,32 @@ DIM_CACHE = "Cache / Memory"
 DIM_FILEIO = "File IO"
 
 
-def _finding_from_dict(d: dict) -> Finding:
-    """本文件曾在 Finding 上挂一个同名 staticmethod；Finding 挪到 common 后
-    那个 staticmethod 跟着没了，但 DimResult.from_dict / Evidence.from_dict
-    仍要从 json 里重建 Finding —— 挪成模块级函数，逻辑照旧一字不改。"""
-    return Finding(d.get("dimension", ""), d.get("code", ""),
-                   Severity(int(d.get("severity", 0))), d.get("metric", ""),
-                   d.get("value", ""), d.get("threshold", ""),
-                   d.get("evidence", ""), d.get("sql_id", ""))
+@dataclass(frozen=True)
+class Finding:
+    dimension: str
+    code: str
+    severity: Severity
+    metric: str
+    value: str
+    threshold: str
+    evidence: str
+    sql_id: str = ""
+
+    def to_dict(self) -> dict:
+        d = {"dimension": self.dimension, "code": self.code,
+             "severity": int(self.severity), "metric": self.metric,
+             "value": self.value, "threshold": self.threshold,
+             "evidence": self.evidence}
+        if self.sql_id:
+            d["sql_id"] = self.sql_id
+        return d
+
+    @staticmethod
+    def from_dict(d: dict) -> "Finding":
+        return Finding(d.get("dimension", ""), d.get("code", ""),
+                       Severity(int(d.get("severity", 0))), d.get("metric", ""),
+                       d.get("value", ""), d.get("threshold", ""),
+                       d.get("evidence", ""), d.get("sql_id", ""))
 
 
 @dataclass
@@ -62,7 +99,7 @@ class DimResult:
             dimension=d.get("dimension", ""), available=d.get("available", True),
             note=d.get("note", ""), headline=d.get("headline", ""),
             headers=d.get("headers", []) or [], rows=d.get("rows", []) or [],
-            findings=[_finding_from_dict(f) for f in d.get("findings", []) or []])
+            findings=[Finding.from_dict(f) for f in d.get("findings", []) or []])
 
 
 @dataclass
@@ -148,7 +185,7 @@ class Evidence:
             conn=d.get("conn", ""), target=d.get("target", ""),
             window=Window.from_dict(d.get("window", {}) or {}),
             dims=[DimResult.from_dict(x) for x in d.get("dims", []) or []],
-            findings=[_finding_from_dict(x) for x in d.get("findings", []) or []],
+            findings=[Finding.from_dict(x) for x in d.get("findings", []) or []],
             overall=Severity(int(d.get("overall", 0))),
             native=NativeInfo.from_dict(d.get("native", {}) or {}))
 

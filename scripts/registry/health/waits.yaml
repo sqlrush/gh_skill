@@ -1,0 +1,9 @@
+# SQL 取自 common/sql.py 的 skill_health_002。列名齐全，未改动。
+name: health.waits
+description: 等待状态分布（pg_thread_wait_status）
+sql: |
+  SELECT wait_status, count(*) AS cnt
+  FROM pg_thread_wait_status
+  WHERE wait_status IS NOT NULL AND wait_status NOT IN ('none','wait cmd')
+  GROUP BY wait_status
+  ORDER BY cnt DESC;

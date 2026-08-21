@@ -56,11 +56,10 @@ metadata:
    这会自动取 SQL、自动替换占位符、采集完整证据包，**并自动用 hypopg 验证索引候选**。
    **不要单独取 SQL/采集，也不要向用户索要占位符的值。**
    选项：`--bind <value>`（可重复，按占位符顺序）传真实值；日期和字符串可直接传原始值，脚本会按已识别类型或 `TIMESTAMP ?` 等上下文自动转义并添加 SQL 单引号。`--analyze` 仅用于只读 SQL 或用户明确同意时。
-   **没有真实值时不要编。** `--bind` 只用于转达用户给出的值：臆造的值会改变选择性，索引/改写的 cost 倍数会跟着失真，等于给出一个看着有据、实则不成立的结论。默认那一跑（不带 `--bind`）本来就会按 catalog 列类型合成安全值，正常路径不需要 `--bind`。
 
 2b. **系统对象 SQL —— 直接结束。** 若输出是「# SQL Tune — 系统对象 SQL,按策略跳过」（脚本正常退出，不是报错），说明这条 SQL 只访问系统表/系统视图。**到此为止**：把跳过的原因和涉及的对象如实转达给用户，不要重跑、不要换 `--sql-stdin` 再试、不要绕开脚本自己分析，也不要给出任何索引/改写/参数建议。可以提示排查方向在监控采集频率与系统整体负载，但那不属于本技能的调优输出。
 
-3. **合成值提醒——看小节标题，别看有没有这一节。** `## Placeholder Substitution (synthetic values)` 表示至少有一个值是脚本合成的：计划「形状」可靠，但行数/选择性是近似值，要把这点说清楚，并指出索引/改写验证用的就是这些合成值。若标题是 `## Placeholder Substitution (real values from --bind)`，说明每个占位符都用了调用方给的真实值，**此时不要再加合成值免责**，那会把可靠的结论说弱。替换值的 Source 列：`bind` = 调用方给的真实值；`type` = 按 catalog 真实列类型生成（类型可靠）；`rule`/`default` = 纯文本启发式猜测。若报 `invalid input syntax`，报错里会点名坏值出自哪个占位符；若提示 bind 顺序错位，核对 `--bind` 传值顺序后重试——**手上没有真实值就不要用 `--bind` 顶上去**，把报错原样告诉用户并索要该占位符的真实值。
+3. **合成值提醒。** 若输出含 `## Placeholder Substitution` 一节，说明计划「形状」可靠，但行数/选择性是近似值。要把这点说清楚，并指出索引/改写验证用的是这些合成值——可用 `--bind` 传真实值做精确验证。替换值的 Source 列：`type` = 按 catalog 真实列类型生成（类型可靠）；`rule`/`default` = 纯文本启发式猜测。若报 `invalid input syntax`，报错里会点名坏值出自哪个占位符；若提示 bind 顺序错位，核对 `--bind` 传值顺序后重试。
 
 4. **加载方法论。** 阅读 `{baseDir}/references/tuning-methodology.md`，对照证据各节按其检查清单分析（`## Execution Plan`、`## Tables`、`## Indexes`、`## Column Statistics`、`## Key Parameters (GUC)`、`## Deterministic Findings`）。深度判断按需查 GaussDB 专项知识：CBO 与诊断边界 → `{baseDir}/references/gaussdb-cbo-and-diagnosis.md`；改写候选 → `{baseDir}/references/gaussdb-rewrite-patterns.md`；A 兼容库（`sql_compatibility='A'`）→ `{baseDir}/references/gaussdb-a-compat-gotchas.md`；分区表/分布式 → `{baseDir}/references/gaussdb-partition-distribution.md`。
 
@@ -189,9 +188,9 @@ metadata:
 - **一个 cost 倍数只能归属于验证它的那一个对象。** 严禁把某索引（或第 7b 步多索引组合 verify）的战果安到另一条改写/另一个索引上；严禁把同一条验证结果当成两条独立推荐重复计数（例如把"索引 X 单独的 N×"又同时算给"改写 Y"）。组合（改写+索引）的倍数标注为「组合」，不拆给单独的改写或单独的索引。
 - **严禁编造未经 verify 的因果。** "必须和某改写一起落地""索引隐含消除 Sort/排序"这类断言，除非有对应 verify/EXPLAIN 证据否则不得写——一条 verify 只证明它自己那一条；尤其当某索引**单独**经 `## Verified Index Candidates` 即达标时，不得反过来声称"单加索引无效、必须配合改写"。
 - **索引去冗余。** 推荐多个索引时，前缀已被覆盖的不重复推荐（已荐 `(a,b)` 就不再单列 `(a)`）。
-- **合成值 caveat。** 倍数基于 `## Placeholder Substitution (synthetic values)` 的合成值时，在「已验证推荐」里附一句：真实参数选择性不同、倍数会变，可 `--bind` 精确化。小节标题是 `(real values from --bind)` 时**不加**这句。
+- **合成值 caveat。** 倍数基于 `## Placeholder Substitution` 的合成值时，在「已验证推荐」里附一句：真实参数选择性不同、倍数会变，可 `--bind` 精确化。
 - **报告只呈现结论，不呈现推演。** 「等等 / 换个角度 / 让我重新想」这类自我纠正、被推翻的中途判断不得进入交付报告；分析中若改了结论，回头同步改正计划树里的 `[P1]/[P2]` 标记与严重度，使报告自洽。
-- 一次 `sqltune.py` 调用产出整个证据包（含自动索引验证）。正常路径绝不停下来索要占位符的值——默认的合成值就是为此存在的。**唯一例外**：脚本报了类型探测失败或 bind 错位、拿不到报告时，把报错原样转达用户并索要真实值；**不要用臆造的 `--bind` 值把流程"推过去"**，那产出的是一份基于不存在参数的结论。
+- 一次 `sqltune.py` 调用产出整个证据包（含自动索引验证）。绝不在工作流中途停下来索要占位符的值。
 - **SQL 文本被截断时的回退。** 按 id 调用若报「SQL 被 openGauss 截断」（长 SQL 超过 `track_activity_query_size`，库里就没有完整文本——这是数据库侧的留存限制），**不要**硬试——向用户索要完整 SQL，改用 `--sql-stdin` 传入完整文本走调优。若用户能调大 `track_activity_query_size` 并让该 SQL 重新执行，之后按 id 也能取全。
 - 不要编造统计信息：每个结论都要引用脚本输出里的某个数字。
 - 默认**不**执行用户的 SQL（`--analyze` 关闭）。
@@ -228,14 +227,14 @@ metadata:
 阈值与规则基线,**也不能**推翻脚本的确定性判定——脚本没报的违规,你不得凭知识库补报;
 脚本报了的,你不得凭知识库抹掉。
 
-**知识库位置**:`$GSDB_KB_DIR`(如已设置),否则 `{kbDir}`
+**知识库位置**:`$GSDB_KB_DIR`(如已设置),否则 `/workspace/.opencode/kb`
 (与 skills/ 同级的 `kb/` 目录,随 skill 一起安装,重装不会被删)。目录不存在 = 客户尚未导入规范,
 此时照常按本 skill 自身的知识作答,不必提及知识库。
 
 知识库存在时,涉及 GaussDB/openGauss **规范条款、设计取舍、口径定义**:
 
 - 先读知识库根目录 `INDEX.md` 选定条目,再只读相关文件的相关小节;
-  关键词定位用 `grep -rn "<关键词>" {kbDir}/errata {kbDir}/rules {kbDir}/guides`。
+  关键词定位用 `grep -rn "<关键词>" /workspace/.opencode/kb/errata /workspace/.opencode/kb/rules /workspace/.opencode/kb/guides`。
 - 知识库与你的**自带知识**冲突时,以知识库为准(客户的规范比通用经验更贴近他们的实际);
   知识库未覆盖时,明说「知识库未覆盖,以下为通用经验」,不得把通用经验伪装成客户规范。
 - 引用知识库的结论必须带规则 ID(如 `GS-IDX-003`)或 guide 文件名+小节;引用不出来的不要写。

@@ -13,7 +13,7 @@ name: sqltune.plan_text_analyze
 description: 取一条只读 SQL 的实际执行计划（TEXT 格式，会真执行该 SQL）
 readonly: true
 sql: |
-  EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
+  EXPLAIN (ANALYZE true, BUFFERS true, FORMAT TEXT) {{sql}}
 params:
   - key: sql
     type: String

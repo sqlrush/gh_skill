@@ -288,22 +288,11 @@ def sqltune_report(tr: TuneResult) -> str:
 
     sub = tr.substitution
     if sub.placeholders > 0:
-        # 小节名固定以 "## Placeholder Substitution" 开头(SKILL.md 按它取节),
-        # 但**不能无条件自称合成值**:调用方全程用 --bind 传了真实值时,再劝
-        # 一句"re-run with --bind"会让模型给真实结论硬加一条合成值免责,
-        # 把已经可靠的倍数说弱。降级要说出口,没降级也别装。
-        if any(s.source != "bind" for s in sub.substitutions):
-            out += "## Placeholder Substitution (synthetic values)\n\n"
-            out += ("> Placeholders have been replaced with synthetic values to generate "
-                    "an execution plan. **Plan shape is reliable; row counts and "
-                    "selectivity estimates are approximate.**\n")
-            out += "> For precise analysis, re-run with `--bind` to supply real values.\n\n"
-        else:
-            out += "## Placeholder Substitution (real values from `--bind`)\n\n"
-            out += ("> Every placeholder was replaced with a real value supplied via "
-                    "`--bind`. **Row counts and selectivity reflect these actual "
-                    "parameters** — the approximate-value caveat does not apply "
-                    "to this report.\n\n")
+        out += "## Placeholder Substitution (synthetic values)\n\n"
+        out += ("> Placeholders have been replaced with synthetic values to generate "
+                "an execution plan. **Plan shape is reliable; row counts and "
+                "selectivity estimates are approximate.**\n")
+        out += "> For precise analysis, re-run with `--bind` to supply real values.\n\n"
         rows = [[str(i + 1), s.token, s.value, s.source, render.truncate(s.context, 60)]
                 for i, s in enumerate(sub.substitutions)]
         out += render.table(["#", "Token", "Value", "Source", "Context"], rows) + "\n"

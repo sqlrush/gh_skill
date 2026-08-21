@@ -131,14 +131,14 @@ metadata:
 阈值与规则基线,**也不能**推翻脚本的确定性判定——脚本没报的违规,你不得凭知识库补报;
 脚本报了的,你不得凭知识库抹掉。
 
-**知识库位置**:`$GSDB_KB_DIR`(如已设置),否则 `{kbDir}`
+**知识库位置**:`$GSDB_KB_DIR`(如已设置),否则 `/workspace/.opencode/kb`
 (与 skills/ 同级的 `kb/` 目录,随 skill 一起安装,重装不会被删)。目录不存在 = 客户尚未导入规范,
 此时照常按本 skill 自身的知识作答,不必提及知识库。
 
 知识库存在时,涉及 GaussDB/openGauss **规范条款、设计取舍、口径定义**:
 
 - 先读知识库根目录 `INDEX.md` 选定条目,再只读相关文件的相关小节;
-  关键词定位用 `grep -rn "<关键词>" {kbDir}/errata {kbDir}/rules {kbDir}/guides`。
+  关键词定位用 `grep -rn "<关键词>" /workspace/.opencode/kb/errata /workspace/.opencode/kb/rules /workspace/.opencode/kb/guides`。
 - 知识库与你的**自带知识**冲突时,以知识库为准(客户的规范比通用经验更贴近他们的实际);
   知识库未覆盖时,明说「知识库未覆盖,以下为通用经验」,不得把通用经验伪装成客户规范。
 - 引用知识库的结论必须带规则 ID(如 `GS-IDX-003`)或 guide 文件名+小节;引用不出来的不要写。

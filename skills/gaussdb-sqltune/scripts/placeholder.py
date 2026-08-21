@@ -84,33 +84,21 @@ def _format_bind_value(value: str, type_name: str | None, left_ctx: str) -> str:
     command-line value '2024-01-01 00:00:00' reaches this function without the
     quotes, but a ``TIMESTAMP ?`` expression still requires a SQL-quoted value.
     Explicit SQL literals remain supported for callers that already pass them.
-
-    判定顺序要紧,**列类型优先于值的长相**:账号/机构号是"存在 varchar 列里的
-    纯数字",按长相放行会拼出 `acct_no = 6222021234567`(operator does not
-    exist: character varying = bigint)。类型未知时才退回按值判断,兜底一律引
-    起来——bind 收的是数据值不是 SQL 片段,裸文本拼进去会被当成标识符,报
-    `column "abc" does not exist`,而这个报错根本指不到 bind 上。
     """
     raw = value.strip()
     if not raw or _is_explicit_sql_literal(raw):
         return raw
     if _needs_quoted_bind(type_name, left_ctx):
         return "'" + raw.replace("'", "''") + "'"
-    # 数值列的错值不引:留着裸值让 coltypes.validate_binds 报出错位,
-    # 引起来反而把 'L1' 伪装成一个合法字符串字面量。
-    if is_numeric_type(type_name) or _NUMERIC_LITERAL_RE.match(raw):
-        return raw          # 裸数字也是 LIMIT ? / OFFSET ? 唯一能用的形态
-    return "'" + raw.replace("'", "''") + "'"
+    return raw
 
 
 def _is_explicit_sql_literal(value: str) -> bool:
-    """调用方自己就给了 SQL 字面量(或 NULL/CURRENT_DATE 这类关键字)。
-
-    刻意不含"看着像数字"——那要等类型判完再说,见 _format_bind_value。
-    """
     if _SINGLE_QUOTED_LITERAL_RE.match(value):
         return True
-    return value.lower() in _RAW_SQL_LITERALS
+    if value.lower() in _RAW_SQL_LITERALS:
+        return True
+    return _NUMERIC_LITERAL_RE.match(value) is not None
 
 
 def _needs_quoted_bind(type_name: str | None, left_ctx: str) -> bool:
