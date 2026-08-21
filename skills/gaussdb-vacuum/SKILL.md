@@ -109,8 +109,4 @@ python3 {baseDir}/scripts/vacuum.py -c <连接名> [--limit 20] [--format json] 
 
 ## 安全红线
 
-- **配置文件里绝不允许出现明文口令。** `config.yaml` 只放连接元数据 —— 它会被 cat、会进备份、会被贴进工单和聊天窗口，而没人会想到里面藏着生产库口令。口令一律加密存放在 `$GSDB_HOME/credentials/*.enc`（AES-256-GCM，AAD 绑定连接名），由脚本自动解密，**你不要去读取或解密它**。
-  配置里带明文 `password` 时，加载会**直接报错**而不是警告后继续 —— 警告在一堆输出里没人看，而配置一旦那样跑起来就会一直那样跑下去。
-  发现用户配置里有明文口令时，提示他改用：`python3 -m common.credential_cli set <连接名>`，然后删掉配置里的 password/encrypted 两行。
-
 - **本 skill 只评估，绝不执行 `VACUUM`/`VACUUM FULL`/`ANALYZE`，你也不得代它执行。** `VACUUM FULL` 会对表加 `ACCESS EXCLUSIVE` 锁并整表重写——大表上这就是一次停服，什么时候能做、要不要做，取决于维护窗口，这个判断权在懂维护窗口的人手里，不在工具手里。普通 `VACUUM` 虽然轻得多，但在繁忙实例上仍然会跟正常业务抢 IO，同样不该由工具自作主张跑。发现死元组风险后，本 skill 只给出评估结果与证据，不生成、不建议自己执行任何清理命令。

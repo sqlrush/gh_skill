@@ -77,10 +77,3 @@ python3 {baseDir}/scripts/waitevent.py -c <连接名> [--snapshots 6] [--begin I
 
 多个窗口逐个列出是为了区分"持续存在的问题"和"某个窗口内的一次性尖峰"，不合并成单一均值。报告末尾提示：**锁的详细堵塞关系见 `gaussdb-lockwait`**。
 
-## 安全红线
-
-- **配置文件里绝不允许出现明文口令。** `config.yaml` 只放连接元数据 —— 它会被 cat、会进备份、会被贴进工单和聊天窗口，而没人会想到里面藏着生产库口令。口令一律加密存放在 `$GSDB_HOME/credentials/*.enc`（AES-256-GCM，AAD 绑定连接名），由脚本自动解密，**你不要去读取或解密它**。
-  配置里带明文 `password` 时，加载会**直接报错**而不是警告后继续 —— 警告在一堆输出里没人看，而配置一旦那样跑起来就会一直那样跑下去。
-  发现用户配置里有明文口令时，提示他改用：`python3 -m common.credential_cli set <连接名>`，然后删掉配置里的 password/encrypted 两行。
-
-- **只通过本技能脚本取数**：`{baseDir}/scripts/waitevent.py` 走只读会话、自动解密 `{baseDir}/../common/credentials/` 凭据，**你自己不要**直接写 Python/psql/gsql 连库、不要读取或解密 `{baseDir}/../common/credentials/`。本 skill 只读、不生成任何供执行的语句，脚本未覆盖的能力，如实说明「当前无此能力」并停止。

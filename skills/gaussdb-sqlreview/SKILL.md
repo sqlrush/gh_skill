@@ -101,11 +101,6 @@ metadata:
 
 ## 安全红线
 
-- **配置文件里绝不允许出现明文口令。** `config.yaml` 只放连接元数据 —— 它会被 cat、会进备份、会被贴进工单和聊天窗口，而没人会想到里面藏着生产库口令。口令一律加密存放在 `$GSDB_HOME/credentials/*.enc`（AES-256-GCM，AAD 绑定连接名），由脚本自动解密，**你不要去读取或解密它**。
-  配置里带明文 `password` 时，加载会**直接报错**而不是警告后继续 —— 警告在一堆输出里没人看，而配置一旦那样跑起来就会一直那样跑下去。
-  发现用户配置里有明文口令时，提示他改用：`python3 -m common.credential_cli set <连接名>`，然后删掉配置里的 password/encrypted 两行。
-
-- **只通过本技能脚本取数**：`{baseDir}/scripts/sqlreview.py` 走只读会话、自动解密 `{baseDir}/../common/credentials/` 凭据，**你自己不要**直接写 Python/psql/gsql 连库、不要读取或解密 `{baseDir}/../common/credentials/`。脚本未覆盖的能力，如实说明「当前无此能力」并停止。
 - **只读审查**：本技能不执行任何变更。所有整改建议（加主键、删外键、删冗余索引、
   改逻辑删除）一律只给 SQL 文本并标注 `[需人工执行]`，绝不代为执行。
 - **不得替脚本判定**：不要绕过 `rules.yaml` 自行认定某条 SQL "不合规"，也不要

@@ -43,11 +43,4 @@ metadata:
 4. **若输出带 🛑「SQL 被 openGauss 截断」**：说明这条 SQL 太长、超过 `track_activity_query_size`，库里留存的就是半截文本（数据库侧 `track_activity_query_size` 的留存限制）。**不要**拿它去 explain/调优——向用户索要完整 SQL，后续 explain/sqltune 都用 `--sql-stdin` 传完整文本。
 5. 下一步建议：走 explain 工作流快速看计划，或走 sqltune 工作流做深度调优。
 
-## 安全红线
-
-- **配置文件里绝不允许出现明文口令。** `config.yaml` 只放连接元数据 —— 它会被 cat、会进备份、会被贴进工单和聊天窗口，而没人会想到里面藏着生产库口令。口令一律加密存放在 `$GSDB_HOME/credentials/*.enc`（AES-256-GCM，AAD 绑定连接名），由脚本自动解密，**你不要去读取或解密它**。
-  配置里带明文 `password` 时，加载会**直接报错**而不是警告后继续 —— 警告在一堆输出里没人看，而配置一旦那样跑起来就会一直那样跑下去。
-  发现用户配置里有明文口令时，提示他改用：`python3 -m common.credential_cli set <连接名>`，然后删掉配置里的 password/encrypted 两行。
-
-- **只通过本技能脚本取数**：`{baseDir}/scripts/sqlfetch.py` 走只读会话、自动解密 `{baseDir}/../common/credentials/` 凭据，**你自己不要**直接写 Python/psql/gsql 连库、不要读取或解密 `{baseDir}/../common/credentials/`。脚本未覆盖的能力，如实说明「当前无此能力」并停止。
 
