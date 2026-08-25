@@ -20,10 +20,6 @@ ORDER BY cnt DESC;
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.db_concurrency', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT deadlocks, xact_commit, xact_rollback
 FROM pg_stat_database WHERE datname=current_database();
 ', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
-INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.db_info', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'select pg_encoding_to_char(encoding) as encoding_name, *
-from pg_database
-where datname not in (''template1'',''postgres'',''template0'');
-', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.invalid_index', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT count(*) AS cnt FROM pg_index WHERE NOT indisvalid;
 ', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.long_xact', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT pid,
@@ -231,7 +227,7 @@ INSERT INTO grmp.script_config (id, script_type, script_name, database_type, ref
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'proctune.indexes', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT t.relname AS table_name, i.relname AS index_name,
        ix.indisunique, ix.indisprimary,
        pg_get_indexdef(ix.indexrelid) AS index_def
-FROM pg_class tt
+FROM pg_class t
 JOIN pg_index ix ON t.oid = ix.indrelid
 JOIN pg_class i ON i.oid = ix.indexrelid
 WHERE t.relname IN ({{names}});
