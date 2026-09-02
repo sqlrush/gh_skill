@@ -181,7 +181,7 @@ def _describe(conn: Connection, note: str, path) -> str:
     if conn.driver == "grmp":
         out += render.table(
         ["项", "值"],
-        [["模式", "api（GRMP 中间件"],
+        [["模式", "api（GRMP 中间件）"],
          ["应用", conn.app or "—"],         
          ["实例 IP（dataIp）", conn.data_ip],
          ["数据库", conn.database] ,

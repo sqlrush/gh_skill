@@ -13,6 +13,7 @@ import yaml
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 _SKILLS = sorted(_ROOT.glob("skills/*/SKILL.md"))
+_AGENTS = _ROOT / "AGENTS.md"
 
 
 def _frontmatter(text: str) -> dict:
@@ -48,27 +49,51 @@ def test_frontmatter_is_intact(path):
 
 
 @pytest.mark.parametrize("path", _SKILLS, ids=lambda p: p.parent.name)
-def test_has_exactly_one_security_section(path):
+def test_security_section_is_not_duplicated(path):
     """两个「## 安全红线」的话，后一个多半是批量插入插重了，
-    而读的人只会看到第一个。"""
+    而读的人只会看到第一个。
+
+    全局红线已集中到 AGENTS.md（见下），SKILL.md 里只留各 skill
+    特有的红线 —— 可以没有这一节，但不能有两节。
+    """
     text = path.read_text(encoding="utf-8")
-    assert text.count("\n## 安全红线") == 1, (
+    assert text.count("\n## 安全红线") <= 1, (
         "%s 的「## 安全红线」出现 %d 次"
         % (path.parent.name, text.count("\n## 安全红线")))
 
 
-@pytest.mark.parametrize("path", _SKILLS, ids=lambda p: p.parent.name)
-def test_plaintext_password_redline_present_once(path):
-    """**每个 skill 都要有这一条，且只有一条。**
+# AGENTS.md 是现场 agent 的全局提示词，这些短语是交付物的安全承诺。
+# 计数用短语刻意取自红线的**开头**，措辞微调不至于误伤，整条删掉一定变红。
+_GLOBAL_REDLINES = (
+    "禁止出现明文口令",          # 明文口令红线（原先散在每个 SKILL.md）
+    "credential_cli",           # 红线必须告诉用户下一步跑什么
+    "禁止直接读取或者解密口令",   # 凭据文件只能经脚本解密
+    "禁止提供敏感信息",          # 内置 SQL / 密钥 / 连接串不外泄
+    "禁止提供接口信息",          # 端点、IP、接口路径不外泄
+)
 
-    它是 v4 的核心约束：配置里出现明文口令时加载会直接失败，模型得知道
-    该提示用户怎么改，而不是把这个错当成配置坏了。
+
+def test_global_redlines_live_in_agents_md():
+    """全局安全红线 2026-08 从 14 个 SKILL.md 集中进了 AGENTS.md。
+
+    集中的意义是只有一份可改：AGENTS.md 里这几条静默消失，或哪个
+    SKILL.md 里残留旧副本（两份会各自烂掉 —— 改了一处忘另一处，
+    模型读到的就是旧规则），都要在这里变红。
     """
-    text = path.read_text(encoding="utf-8")
-    n = text.count("配置文件里绝不允许出现明文口令")
-    assert n == 1, "%s 出现 %d 次（应恰好 1 次）" % (path.parent.name, n)
-    assert "credential_cli" in text, (
-        "%s 的红线没告诉用户下一步跑什么" % path.parent.name)
+    assert _AGENTS.exists(), "AGENTS.md 不存在 —— 全局安全红线没了载体"
+    text = _AGENTS.read_text(encoding="utf-8")
+    for phrase in _GLOBAL_REDLINES:
+        n = text.count(phrase)
+        assert n == 1, (
+            "AGENTS.md 里「%s」出现 %d 次（应恰好 1 次）—— "
+            "0 次是红线被删了，2 次多半是批量编辑插重了" % (phrase, n))
+
+    leftovers = [p.parent.name for p in _SKILLS
+                 if "配置文件里绝不允许出现明文口令"
+                 in p.read_text(encoding="utf-8")]
+    assert not leftovers, (
+        "这些 SKILL.md 还残留着已集中到 AGENTS.md 的明文口令红线副本：%s"
+        % leftovers)
 
 
 @pytest.mark.parametrize("path", _SKILLS, ids=lambda p: p.parent.name)

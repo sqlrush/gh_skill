@@ -107,6 +107,3 @@ metadata:
 - 可以优先检查 ...
 - 如果要继续验证收益，转 gaussdb-proctune。
 ```
-
-
-
