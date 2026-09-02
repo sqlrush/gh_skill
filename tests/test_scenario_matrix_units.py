@@ -128,7 +128,7 @@ def test_cases_cover_every_installed_skill():
     covered = {g for g, _n, _e, _a, _s in cases}
     expected = {"login", "topsql", "slowsql", "sqlfetch", "explain", "health",
                 "sqlreview", "sqltune", "procinfo", "topproc", "proctune",
-                "wdr", "memanalyze", "kbimport"}
+                "wdr", "memanalyze", "kb"}
     assert expected <= covered, "没有用例的 skill：%s" % (expected - covered)
 
 

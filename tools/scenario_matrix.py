@@ -167,9 +167,9 @@ def build_cases(sqlid: str):
     case("memanalyze", "watch count 太小应拒", "reject",
          [ma, "watch", "--count", "2", "--interval", "1"])
 
-    kb = skill("kbimport")
-    case("kbimport", "search 缺关键词应拒", "reject", [kb, "search"])
-    # 刻意不测 `kbimport contract`：安装目录里它**必然**报 stale ——
+    kb = skill("kb")
+    case("kb", "search 缺关键词应拒", "reject", [kb, "search"])
+    # 刻意不测 `kb contract`：安装目录里它**必然**报 stale ——
     # install-opencode.sh 会把 {kbDir} 替换成真实路径，契约块内容随之改变，
     # 一致性校验就判成过期。那条只能对仓库跑。
     return cases

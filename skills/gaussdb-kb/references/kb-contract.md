@@ -1,4 +1,4 @@
-<!-- KB-CONTRACT:BEGIN — 本块由 gaussdb-kbimport contract 管理,块内修改会被覆盖 -->
+<!-- KB-CONTRACT:BEGIN — 本块由 kb contract 管理,块内修改会被覆盖 -->
 ## 用户知识库(领域知识的参考来源,先查后答)
 
 **优先级链(高 → 低):本 SKILL.md 与 `{baseDir}/references/` 的内容 > 用户知识库 > 你的自带知识。**
@@ -14,8 +14,12 @@
 
 知识库存在时,涉及 GaussDB/openGauss **规范条款、设计取舍、口径定义**:
 
-- 先读知识库根目录 `INDEX.md` 选定条目,再只读相关文件的相关小节;
-  关键词定位用 `grep -rn "<关键词>" {kbDir}/errata {kbDir}/rules {kbDir}/guides`。
+- **先读 `RULES.md`**(现行条款的逐条全量清单):对着当前对象逐条判断相关性,
+  **不必猜该搜什么关键词——条款都在清单里**;选中后到 `rules/` 读该条全文
+  (rationale / criteria / keywords)。这道「逐条过一遍」是主路径,别跳过。
+- `INDEX.md` 是文件级地图(errata / guides / archive 一览)。作为补充,仍可用
+  `grep -rn "<关键词>" {kbDir}/errata {kbDir}/rules {kbDir}/guides` 定位关键词
+  (archive/ **有意**不在范围内);grep 是辅助,读 `RULES.md` 才是主路径。
 - 知识库与你的**自带知识**冲突时,以知识库为准(客户的规范比通用经验更贴近他们的实际);
   知识库未覆盖时,明说「知识库未覆盖,以下为通用经验」,不得把通用经验伪装成客户规范。
 - 引用知识库的结论必须带规则 ID(如 `GS-IDX-003`)或 guide 文件名+小节;引用不出来的不要写。
