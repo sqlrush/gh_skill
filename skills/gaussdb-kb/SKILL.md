@@ -10,145 +10,112 @@ metadata:
   family: sql-governance
 ---
 
-# KB Import(规范知识库导入与治理)
+# KB(客户知识库:规范 + 工单 → 向量库 + 图库)
 
-分工铁律:**确定性工作由脚本做**(转换/快照/索引/校验/检索/契约注入),
-**语义工作由你做**(条款分类、起草、ID 分配)。你写入的每一条都必须能指回原文。
+分工铁律:**确定性工作由脚本做**(转换 / 快照 / 校验 / 出处回指 / 索引 / 检索 / 契约注入 / 写库),
+**语义工作由你做**(条款分类、案例抽取、把选择列表呈现给用户并收集回答)。
+**关键数据写入之前,一律先生成选择列表让用户确认**——你只提议,用户按编号定,脚本落盘。
+你写入的每一条都必须能指回原文;指不回去的不入库。
 
-## 工作流
+命中以下请求时,必须使用本 skill 并实际执行脚本,不要只做概念解释:导入规范 / 导入工单(问题分析报告、ITSM 导出)/
+建知识库 / 更新规范库 / 知识库里有没有类似案例 / 让 skill 按我们的经验来。
 
-1. **预检。** 运行 `python3 {baseDir}/scripts/kb.py -h`。报缺 PyYAML 就提示
-   `python3 -m pip install PyYAML`,然后停下。
+## 0. 预检
 
-2. **导入(脚本)。**
+```bash
+python3 {baseDir}/scripts/kb.py health
+```
 
-   ```bash
-   python3 {baseDir}/scripts/kb.py ingest 客户规范.docx
-   ```
+状态行第一行说明一切:`知识库未接入(原因)` 时按 `{baseDir}/references/storage-setup.md` 引导用户配 `kb.yaml`
+与凭据(`python3 -m common.credential_cli set kb-pg` / `kb-graph`),然后 `kb.py setup`。**不要自己去读凭据文件**。
+没配存储也能走规范路径(文件级索引照常),只是各 skill 的「客户知识库参照」小节会写「未接入」。
 
-   产出:`<kb>/sources/` 原文快照、`<kb>/inbox/<slug>/source.md`(归一化文本)、
-   `outline.md`(标题大纲)。`.doc` / `.pdf` 转换失败时,把脚本给出的原因和建议
-   **如实转告用户,停下,不要自己猜内容**。
+## 1. 规范路径(txt/md/docx/doc/pdf → 条款)
 
-   **PDF 的特殊性**:扫描件 PDF 里的字是图片,`pdftotext` 对它**成功退出却输出空文本**。
-   脚本有质量闸门,提取过少或疑似乱码时**直接报错拒绝导入**(退出码 1),不会写出
-   空的 source.md。撞上这个,如实告诉用户「这是扫描件,需要先 OCR」,**不要试图绕过**。
-   客户若同时有 `.docx` 和 `.pdf`,**永远优先要 `.docx`**——PDF 的提取质量差得多
-   (双栏排版会错乱、表格结构会丢),主动向用户要原件。
-   KB 位置:`--kb <目录>` > `$GSDB_KB_DIR` > **`<安装根>/kb`**(脚本会打印实际路径)。
-   `<安装根>` 从脚本自身位置推导,与 skill **装在一起**:全局安装 → `~/.config/opencode/kb/`,
-   项目安装 → `<项目>/.opencode/kb/`。**知识库在 `skills/` 的同级目录,不在 skill 目录内部**
-   ——install 每次重装会 `rm -rf` 整个 skill 目录,放里面会被删光。客户无需配任何环境变量。
-
-3. **条款化(你的核心工作)。** 先读 `{baseDir}/references/kb-layout.md`(格式与 ID 规范,
-   必须遵守),再按 `outline.md` 分段读 `source.md`,逐条分类:
-   - 能写成「看到 X 即违规」→ `rules/<域>.yaml` 条款;拿不准 → `check: advisory`;
-   - 讲设计方法/权衡 → `guides/*.md`;
-   - 与库内既有条款矛盾/版本特例 → `errata/`。
-
-   硬性要求:每条带 `source` 指回原文小节;每条 rules 条款补 3-6 个 `keywords`
-   同义词(客户用语 + 通用叫法 + 英文,让运行时字面检索能跨越叫法差异);
-   分配 ID 前先 `kb.py search GS-<域>- --include-archived` 查最大号
-   (**必须带 `--include-archived`**,否则会漏掉已废止的号段而重复分配),**ID 永不复用**;
-   条款超过 10 条时,先给用户看「ID + 一句话 + 去向文件」清单,确认后再写入;
+1. **导入**:`python3 {baseDir}/scripts/kb.py ingest 客户规范.docx`
+   产出 `<kb>/sources/` 原文快照、`<kb>/inbox/<slug>/source.md` + `outline.md`。
+   `.doc` / `.pdf` 转换失败或 PDF 是扫描件时脚本会**拒绝导入并说明原因**——如实转告用户,停下,不要自己猜内容;
+   客户若同时有 `.docx` 和 `.pdf`,永远优先要 `.docx`。
+2. **条款化(你的核心工作)**:先读 `{baseDir}/references/kb-layout.md`(格式与 ID 规范),再按 `outline.md` 分段读 `source.md`:
+   能写成「看到 X 即违规」→ `rules/<域>.yaml`(拿不准 → `check: advisory`);讲设计方法/权衡 → `guides/*.md`;
+   与库内既有条款矛盾/版本特例 → `errata/`。每条带 `source` 指回原文小节,rules 条款补 3-6 个 `keywords` 同义词;
+   分配 ID 前 `kb.py search GS-<域>- --include-archived` 查最大号,**ID 永不复用**。
+3. **确认后再写**:条款超过 10 条时,先给用户一张「ID + 一句话 + 去向文件 + 新增/沿用/修改/废止」清单,确认后再写入;
    原文模糊、前后矛盾的条款单独列出问用户,**不要替客户定规范**。
+   `ingest` 打印「⚠ 换版导入」时,必须先读 `INDEX.md` 逐条比对,废止的**整条移进 `archive/<域>.yaml`** 并标
+   `status: deprecated`(各 skill 用 grep 检索 rules/,留在原处只打标记照样会被命中——物理隔离才拦得住),最后递增 `VERSION`。
+4. **写入 → 索引 → 校验**:用 write 工具写 `<kb>/rules|guides|errata|archive/`,删掉处理完的 `inbox/<slug>/`,然后
+   `kb.py index` 与 `kb.py validate`(`[error]` 必须清零,`[warn]` 逐条向用户说明)。
 
-3b. **换版分支(ingest 打印了「⚠ 换版导入」时,这一步不可跳过)。**
+## 2. 工单路径(xlsx/csv/md/docx → 案例 + 图)
 
-   知识库里已有条款,说明这是**规范升版**,不是首次导入。**先读 `<kb>/INDEX.md`**,
-   把新版原文与库里现有条款**逐条比对**,给用户一张表:
-   `ID | 一句话 | 新增 / 沿用 / 修改 / 废止`,**确认后**再动手:
+1. **导入**:`python3 {baseDir}/scripts/kb.py ingest 工单导出.xlsx [--redact]`
+   一单一文件到 `inbox/<slug>/items/`,脚本猜的列映射会打印出来——**列映射不对就告诉用户改列名或用 `--kind`/`--slug`**。
+   `--redact` 确定性脱敏 IP / 手机号 / 证件号 / 邮箱(对象名不动)。原文马上进索引(`kind=raw`),当天可被检索。
+2. **首次导入这类材料**:`kb.py propose <slug>` 会打印 3–5 个策略问题(引擎、默认级别、系统命名、对象名前缀、结论强度口径)。
+   **逐题向用户确认**,把答案写进 `<kb>/strategies/tickets.yaml`(键值即可),之后同类材料不再问。
+3. **抽取(你的核心工作)**:`propose` 出的 `inbox/<slug>/work/NNN.json` 每单一份:原文 + `candidate_template` + 已知实体。
+   逐单阅读,按模板写 `inbox/<slug>/candidates.json`(JSON 数组)。硬性要求:
+   - 每个 `quotes` / `entities[].quote` / `edges[].quote` 都必须是**原文里逐字出现的片段**(review 会逐条核对,对不上整项作废);
+   - 拿不准的字段留空,不要编;根因没写明就 `conclusion: 推测`;
+   - 实体用原文叫法,`known_entities` 里有同一个东西就用它的名字;
+   - 边只写原文能支撑的 现象→根因(`caused_by`)、根因→处置(`handled_by`),`confidence` 是你的把握(0.5–0.9);
+   - 每轮 5–10 单,多的下一轮 `propose --offset` 续跑。
+4. **选择列表(写库前的唯一闸门)**:`kb.py review <slug>` 生成 `review.md`——**原样呈现给用户**(格式与各类默认见
+   `{baseDir}/references/selection-list.md`),收集回答。`[边]` 没有默认接受:用户不答就留候选(可检索,不进「本行历史路径」);
+   用户不答的你不要替他答。清单里有 `[error]`(出处回指失败、ID 重复、字段缺失)先修候选再 review。
+5. **落盘**:把用户的回答翻成参数执行
+   `kb.py apply <slug> --all-but-edges --accept 7,8 [--reject 10] [--edit 2:S1] --user <工号>`,
+   然后 `kb.py validate && kb.py index`。处理完的工单会从 `items/` 移走;`health` 显示还剩几单。
 
-   - **新增** → 分配新 ID 写进 `rules/`;
-   - **修改** → 原地改 `rules/` 里那条(ID 不变,`source` 更新到新版小节);
-   - **废止** → **整条移进 `archive/<域>.yaml`**,补 `status: deprecated` 与
-     `superseded_by`,**绝不直接删除**;
-   - **沿用** → 不动。
+案例格式见 `{baseDir}/references/case-format.md`,图的 kind/rel 见 `{baseDir}/references/graph-schema.md`。
 
-   最后手工递增 `<kb>/VERSION`。
+## 3. 查询(用户直接问"以前有没有类似情况")
 
-   **为什么废止必须移走而不是打标记**:各 skill 用 `grep -rn` 检索 `rules/`,而 grep
-   只输出**命中行**——一条留在 `rules/` 里仅标了 `status: deprecated` 的条款,模型搜
-   「外键」时看到的是 `rules/table.yaml:12: rule: 禁止使用外键约束`,**看不到 status 那行**,
-   照样会按已作废的规范判客户违规,且**不会有任何报错**。`archive/` 不在 grep 范围内,
-   物理隔离才拦得住。`validate` 会双向校验:标了没移、移了没标,都是 `[error]`。
+```bash
+python3 {baseDir}/scripts/kb.py query --q "<用户的问题>"
+```
 
-   **漏掉这一步的后果**:客户已经废止的规范继续被用来判违规,报告还煞有介事地引用
-   一份客户自己都作废了的原文出处。这是纯粹的静默失效,必须避免。
+输出就是各诊断 skill 里同款的「客户知识库参照」小节:贵行规范 / 历史相似(带结论强度与处置)/ 本行历史路径
+(只含客户确认过的边,标几个案例支持)/ 原始工单。**引用必带 ID 与出处**;写着「无」就如实说「本行无先例,以下为通用做法」;
+绝不编案例或规范。有 findings 的 skill(health / sqltune / …)不用你查——它们的脚本已经把这一节写进输出了。
 
-4. **写入。** 用 write 工具把草稿写进 `<kb>/rules|guides|errata/`(废止的写进 `<kb>/archive/`),
-   然后删除处理完的 `inbox/<slug>/`。
+## 4. 契约注入(让做判断的 skill 先查知识库)
 
-5. **索引 + 校验(脚本)。**
+```bash
+python3 {baseDir}/scripts/kb.py contract            # 扫描,给用户看状态
+python3 {baseDir}/scripts/kb.py contract --apply    # 用户确认后执行
+```
 
-   ```bash
-   python3 {baseDir}/scripts/kb.py index
-   python3 {baseDir}/scripts/kb.py validate
-   ```
+契约块(`{baseDir}/references/kb-contract.md`)幂等注入 9 个做规范/阈值/诊断判断的 skill 的 `KB-CONTRACT` 标记区,
+标记区外一字不动;标记区损坏时跳过该文件并报错。纯取数的 skill(slowsql / topsql / sqlfetch / explain / topproc / procinfo)不注入。
+**治理边界(向用户讲清)**:skill 自身 SKILL.md 与脚本的确定性判定 > 知识库 > 模型自带知识。知识库管「客户怎么说、以前怎么处置」,
+管不着「skill 怎么工作」,**不改 severity**;不一致时并列呈现交用户裁决。安装目录副本会被下次 install 覆盖,源码仓也要 apply。
 
-   validate 报 `[error]` 必须改到 0 才算导入完成;`[warn]` 逐条向用户说明。
-   校验项:文件编码、rule schema 与 ID 唯一性(跨 `rules/` 与 `archive/`)、
-   **废止条款的摆放位置**(标了没移 / 移了没标,都是 error)、guides frontmatter、
-   INDEX 一致性、inbox 是否还有未处理项。
+## 5. 验证闭环
 
-   **编码检查**:`rules/` `guides/` `errata/` `archive/` 里的文件必须是 UTF-8。非 UTF-8(如 GBK)
-   会被各 skill 的 `grep` **静默漏掉**(不报错,只是搜不到),导致模型误以为「知识库未覆盖」
-   而拿通用经验作答。validate 会报 `[error]` 并给出可直接执行的转码命令。
-   (`sources/` 是原文快照,保留客户原编码,不检查。)
-
-6. **契约注入(脚本,让做规范判断的 skill 先查知识库)。**
-
-   ```bash
-   python3 {baseDir}/scripts/kb.py contract            # 先扫描,给用户看状态
-   python3 {baseDir}/scripts/kb.py contract --apply    # 用户确认后执行
-   ```
-
-   契约块(见 `{baseDir}/references/kb-contract.md`)幂等注入到 `KB-CONTRACT` 标记区,
-   标记区外一字不动;标记区损坏时**跳过该文件并报错**,绝不猜着写。
-
-   **只注入会做规范/阈值判断的 skill**:`sqlreview` / `health` / `wdr` / `memanalyze` /
-   `sqltune` / `proctune`。`slowsql` / `topsql` / `sqlfetch` / `explain` / `topproc` /
-   `procinfo` 是纯取数(列表格、还原 SQL 文本),不注入。
-
-   **治理边界(务必向用户讲清)**:优先级链是
-   **skill 自身 SKILL.md 与脚本的确定性判定 > 知识库 > 模型自带知识**。
-   知识库管「规范条款说了什么」,管不着「skill 怎么工作」——它不能推翻 sqlreview 的
-   `rules.yaml` 判定结果,两边不一致时并列呈现、交用户裁决。
-
-   **提醒用户**:安装目录(`~/.config/opencode/skills`)的副本会被下次 install 覆盖,
-   源码仓要一并 `--apply --skills-dir <仓库>/skills` 并提交。
-
-7. **验证闭环。** 挑 1-2 条新入库条款演示 `kb.py search <关键词>` 能命中;
-   建议用户按 kb-layout.md 埋 2-3 条金丝雀条款并记录 ID,定期抽查各 skill
-   是否真按知识库作答。
+- `kb.py health`:状态行、覆盖率、待处理、**缺口清单**(近期查不到条款/案例的发现——提示该补哪类材料);
+- `kb.py eval`:跑 `<kb>/eval/queries.yaml` 的黄金查询与金丝雀案例(与通用做法**故意相反**的客户处置),recall 不达标退出 2;
+- 挑 1–2 条新入库案例演示 `kb.py query --q` 能命中;建议客户埋 2–3 个金丝雀案例定期抽查各 skill 是否真按知识库作答。
 
 ## 退出码语义
 
-`0` = 成功;`1` = 运行错误(格式不支持、转换失败、路径不存在);
-`2` = 有待处理项(validate 有 error / contract 扫描发现缺契约)。
-退出码 2 不是失败,是「有活没干完」,逐条处理即可。
+`0` = 成功;`1` = 运行错误(格式不支持、转换失败、存储/凭据错误);`2` = 有待处理项(validate 有 error、review 有待定项、
+覆盖率不足、health 有待处理)。退出码 2 不是失败,是「有活没干完」。
 
 ## 能力边界(如实说明,不要假装)
 
-- 条款分类是**你**做的语义判断,不是脚本判定——写入前必须经用户确认,
-  且每条都要能指回原文;指不回去的不入库。
-- `.doc` 依赖系统转换器(macOS textutil / antiword),`.pdf` 依赖 poppler 的 pdftotext
-  (或 mupdf 的 mutool);都没有时如实告知安装命令,或请用户转成 .txt/.docx。
-- **PDF 只能提取「文本型」PDF**。扫描件(图片型)不做 OCR,脚本会拒绝导入并说明原因——
-  这是刻意的:入库一个空文档或一堆乱码,比明确报错危险得多。双栏排版会错乱、
-  表格结构会丢失,所以 `.docx` 原件永远优于 `.pdf`。
-- 脚本的 search 是关键词匹配,不是语义检索;没命中不代表库里没有相关内容,
-  可换关键词或读 INDEX.md 后定向读文件。search **不含已废止条款**(与各 skill 的
-  grep 范围一致);命中了已废止条款时它会提示条数,但不显示内容——废止条款**不得用于判定**。
-- 「哪条该废止」是**你**的语义比对,脚本判定不了。脚本只能确定性地告诉你
-  「这是换版导入,库里已有 N 条」,并在你标错位置(标了没移 / 移了没标)时报 error。
+- 条款分类、案例抽取是**你**的语义判断;写入前必须经用户确认(选择列表),且每项都要能指回原文;指不回去的作废。
+- `.doc` / `.pdf` 依赖系统转换器(textutil / antiword / pdftotext);扫描件不做 OCR,脚本会拒绝并说明。
+- 向量检索依赖 `kb.yaml` 配的 embedding 端点;没配或端点无嵌入模型时只走词法 + 图,状态行会写「向量:未启用」——**不要假装有向量**。
+- Neo4j 不可达时路径小节为空、状态行写「图:不可用」;高斯/PG 不可达时整节只剩「未接入」。这些都是降级,不是失败,skill 照常。
+- 「哪条边该确认」「哪个实体该归一」是用户的决定;脚本只能确定性地把候选摆出来、把回答落盘。
 
 ## 安全红线
 
-- 本技能**不连数据库**、不读取 `~/.gdaa/credentials/`。
-- 只写知识库目录(`<kb>/` 下)与各 SKILL.md 的 `KB-CONTRACT` 标记区,
-  不改任何 skill 的其他内容、不改脚本代码。
-- `sources/` 里的原文快照只读,条款化时不得改写原文;规范内容有疑义时问用户,
-  不得自行"修正"客户的规范。
+- 本技能只连**知识库专用**的高斯/PG 与 Neo4j(口令经 `common.credential` 解密),**不连被管业务库**,不读取或解密 `credentials/`。
+- 只写 `<kb>/` 目录与各 SKILL.md 的 `KB-CONTRACT` 标记区,不改任何 skill 的其他内容、不改脚本代码。
+- `sources/` 里的原文快照只读;规范或工单内容有疑义时问用户,不得自行"修正"客户的材料。
+- 工单原文可能含 IP / 账号 / 人名:导入时用 `--redact`;呈现选择列表与案例时不复述原文里的 IP、端口、接口地址。
 
 <!-- KB-CONTRACT 说明:本 skill 是知识库的管理者而非消费者,自身不注入契约块。 -->
