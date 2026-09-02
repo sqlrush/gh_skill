@@ -122,6 +122,41 @@ def rrf(lists: Sequence[Sequence[spg.Hit]], k: int = RRF_K) -> Dict[str, Tuple[f
     return {i: (s / top, best[i], raw[i][0], raw[i][1]) for i, s in fused.items()}
 
 
+# 英文泛词:出现在几乎每条证据/案例里,命中它们不能证明相关(pg_stat_* 拆出来的碎片尤其多)
+_GENERIC_WORDS = frozenset({
+    "database", "databases", "table", "tables", "index", "indexes", "event", "events", "stat", "stats",
+    "user", "users", "global", "snap", "snapshot", "query", "queries", "count", "total", "time", "local",
+    "value", "values", "name", "null", "select", "update", "insert", "delete", "where", "from", "size",
+    "read", "write", "hit", "high", "heavy", "class", "wait", "lock", "scan", "plan", "cpu", "io", "db",
+})
+
+
+def is_strong_token(tok: str) -> bool:
+    """能单独证明相关性的 token:标识符/代码(带 _ . :)或 ≥6 字符的词,且不是英文泛词;
+    二元组、数字、单位、pg_stat 拆出来的 stat/user 之类都不算。"""
+    if tok.isdigit() or tok in _GENERIC_WORDS:
+        return False
+    return any(ch in tok for ch in "_.:") or len(tok) >= 6
+
+
+@dataclass(frozen=True)
+class Relevance:
+    strong: int          # 命中的强 token 数
+    matched: int         # 命中的查询 token 数
+    coverage: float      # matched / 查询 token 数
+
+
+def relevance(query_tokens: Sequence[str], text: str) -> Relevance:
+    """纯函数,可解释:查询 token 里有多少落在正文里、其中多少是强 token。"""
+    q = [t for t in dict.fromkeys(query_tokens) if not t.isdigit()]
+    if not q:
+        return Relevance(0, 0, 0.0)
+    have = set(kbtext.tokenize(text))
+    matched = [t for t in q if t in have]
+    strong = sum(1 for t in matched if is_strong_token(t))
+    return Relevance(strong, len(matched), len(matched) / len(q))
+
+
 def identifiers_in(text: str) -> List[str]:
     """finding 证据里像对象名 / GUC / 等待事件的整词,用来直接查图里的约束条款。"""
     out = []
@@ -261,8 +296,15 @@ class KbSession:
         fused = rrf([lex, vec] if vec is not None else [lex])
         by_kind: Dict[str, List[Tuple[float, spg.Hit]]] = {}
         seen_docs: Dict[str, float] = {}
-        for _id, (score, hit, lex_s, vec_s) in fused.items():
-            if lex_s < th.lexical_min and vec_s < th.vector_min:
+        # 两遍:先绝对门槛(强 token + 覆盖),再在幸存者里取同类最高分做相对门槛——
+        # 参照分若来自一个高分但不相关的命中,真正相关的反而会被相对门槛砍掉。
+        survivors = [(score, hit, lex_s, vec_s) for (score, hit, lex_s, vec_s) in fused.values()
+                     if self._relevant(tokens, hit, lex_s, vec_s)]
+        best_lex: Dict[str, float] = {}
+        for _score, hit, lex_s, _vec_s in survivors:
+            best_lex[hit.kind] = max(best_lex.get(hit.kind, 0.0), lex_s)
+        for score, hit, lex_s, vec_s in survivors:
+            if vec_s < th.vector_min and lex_s < best_lex.get(hit.kind, 0.0) * th.relative_floor:
                 continue
             if score > seen_docs.get(hit.doc_id, -1.0):
                 seen_docs[hit.doc_id] = score
@@ -282,10 +324,15 @@ class KbSession:
             nl = self._safe(lambda: self.pg.search_nodes_lexical(tokens, k=10, kinds=["symptom"])) or []
             nv = self._safe(lambda: self.pg.search_nodes_vector(emb, k=10, kinds=["symptom"])) if emb is not None else None
             nfused = rrf([nl, nv] if nv is not None else [nl])
-            symptom_ids = [i for i, (s, h, l, v) in sorted(nfused.items(), key=lambda p: -p[1][0])
-                           if s >= th.symptom and (l >= th.lexical_min or v >= th.vector_min)][:5]
+            node_ok = [(i, s, h, l, v) for i, (s, h, l, v) in nfused.items() if self._relevant(tokens, h, l, v)]
+            best_node = max((l for (_i, _s, _h, l, _v) in node_ok), default=0.0)
+            symptom_ids = [i for i, s, h, l, v in sorted(node_ok, key=lambda p: -p[1])
+                           if s >= th.symptom and (v >= th.vector_min or l >= best_node * th.node_relative_floor)][:3]
             today = datetime.date.today().isoformat()
             hits = self._safe(lambda: self.graph.paths(symptom_ids, today=today)) or []
+            # 按现象的匹配名次排,同一现象内再按案例支持数——不能让弱匹配的现象靠案例多挤到前面
+            rank = {sid: i for i, sid in enumerate(symptom_ids)}
+            hits = sorted(hits, key=lambda p: (rank.get(p.symptom_id, 99), -len(p.cases)))
             for p in hits[:th.top_path]:
                 paths.append(PathRef(symptom=p.symptom, rootcause=p.rootcause, action=p.action,
                                      cases=tuple(c.split(":", 1)[1] if c.startswith("case:") else c for c in p.cases),
@@ -308,6 +355,17 @@ class KbSession:
         if not refs.clauses and not refs.cases and not refs.paths:
             self._log_miss(key, q_text)
         return refs
+
+    def _relevant(self, tokens: Sequence[str], hit: spg.Hit, lex_s: float, vec_s: float) -> bool:
+        """绝对门槛:向量够像直接过;否则词法原始分要过下限,且命中至少一个强 token 并命中 ≥2 个
+        查询 token(或覆盖率达标)。相对门槛(同类最高分的比例)由调用方在幸存者里做。"""
+        th = self.cfg.thresholds if self.cfg else kbconfig.Thresholds()
+        if vec_s >= th.vector_min:
+            return True
+        if lex_s < th.lexical_min:
+            return False
+        r = relevance(tokens, f"{hit.title} {hit.content}")
+        return r.strong >= 1 and (r.matched >= 2 or r.coverage >= th.min_coverage)
 
     def _refs(self, ranked: Sequence[Tuple[float, spg.Hit]], floor: float, top: int,
               with_sections: bool = False) -> Tuple[Ref, ...]:

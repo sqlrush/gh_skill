@@ -69,6 +69,7 @@ class NodeVectorRow:
     name: str
     tokens: Sequence[str]
     signal_tokens: Sequence[str] = ()
+    signals: str = ""                       # 复发标志原文,查询时做相关度门槛用
     embedding: Optional[Sequence[float]] = None
 
 
@@ -259,7 +260,9 @@ class PgStore:
                 lex tsvector)""")
         self._execute("""
             CREATE TABLE IF NOT EXISTS kb_node_vectors (
-                node_id text PRIMARY KEY, kind text NOT NULL, name text NOT NULL, lex tsvector)""")
+                node_id text PRIMARY KEY, kind text NOT NULL, name text NOT NULL, lex tsvector, signals text)""")
+        if not self._has_column("kb_node_vectors", "signals"):
+            self._execute("ALTER TABLE kb_node_vectors ADD COLUMN signals text")
         self._execute("CREATE TABLE IF NOT EXISTS kb_meta (key text PRIMARY KEY, value text)")
         if not self._has_index("kb_chunks_doc_idx"):
             self._execute("CREATE INDEX kb_chunks_doc_idx ON kb_chunks (doc_id, seq)")
@@ -364,14 +367,14 @@ class PgStore:
             lex = lex_literal(r.tokens, r.signal_tokens)
             if has_vec:
                 stmts.append((
-                    "INSERT INTO kb_node_vectors (node_id, kind, name, lex, embedding) "
-                    "VALUES (%s, %s, %s, %s::tsvector, %s::vector)",
-                    (r.node_id, r.kind, r.name, lex,
+                    "INSERT INTO kb_node_vectors (node_id, kind, name, lex, signals, embedding) "
+                    "VALUES (%s, %s, %s, %s::tsvector, %s, %s::vector)",
+                    (r.node_id, r.kind, r.name, lex, r.signals,
                      vector_literal(r.embedding) if r.embedding is not None else None)))
             else:
                 stmts.append((
-                    "INSERT INTO kb_node_vectors (node_id, kind, name, lex) VALUES (%s, %s, %s, %s::tsvector)",
-                    (r.node_id, r.kind, r.name, lex)))
+                    "INSERT INTO kb_node_vectors (node_id, kind, name, lex, signals) VALUES (%s, %s, %s, %s::tsvector, %s)",
+                    (r.node_id, r.kind, r.name, lex, r.signals)))
         if stmts:
             self._transaction(stmts)
 
@@ -435,11 +438,11 @@ class PgStore:
             where = " AND kind IN (" + ", ".join(["%s"] * len(kinds)) + ")"
             params = list(kinds)
         rows = self._query(
-            "SELECT node_id, kind, name, ts_rank_cd(lex, %s::tsquery, 32) AS score "
+            "SELECT node_id, kind, name, ts_rank_cd(lex, %s::tsquery, 32) AS score, signals "
             "  FROM kb_node_vectors "
             f" WHERE lex @@ %s::tsquery{where} ORDER BY score DESC, node_id LIMIT %s",
             [tsq, tsq] + params + [int(k)])
-        return [Hit(id=r[0], kind=r[1], title=r[2], score=float(r[3])) for r in rows]
+        return [Hit(id=r[0], kind=r[1], title=r[2], score=float(r[3]), content=r[4] or "") for r in rows]
 
     def search_nodes_vector(self, embedding: Sequence[float], k: int = 10,
                             kinds: Optional[Sequence[str]] = None) -> List[Hit]:
@@ -451,11 +454,11 @@ class PgStore:
             params = list(kinds)
         lit = vector_literal(embedding)
         rows = self._query(
-            "SELECT node_id, kind, name, 1 - (embedding <=> %s::vector) AS score "
+            "SELECT node_id, kind, name, 1 - (embedding <=> %s::vector) AS score, signals "
             "  FROM kb_node_vectors "
             f" WHERE embedding IS NOT NULL{where} ORDER BY embedding <=> %s::vector LIMIT %s",
             [lit] + params + [lit, int(k)])
-        return [Hit(id=r[0], kind=r[1], title=r[2], score=float(r[3])) for r in rows]
+        return [Hit(id=r[0], kind=r[1], title=r[2], score=float(r[3]), content=r[4] or "") for r in rows]
 
     @staticmethod
     def _chunk_hit(r: Tuple) -> Hit:

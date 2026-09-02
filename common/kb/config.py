@@ -219,6 +219,12 @@ class Thresholds:
     symptom: float = 0.25          # 现象节点命中门槛,过了才去图里走路径
     lexical_min: float = 0.01      # 词法原始分下限(ts_rank_cd 归一),防"排第一但其实不相关"
     vector_min: float = 0.45       # 向量相似度下限(1 - 余弦距离)
+    # 绝对相关度:命中的强 token(标识符 / 代码 / ≥4 字符的词)至少 1 个,且覆盖查询 token 的比例达标;
+    # 相对相关度:词法原始分不低于同类最高分的这个比例——RRF 是按排名归一的,第 2、3 名分数照样接近 1,
+    # 没有这两道门,一个泛词("等待""占")命中的条款也会上榜。
+    min_coverage: float = 0.12
+    relative_floor: float = 0.45
+    node_relative_floor: float = 0.5
     top_clause: int = 3
     top_case: int = 3
     top_path: int = 2
@@ -306,7 +312,8 @@ def _thresholds(raw: Any) -> Thresholds:
         raise KbConfigError("kb.yaml thresholds 必须是键值映射")
     base = Thresholds()
     kwargs = {}
-    for name in ("clause", "case", "path", "chunk", "symptom", "lexical_min", "vector_min"):
+    for name in ("clause", "case", "path", "chunk", "symptom", "lexical_min", "vector_min",
+                 "min_coverage", "relative_floor", "node_relative_floor"):
         kwargs[name] = float(raw.get(name, getattr(base, name)))
     for name in ("top_clause", "top_case", "top_path", "top_raw", "top_guide"):
         kwargs[name] = int(raw.get(name, getattr(base, name)))

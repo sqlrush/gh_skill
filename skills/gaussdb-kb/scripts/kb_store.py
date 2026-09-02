@@ -271,9 +271,8 @@ def cmd_eval(args: argparse.Namespace) -> int:
             expect = [str(e) for e in (c.get("expect") or [])]
             res = kbquery.from_text(q, session=sess)
             got: List[str] = []
-            for it in res.items:
-                got += [r.id for r in it.clauses] + [r.id for r in it.cases] + [r.id for r in it.raws]
-            got = got[:k]
+            for it in res.items:      # 分类型各取前 k:条款和案例不互相挤占名额
+                got += [r.id for r in it.clauses][:k] + [r.id for r in it.cases][:k] + [r.id for r in it.raws][:k]
             ok = any(e in got for e in expect) if expect else not got
             total += 1
             hit += int(ok)

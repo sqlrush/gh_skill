@@ -285,7 +285,8 @@ def build_graph(cases: Sequence[kbcases.Case], triples: Sequence[gf.Triple], kb_
 
     vectors = [spg.NodeVectorRow(node_id=n.id, kind=n.kind, name=n.name,
                                  tokens=kbtext.tokenize(n.name),
-                                 signal_tokens=kbtext.tokenize(" ".join(signals_by_symptom.get(n.id, []))))
+                                 signal_tokens=kbtext.tokenize(" ".join(signals_by_symptom.get(n.id, []))),
+                                 signals=" ;".join(dict.fromkeys(signals_by_symptom.get(n.id, []))))
                for n in nodes.values() if n.kind in VECTOR_NODE_KINDS]
     return list(nodes.values()), edges, vectors
 

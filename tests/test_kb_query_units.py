@@ -88,15 +88,18 @@ CASE_ID = "S1-20250224-CBST-偶现单条update慢"
 
 
 def _rich_pg():
+    # 假命中的正文必须真含查询里的强 token(autovacuum / cbst.cosp_asyn_task_dtl):相关度门槛会核对。
     return FakePg(
-        lex=[_hit("case:%s#1" % CASE_ID, "case:" + CASE_ID, "case", 0.30, "偶现 update › 现场\n业务偶现单条update耗时3s",
+        lex=[_hit("case:%s#1" % CASE_ID, "case:" + CASE_ID, "case", 0.30,
+                  "偶现 update › 现场\n业务偶现单条update耗时3s,autovacuum 频繁触发 cbst.cosp_asyn_task_dtl",
                   "偶现单条 update 慢", meta={"conclusion": "已确认", "occurred_at": "2025-02-24"}),
-             _hit("rule:GS-VAC-002#0", "rule:GS-VAC-002", "rule", 0.20, "GS-VAC-002 小表按表级调大阈值",
+             _hit("rule:GS-VAC-002#0", "rule:GS-VAC-002", "rule", 0.20, "GS-VAC-002 小表 autovacuum 次数异常高时按表级调大阈值",
                   "小表 autovacuum 阈值", meta={"severity": "warn"}, source="《运维规范》v5 §6.2"),
-             _hit("raw:q1/T-100#0", "raw:q1/T-100", "raw", 0.05, "工单 T-100 原文", "工单 T-100")],
+             _hit("raw:q1/T-100#0", "raw:q1/T-100", "raw", 0.05, "工单 T-100 原文 autovacuum 次数异常高", "工单 T-100")],
         vec=[_hit("case:%s#2" % CASE_ID, "case:" + CASE_ID, "case", 0.80, "偶现 update › 判断\n持8级锁",
                   "偶现单条 update 慢", meta={"conclusion": "已确认", "occurred_at": "2025-02-24"})],
-        nodes_lex=[spg.Hit(id="symptom:update_slow", kind="symptom", title="单条 update 偶发秒级", score=0.4)],
+        nodes_lex=[spg.Hit(id="symptom:update_slow", kind="symptom", title="单条 update 偶发秒级", score=0.4,
+                           content="autovacuum 次数异常高 频繁触发")],
         sections={"case:" + CASE_ID: {"处置": "针对小表调大 autovacuum_vacuum_threshold", "现场": "x"}},
         docs={"rule:GS-VAC-002": spg.DocRow(id="rule:GS-VAC-002", kind="rule", title="小表 autovacuum 阈值",
                                              source="《运维规范》v5 §6.2", version="", meta={"severity": "warn"})})
@@ -147,12 +150,31 @@ def test_search_returns_clause_case_and_path(tmp_path):
 
 def test_search_drops_weak_hits_and_logs_miss(tmp_path):
     """词法分低于下限、又没向量佐证的命中不许凑数;整条查不到要记进 misses.log。"""
-    weak = FakePg(lex=[_hit("case:a#0", "case:a", "case", 0.001)])
+    weak = FakePg(lex=[_hit("case:a#0", "case:a", "case", 0.001, "autovacuum")])
     sess = _session(tmp_path, weak, FakeGraph(), None)
-    refs = sess.search("IDX_UNUSED", "🟡 IDX_UNUSED", "IDX_UNUSED 未使用索引")
+    refs = sess.search("IDX_UNUSED", "🟡 IDX_UNUSED", "IDX_UNUSED 未使用索引 autovacuum")
     assert refs.empty
     log = (tmp_path / "index" / "misses.log").read_text(encoding="utf-8")
     assert "IDX_UNUSED" in log
+
+
+def test_search_drops_hits_that_share_no_strong_token(tmp_path):
+    """词法分不低,但只靠「等待」这种泛二元组命中——没有一个强 token,不许上榜(真跑抓到的串台)。"""
+    generic = FakePg(lex=[_hit("case:lock#0", "case:lock", "case", 0.3, "锁等待超过 30 秒 autovacuum 频繁触发")],
+                     nodes_lex=[spg.Hit(id="symptom:lockwait", kind="symptom", title="锁等待超过 30 秒", score=0.3)])
+    sess = _session(tmp_path, generic, FakeGraph([_path()]), None)
+    refs = sess.search("WAIT_LWLOCK_HEAVY", "🟠 WAIT_LWLOCK_HEAVY",
+                       "WAIT_LWLOCK_HEAVY LWLOCK_EVENT 等待占 DB_TIME 20% autovacuum 频繁触发")
+    assert refs.cases and refs.paths == ()          # 案例含强 token autovacuum 留下;现象节点只靠「等待」→ 不走路径
+
+
+def test_relevance_counts_strong_tokens_and_coverage():
+    r = query.relevance(["wait_lwlock_heavy", "等待", "占", "autovacuum"], "锁等待超过 30 秒 autovacuum 频繁")
+    assert r.strong == 1 and r.matched == 2 and r.coverage == pytest.approx(0.5)
+    assert query.is_strong_token("wait_lwlock_heavy") and query.is_strong_token("cbst.cosp_asyn_task_dtl")
+    assert query.is_strong_token("autovacuum")
+    for weak in ("等待", "30", "stat", "user", "tables", "database", "time"):
+        assert not query.is_strong_token(weak), weak
 
 
 def test_search_without_graph_has_no_paths_but_still_cases(tmp_path):
