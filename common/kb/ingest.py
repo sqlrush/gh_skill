@@ -64,6 +64,27 @@ def _decode(raw: bytes) -> str:
     return raw.decode("utf-8", "replace")
 
 
+def fit_rows(headers: Sequence[str], rows: Sequence[Sequence[str]], name: str = "") -> List[List[str]]:
+    """把每行对齐到表头宽度:短了补空,**长了把多出的格并进最后一列**——绝不静默丢内容。
+
+    没加引号的导出里字段内的逗号会把一行拆成十几格,丢掉就是丢客户的处置过程。
+    """
+    width = len(headers)
+    out: List[List[str]] = []
+    overflow = 0
+    for r in rows:
+        cells = [str(c).strip() for c in r]
+        if len(cells) > width:
+            overflow += 1
+            cells = cells[:width - 1] + [", ".join(c for c in cells[width - 1:] if c)]
+        out.append(cells + [""] * (width - len(cells)))
+    if overflow:
+        import sys
+        print(f"警告:{name or '表格'} 有 {overflow} 行的列数多于表头,多出的格已并入最后一列「{headers[-1]}」"
+              f"——多半是字段里的逗号没加引号,导入后请核对这些行。", file=sys.stderr)
+    return out
+
+
 def read_csv(path: pathlib.Path) -> Tuple[List[str], List[List[str]]]:
     text = _decode(path.read_bytes())
     rows = list(csv.reader(io.StringIO(text)))
@@ -71,7 +92,7 @@ def read_csv(path: pathlib.Path) -> Tuple[List[str], List[List[str]]]:
     if not rows:
         raise IngestError(f"{path.name}:空表")
     headers = [h.strip() for h in rows[0]]
-    return headers, [[c.strip() for c in r] + [""] * (len(headers) - len(r)) for r in rows[1:]]
+    return headers, fit_rows(headers, rows[1:], path.name)
 
 
 _NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
@@ -127,8 +148,7 @@ def read_xlsx(path: pathlib.Path, sheet: int = 1) -> Tuple[List[str], List[List[
     if not rows:
         raise IngestError(f"{path.name}:空表")
     headers = rows[0]
-    width = len(headers)
-    return headers, [r[:width] + [""] * (width - len(r)) for r in rows[1:]]
+    return headers, fit_rows(headers, rows[1:], path.name)
 
 
 # ---------------------------------------------------------------- 列映射

@@ -52,6 +52,11 @@ except ImportError:  # pragma: no cover
     sys.exit(1)
 
 _HERE = pathlib.Path(__file__).resolve()
+sys.path.insert(0, str(_HERE.parent))           # 兄弟模块 kb_store / kb_cases
+for _anc in _HERE.parents:                       # common/(仓库根,或装好后的 skills/ 下)
+    if (_anc / "common" / "kb" / "__init__.py").exists():
+        sys.path.insert(0, str(_anc))
+        break
 
 KB_SUBDIRS = ("errata", "rules", "guides", "archive", "sources", "inbox")
 RULE_ID_RE = re.compile(r"^GS-[A-Z]{2,4}-\d{3}$")
@@ -829,6 +834,17 @@ def validate_rules_listing(kb: pathlib.Path, findings: list) -> None:
         findings.append(("warn", "RULES.md 比 rules/ 旧(重新运行 index)"))
 
 
+def validate_cases_and_graph(kb: pathlib.Path, findings: list) -> None:
+    """案例文件与三元组文件:schema、结论强度、出处、ID 唯一、边的端点/置信度/状态。"""
+    from common.kb import cases as kbcases
+    from common.kb import graphfiles as gf
+
+    cases, case_findings = kbcases.load_cases(kb)
+    findings.extend(case_findings)
+    _, tri_findings = gf.load_triples(kb, case_ids=[c.id for c in cases])
+    findings.extend(tri_findings)
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     kb = resolve_kb_dir(args.kb)
     if not kb.is_dir():
@@ -839,9 +855,16 @@ def cmd_validate(args: argparse.Namespace) -> int:
     validate_guides(kb, findings)
     validate_index(kb, findings)
     validate_rules_listing(kb, findings)
+    validate_cases_and_graph(kb, findings)
     for sub in sorted((kb / "inbox").glob("*")) if (kb / "inbox").is_dir() else []:
-        if sub.is_dir():
-            findings.append(("warn", f"inbox/{sub.name} 尚未条款化(处理完后删除该目录)"))
+        if not sub.is_dir():
+            continue
+        if (sub / "manifest.json").is_file():          # 工单批次,不是规范
+            items = list((sub / "items").glob("*.md")) if (sub / "items").is_dir() else []
+            if items:
+                findings.append(("warn", f"inbox/{sub.name} 还有 {len(items)} 单工单未处理(propose → review → apply)"))
+            continue
+        findings.append(("warn", f"inbox/{sub.name} 尚未条款化(处理完后删除该目录)"))
 
     errors = [m for lvl, m in findings if lvl == "error"]
     warns = [m for lvl, m in findings if lvl == "warn"]
@@ -1031,20 +1054,31 @@ def cmd_contract(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------- main
 
 def build_parser() -> argparse.ArgumentParser:
+    import kb_cases
+    import kb_store
+
     parser = argparse.ArgumentParser(
         prog="kb.py",
-        description="GaussDB 规范知识库:导入 / 索引 / 校验 / 检索 / 契约注入",
+        description="GaussDB 客户知识库:规范/工单导入 · 选择列表确认 · 索引进高斯/PG 与 Neo4j · 检索 · 契约注入",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_ingest = sub.add_parser("ingest", help="导入 txt/md/docx/doc 到 inbox 待条款化")
-    p_ingest.add_argument("file", help="规范文档路径")
-    p_ingest.add_argument("--kb", help="KB 目录(默认 $GSDB_KB_DIR 或 $GSDB_HOME/kb)")
-    p_ingest.set_defaults(func=cmd_ingest)
+    p_ingest = sub.add_parser("ingest", help="导入规范(txt/md/docx/doc/pdf → 条款化)或工单(xlsx/csv/md/txt/docx → 一单一文件)")
+    p_ingest.add_argument("file", help="文档/工单路径")
+    p_ingest.add_argument("--kb", help="KB 目录(默认 $GSDB_KB_DIR 或 <安装根>/kb)")
+    p_ingest.add_argument("--kind", choices=("spec", "tickets"),
+                          help="材料类型;默认 xlsx/csv 视为工单,其余视为规范")
+    p_ingest.add_argument("--slug", help="工单批次名(默认取文件名)")
+    p_ingest.add_argument("--redact", action="store_true", help="工单原文脱敏:IP/手机号/证件号/邮箱")
+    p_ingest.set_defaults(func=cmd_ingest_any)
 
-    p_index = sub.add_parser("index", help="从 rules/guides/errata 重建 INDEX.md")
+    p_index = sub.add_parser("index", help="重建 INDEX.md/RULES.md,并把文件索引进高斯/PG 与 Neo4j(kb.yaml 配了存储才写库)")
     p_index.add_argument("--kb")
-    p_index.set_defaults(func=cmd_index)
+    p_index.add_argument("--rebuild", action="store_true", help="清两库重灌(文件是真相)")
+    p_index.add_argument("--fill-missing", action="store_true", help="只补没向量的块")
+    p_index.set_defaults(func=cmd_index_all)
+    kb_store.add_subcommands(sub)
+    kb_cases.add_subcommands(sub)
 
     p_validate = sub.add_parser("validate", help="校验 ID/schema/INDEX 一致性")
     p_validate.add_argument("--kb")
@@ -1064,11 +1098,41 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def cmd_ingest_any(args: argparse.Namespace) -> int:
+    """按 --kind(或后缀)分流:工单 → kb_cases;规范 → 原条款化路径。"""
+    import kb_cases
+    kind = args.kind or ("tickets" if pathlib.Path(args.file).suffix.lower() in (".xlsx", ".csv") else "spec")
+    if kind == "tickets":
+        kb = resolve_kb_dir(args.kb)
+        ensure_kb_skeleton(kb)
+        return kb_cases.cmd_ingest_tickets(args, kb)
+    return cmd_ingest(args)
+
+
+def cmd_index_all(args: argparse.Namespace) -> int:
+    """文件级索引(INDEX.md/RULES.md)永远做;配了存储再写高斯/PG 与 Neo4j。"""
+    import kb_store
+    from common.kb import config as kbconfig
+
+    rc = cmd_index(args)
+    if rc != 0:
+        return rc
+    kb = resolve_kb_dir(args.kb)
+    cfg = kbconfig.load(kb)
+    if cfg.store.pg is None:
+        print("存储        : kb.yaml 未配置 store.pg——只重建了文件索引;配好后重跑 index 即写库")
+        return 0
+    return kb_store.cmd_index(args)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    import kb_cases
+    import kb_store
+    from common.kb import config as kbconfig
     try:
         return args.func(args)
-    except KbError as exc:
+    except (KbError, kb_store.StoreCmdError, kb_cases.CaseCmdError, kbconfig.KbConfigError) as exc:
         print(f"错误:{exc}", file=sys.stderr)
         return 1
 

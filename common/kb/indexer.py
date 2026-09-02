@@ -50,11 +50,13 @@ class IndexReport:
     chunk_embedded: int = 0
     vector_engine: str = "none"
     graph: str = "none"          # ok | unavailable | none
+    embedding_configured: bool = False
     warnings: Tuple[str, ...] = ()
 
     @property
     def coverage_ok(self) -> bool:
-        return self.vector_engine == "none" or self.chunk_total == self.chunk_embedded
+        """只有**配了** embedding 却没覆盖满才算失败;故意不开向量是正常态(状态行会如实写「未启用」)。"""
+        return not self.embedding_configured or self.chunk_total == self.chunk_embedded
 
 
 # ---------------------------------------------------------------- chunking (pure)
@@ -196,6 +198,20 @@ def case_docs(cases: Sequence[kbcases.Case], kb: pathlib.Path) -> List[Tuple[spg
     return out
 
 
+_GENERIC_HEADING_RE = re.compile(r"^#{2,6}\s+.*$", re.M)
+
+
+def raw_body(text: str) -> str:
+    """原始工单进索引前:去 frontmatter、去二级以下标题(「问题描述」「处理过程」这类泛词会让
+    任何带「处理」「问题」的提问都命中)、去「- 字段: 值」里的字段名只留值。"""
+    _, body, err = kbcases.split_frontmatter(text)
+    if err:
+        body = text
+    body = _GENERIC_HEADING_RE.sub("", body)
+    body = re.sub(r"^- [^:\n]{1,12}: ", "", body, flags=re.M)
+    return re.sub(r"\n{3,}", "\n\n", body).strip()
+
+
 def raw_docs(kb: pathlib.Path) -> List[Tuple[spg.DocRow, List[spg.ChunkRow]]]:
     """inbox/<slug>/items/*.md|txt —— 已导入、未结构化的原始工单,整篇滑动切,当天可检索。"""
     out = []
@@ -213,8 +229,11 @@ def raw_docs(kb: pathlib.Path) -> List[Tuple[spg.DocRow, List[spg.ChunkRow]]]:
             continue
         slug = path.parent.parent.name
         doc_id = f"raw:{slug}/{path.stem}"
-        first = next((ln.strip() for ln in text.splitlines() if ln.strip()), path.stem)[:80]
-        chunks = [_chunk(doc_id, i, "原文", piece) for i, piece in enumerate(sliding(text))]
+        body = raw_body(text)
+        if not body:
+            continue
+        first = next((ln.strip().lstrip("#").strip() for ln in body.splitlines() if ln.strip()), path.stem)[:80]
+        chunks = [_chunk(doc_id, i, "原文", piece) for i, piece in enumerate(sliding(body))]
         doc = spg.DocRow(id=doc_id, kind="raw", title=first, source=str(path.relative_to(kb)), version="",
                          meta={"slug": slug, "file": str(path.relative_to(kb))}, content_hash=_hash(text))
         out.append((doc, chunks))
@@ -364,7 +383,8 @@ def run_index(kb: pathlib.Path, pg: spg.PgStore, graph: Optional[sg.GraphStore],
         nodes=len(nodes), edges=n_edges, edges_confirmed=n_conf,
         chunk_total=total, chunk_embedded=done,
         vector_engine=vector_engine if embedder is not None or not caps.vector else f"{vector_engine}(未配 embedding)",
-        graph=graph_state, warnings=tuple(warnings))
+        graph=graph_state, embedding_configured=embedder is not None and caps.vector,
+        warnings=tuple(warnings))
     _write_state(kb, report, kb_version)
     return report
 

@@ -390,7 +390,7 @@ def from_text(q: str, kb_dir: Optional[pathlib.Path] = None,
     own = session is None
     sess = session or KbSession.open(kb_dir)
     try:
-        items = (sess.search("q", q[:60], q),) if sess.attached else ()
+        items = (sess.search("q:" + q[:24], q[:60], q),) if sess.attached else ()
         status = sess.status()
     except Exception as exc:
         status = KbStatus(attached=False, reason=f"知识库检索异常:{exc}")

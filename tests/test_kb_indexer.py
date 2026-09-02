@@ -215,10 +215,19 @@ def test_run_index_end_to_end(tmp_path):
         rep3 = indexer.run_index(kb, pg, graph, _FakeEmbedder(), kb_version="2026.09")
         assert rep3.docs_removed == 1
         assert "docs.raw" not in pg.counts()
-        # 没配 embedding → 覆盖率为 0 且有告警,coverage_ok 为假
+        # 没配 embedding → 覆盖率为 0、有告警,但这是"故意不开向量",不算失败(状态行会写未启用)
         rep4 = indexer.run_index(kb, pg, graph, None, kb_version="2026.09", rebuild=True)
-        assert rep4.chunk_embedded == 0 and not rep4.coverage_ok
+        assert rep4.chunk_embedded == 0 and rep4.coverage_ok and not rep4.embedding_configured
         assert any("embedding" in w for w in rep4.warnings)
+
+        # 配了 embedding 却全失败 → 才是 coverage 失败
+        class _Broken(_FakeEmbedder):
+            def embed(self, texts, timeout_s=None):
+                from common.kb.embed import EmbedStats
+                self.stats = EmbedStats(requested=len(texts), failed=len(texts), last_error="boom")
+                return [None] * len(texts)
+        rep5 = indexer.run_index(kb, pg, graph, _Broken(), kb_version="2026.09", rebuild=True)
+        assert rep5.embedding_configured and not rep5.coverage_ok and rep5.embed_failed > 0
     finally:
         pg.rebuild(); pg.close()
         graph.rebuild()

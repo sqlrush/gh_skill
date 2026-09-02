@@ -16,6 +16,11 @@ from typing import Iterable, List, Optional
 
 # 只在查询侧剔除:这些字组成的二元组只会拉低排序。索引侧全量保留。
 _QUERY_STOP_CHARS = frozenset("的了在是和与及或等有为把被对于从到就也都很个么这那")
+# 查询侧再剔一层泛词:提问里的「怎么处理」「什么问题」跟任何工单都沾边,留着只会让无关工单上榜。
+_QUERY_STOP_WORDS = frozenset({
+    "怎么", "如何", "为什", "什么", "处理", "问题", "办法", "方案", "建议", "情况", "出现",
+    "是否", "可以", "需要", "应该", "怎样", "一下", "请问", "帮我", "看看", "分析", "排查",
+})
 
 _CJK = "一-鿿㐀-䶿"
 # 顺序有讲究:标识符(可带 . 或 : 连接段)> 数字词(3s / 16gb)> 中文段。
@@ -71,7 +76,7 @@ def query_tokens(text: str) -> List[str]:
     out: List[str] = []
     for tok in tokenize(text):
         is_cjk = tok[0] >= "㐀"
-        if is_cjk and any(ch in _QUERY_STOP_CHARS for ch in tok):
+        if is_cjk and (tok in _QUERY_STOP_WORDS or any(ch in _QUERY_STOP_CHARS for ch in tok)):
             continue
         if tok not in seen:
             seen.add(tok)
