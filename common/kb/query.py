@@ -345,6 +345,45 @@ def _default_password_lookup(name: str) -> str:
     return load_secret(name)
 
 
+def result_to_dict(result: QueryResult) -> Dict[str, Any]:
+    """JSON 形态(skill 的 --json 输出与 kb.py query --json 共用),随报告落盘可事后核对。"""
+    return {
+        "status": dict(result.status.__dict__),
+        "elapsed_ms": result.elapsed_ms,
+        "items": [{
+            "key": it.key, "label": it.label,
+            "clauses": [{"id": r.id, "title": r.title, "score": r.score, "source": r.source} for r in it.clauses],
+            "cases": [{"id": r.id, "title": r.title, "score": r.score, "source": r.source,
+                       "conclusion": r.meta.get("conclusion"), "action": r.sections.get("处置", "")} for r in it.cases],
+            "paths": [dict(p.__dict__) for p in it.paths],
+            "raws": [{"id": r.id, "title": r.title, "score": r.score} for r in it.raws],
+            "notes": list(it.notes),
+        } for it in result.items],
+    }
+
+
+@dataclass(frozen=True)
+class SimpleFinding:
+    """给没有 common.finding.Finding 的 skill(如 sqltune)组装检索项用的最小形状。"""
+    code: str
+    dimension: str
+    metric: str
+    value: str
+    evidence: str
+    severity: str = ""
+    threshold: str = ""
+
+
+def section_for(findings: Sequence[Any], kb_dir: Optional[pathlib.Path] = None) -> Tuple[str, Dict[str, Any]]:
+    """skill 脚本一行接入:返回 (markdown 小节, JSON 字典)。永不抛——知识库出任何问题都是「未接入(原因)」。"""
+    from . import render as kbrender
+    try:
+        result = from_findings(findings, kb_dir=kb_dir)
+    except Exception as exc:                           # 兜底,理论上 from_findings 已不抛
+        result = QueryResult(status=KbStatus(attached=False, reason=f"知识库检索异常:{exc}"))
+    return kbrender.render_section(result), result_to_dict(result)
+
+
 # ---------------------------------------------------------------- entry points
 
 def finding_query_text(f: Any) -> str:

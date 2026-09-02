@@ -275,6 +275,31 @@ def tune_by_sql(runner, db, sql_text: str, binds: list[str], do_analyze: bool) -
     return _tune(runner, db, original_sql=sql_text, binds=binds, do_analyze=do_analyze)
 
 
+def kb_items(tr: TuneResult) -> list:
+    """给知识库检索的「发现」:整条 SQL(涉及的表)一项 + 计划里的每条确定性发现各一项(纯函数)。"""
+    from common.kb.query import SimpleFinding
+
+    ev = tr.evidence
+    tables = ", ".join(f"{t.schema}.{t.name}" if t.schema else t.name for t in ev.tables)
+    sql_text = (tr.original_sql or ev.sql or "").strip().replace("\n", " ")
+    items = [SimpleFinding(code="SQL", dimension="sqltune", metric="涉及对象", value=tables,
+                           evidence=f"{tables} {sql_text[:200]}".strip())]
+    for f in ev.findings:
+        items.append(SimpleFinding(code=f"PLAN_{f.kind.upper()}", dimension="plan", metric=f.kind,
+                                   value="", evidence=f"{f.detail} {tables}".strip(), severity=f.severity))
+    return items
+
+
+def kb_section(tr: TuneResult) -> tuple:
+    """「客户知识库参照」小节 + JSON;知识库任何问题都降级成「未接入(原因)」,不影响调优报告。"""
+    try:
+        from common.kb import query as kbquery
+    except ImportError as exc:
+        text = f"## 客户知识库参照\n> 知识库未接入(common/kb 未安装:{exc})\n\n"
+        return text, {"status": {"attached": False, "reason": f"common/kb 未安装:{exc}"}, "items": []}
+    return kbquery.section_for(kb_items(tr))
+
+
 def sqltune_report(tr: TuneResult) -> str:
     sb = ["# SQL Tune\n"]
     if tr.sql_id:
@@ -309,6 +334,9 @@ def sqltune_report(tr: TuneResult) -> str:
         out += render.table(["#", "Token", "Value", "Source", "Context"], rows) + "\n"
 
     out += evidence_report(tr.evidence)
+
+    # 客户知识库对这条 SQL 与计划发现怎么说——放在结论性小节之前,处置建议以它为首选依据。
+    out += "\n" + kb_section(tr)[0]
 
     out += "\n## Verified Index Candidates\n\n"
     if tr.index_verify_note:
@@ -354,6 +382,7 @@ def _to_jsonable(tr: TuneResult) -> dict:
         "verified_indexes": [c.__dict__ for c in tr.verified_indexes],
         "index_verify_note": tr.index_verify_note,
         "derivation_report": tr.derivation_report,
+        "kb_refs": kb_section(tr)[1],
     }
 
 

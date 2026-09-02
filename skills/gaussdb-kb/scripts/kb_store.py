@@ -165,26 +165,10 @@ def cmd_query(args: argparse.Namespace) -> int:
     else:
         result = kbquery.from_text(args.q, kb_dir=kb)
     if args.json:
-        print(json.dumps(_result_json(result), ensure_ascii=False, indent=2))
+        print(json.dumps(kbquery.result_to_dict(result), ensure_ascii=False, indent=2))
     else:
         print(render.render_section(result), end="")
     return 0 if result.status.attached else 2
-
-
-def _result_json(result: kbquery.QueryResult) -> Dict[str, Any]:
-    return {
-        "status": result.status.__dict__,
-        "elapsed_ms": result.elapsed_ms,
-        "items": [{
-            "key": it.key, "label": it.label,
-            "clauses": [{"id": r.id, "title": r.title, "score": r.score, "source": r.source} for r in it.clauses],
-            "cases": [{"id": r.id, "title": r.title, "score": r.score, "source": r.source,
-                       "conclusion": r.meta.get("conclusion"), "action": r.sections.get("处置", "")} for r in it.cases],
-            "paths": [p.__dict__ for p in it.paths],
-            "raws": [{"id": r.id, "title": r.title, "score": r.score} for r in it.raws],
-            "notes": list(it.notes),
-        } for it in result.items],
-    }
 
 
 # ---------------------------------------------------------------- health
