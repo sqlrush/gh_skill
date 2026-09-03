@@ -49,3 +49,16 @@
     注:这一步 GRMP mock 返回 503,本地维度没采到发现,模型如实说明"没查到不是健康",处置建议仍从知识库取——优先按知识库成立。
   - 08 复位后:小节「未接入(存储无索引)」,建议回到 `DROP INDEX CONCURRENTLY` / 先调优顺扫再评估 shared_buffers,标「通用经验」。
   - 原始输出在 Mac `~/kb-demo-out/01…08.txt`(含测试环境 IP,不入库)。ID 命名与示例库不同(模型自己分配 GS-GUC-001 等),属正常。
+- 2026-09-03 · **kimi/k3 · 三条出处闸门加固后的对照(feat/kb-hardening → main)**。为不碰正在给客户演示的环境,在 Mac 隔离环境跑:
+  `XDG_CONFIG_HOME=~/kb-verify/xdg`(独立 skills + kb),向量库 openGauss 7 DataVec(og7:5439),图库另起 `neo4j:5-community`(7475),
+  Ollama bge-m3;提示词与 `model-demo.sh` 八步逐字相同(脚本 `~/kb-verify/run.sh`,输出 `~/kb-verify/out/`)。
+  | 指标 | 基线(v8) | 加固后 |
+  |---|---|---|
+  | 06 状态行 | 条款 11 · 案例 8 · 47 条已确认边 | **条款 12 · 案例 8 · 52 条已确认边**,向量覆盖 100%(datavec) |
+  | 05 选择列表 | 61 项 / 16 条边无默认 | 67 项 / 16 条边无默认,`[error]` 0——新的「现场摘录必填 / 已确认须有根因摘录」没拒掉 K3 任何一单 |
+  | 04 闸门 | 首次 propose 同时吐出无策略约束的工作单 | propose 打印「策略未确认,不出工作单」退出 2,模型逐题问 8 题,答完重跑才有工作单 |
+  | 07 引用 | S3-20250210-CBST / GS-GUC-001 | GS-IDX-001 + S3-20250210-CBST-未使用索引…、GS-GUC-001 + S2-20250405-CBST-报表…;`cite-check` 4/4 在库,处置按案例(台账观察 30 天 / 不调 shared_buffers 迁只读) |
+  | 01 / 08 | 通用经验,无 ID | 通用经验,无 ID(08 的 health 小节「未接入」) |
+  两个与代码无关的坑:① 第一轮 03 步模型把 `rm -rf inbox && index` 拼成一条被 OpenCode 非交互权限拒后**回复为空**,Kimi 随后对整段
+  会话报 `assistant must not be empty`,05/06 全挂——隔离副本里把 `rm *` 改成 allow 后第二轮全过(生产配置不动);② openGauss 每个用户
+  有同名 schema,用 omm 不带前缀 `DROP TABLE kb_docs` 会静默跳过,复位后 08 步仍看到旧数据——改成 `gaussdb.kb_docs` 后重跑 08 才干净。
