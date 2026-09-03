@@ -41,6 +41,12 @@ def test_extract_ids_keeps_order_dedupes_and_ignores_non_ids():
     assert kb_cite.extract_ids(text) == [("clause", "GS-GUC-001"), ("case", CID)]
 
 
+def test_extract_ids_stops_at_fullwidth_punctuation_and_markdown():
+    # 模型回答里常见:全角括号「（已确认）」、书名号、加粗星号——都不是 ID 的一部分
+    text = f"案例 **{CID}**（已确认）,另见《{CID}》与 {CID}！"
+    assert kb_cite.extract_ids(text) == [("case", CID)]
+
+
 def test_check_exact_prefix_archived_and_fabricated(tmp_path):
     kb = _kb(tmp_path)
     text = f"{CID};S2-20250120-CBST-…;GS-GUC-001;GS-IDX-009;GS-VAC-002;S3-20250101-XYZ-不存在"

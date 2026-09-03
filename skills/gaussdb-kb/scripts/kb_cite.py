@@ -20,7 +20,7 @@ from typing import List, Set, Tuple
 from common.kb import cases as kbcases
 
 CLAUSE_RE = re.compile(r"GS-[A-Z]{2,4}-\d{3}")
-CASE_RE = re.compile(r"S[1-4]-\d{8}-[A-Za-z0-9_]+-[^\s,，;;:：、。()()\[\]【】〔〕\"'`<>]*")
+CASE_RE = re.compile(r"S[1-4]-\d{8}-[A-Za-z0-9_]+-[^\s,，;;:：、。!?！?()（）\[\]【】〔〕《》〈〉\"'`<>*]*")
 _ELLIPSIS_RE = re.compile(r"(?:…|\.{2,})+$")
 
 STATUS_MARK = {"存在": "✓", "前缀匹配": "✓", "已废止": "⚠", "不唯一": "⚠", "未找到": "✗"}
