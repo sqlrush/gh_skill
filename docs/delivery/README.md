@@ -17,6 +17,7 @@
 - **我要往里面加代码** → 先 04(搭环境 + 演示),规则查 03,原理查 02
 - **我要用/改 gaussdb-sqlreview、gaussdb-memanalyze、gaussdb-kb** → 05
 - **我要导入客户的规范文档** → 05 第 4 节(gaussdb-kb)+ 第 5 节(知识库落点与优先级链)
+- **我要把知识库(向量库 + 图库)装起来** → 10(安装手册),原理与日常使用 → 09
 - **连接/驱动细节**(gsql/pg8000、`GSDB_HOME`、已知差异) → 见 [../connection-drivers.md](../connection-drivers.md)
 
 > 说明:连接配置目录由环境变量 `GSDB_HOME` 指定(任意名/路径,默认 `$GSDB_HOME`,;双后端 gsql(默认)/ pg8000,连接级自动兜底。gsql 是 openGauss 的 Linux 客户端,macOS 上会自动回退 pg8000。gsql/pg8000 的类型 parity 差异标注为"待验证"(未在 Linux+gsql 真库实证)。
@@ -28,3 +29,4 @@
 | [06-白名单清单](whitelist.md) | 89 条脚本的 id/参数/SQL 全文 |
 | [07-调用链路](07-调用链路.md) | 逻辑名 → id → 执行的全过程，附真实报文 |
 | [09-客户知识库](09-客户知识库.md) | **gaussdb-kb**(取代 kbimport):规范 + 工单 → 高斯/PG 向量库 + Neo4j 图库,各诊断 skill 按发现查库、优先引用客户先例;选择列表闸门、三态验收、降级表 |
+| [10-知识库安装手册](10-知识库安装手册.md) | **从零装起 gaussdb-kb 及两个后台库**:skill 安装与 `<kb>` 目录、openGauss 7 DataVec / PG+pgvector 二选一(用户、认证、远程访问、vector 探测)、Neo4j 5 社区版(≥5.19 Query API v2)、embedding 端点、凭据与 `kb.yaml` 逐字段、setup/index/health 验证、降级表、排障表、备份重建卸载、本机测试容器、安装检查单 |
