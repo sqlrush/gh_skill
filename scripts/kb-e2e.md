@@ -38,3 +38,14 @@
   凭据修好后直接 `nohup ~/kb-model-3state.sh &`,结果在 `~/kb-model-out/{before,after,rollback}.txt`;
   期望:before 为通用做法且无 ID;after 引用 GS-IDX-005 / S3-20250210(先观察 30 天不删)与 GS-GUC-004 / S2-20250405
   (不调 shared_buffers,迁只读实例);rollback 回到 before 的样子。
+- 2026-09-03 · **kimi/k3 · `scripts/kb/model-demo.sh` 全 8 步跑通**(user 换了新 key):
+  - 01 导入前:小节「未接入(无索引)」;INDEX_UNUSED → 排除反例后变更窗口 `DROP INDEX`;CACHE_LOW → 先治理顺扫再评估扩缓冲池;两条均标「通用经验」。
+  - 02 导入规范:模型读完 `运维规范摘录.md` 后**先给 11 条条款的确认清单**(ID/一句话/出处/去向/动作,并指出 3 条可作金丝雀),等确认;
+    03 确认后写入 9 个 rules/*.yaml(`rm -rf inbox && index && validate` 被 OpenCode 非交互权限拒——用户配置里 rm 是 ask;后续步骤补跑 index,只留 inbox 残留 warn)。
+  - 04 导入工单:ingest 8 单(列映射、脱敏)后**逐题问 5 个策略问题**;05 答完后模型填候选、跑 review,把 **61 项编号选择列表(16 条边无默认)** 原样呈现;
+    06「全部接受,边也接受」→ apply/validate/index → 状态行「条款 11 · 案例 8 · 图 47 条已确认边」,validate 0 error 1 warn。
+  - 07 导入后:INDEX_UNUSED → 「台账登记、观察满 30 天覆盖月末批量、再提变更单 23:00–06:00 窗口 DROP、双人复核〔依据:案例 S3-20250210-CBST,已确认〕」;
+    CACHE_LOW → 「不得因单次命中率调 shared_buffers(NUMA 绑核固定),报表 SQL 迁只读实例〔依据:GS-GUC-001 §4.2 + 案例 S2-20250405-CBST〕」。
+    注:这一步 GRMP mock 返回 503,本地维度没采到发现,模型如实说明"没查到不是健康",处置建议仍从知识库取——优先按知识库成立。
+  - 08 复位后:小节「未接入(存储无索引)」,建议回到 `DROP INDEX CONCURRENTLY` / 先调优顺扫再评估 shared_buffers,标「通用经验」。
+  - 原始输出在 Mac `~/kb-demo-out/01…08.txt`(含测试环境 IP,不入库)。ID 命名与示例库不同(模型自己分配 GS-GUC-001 等),属正常。
