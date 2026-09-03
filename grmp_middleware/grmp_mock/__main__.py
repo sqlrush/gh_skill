@@ -86,6 +86,10 @@ def main(argv: Sequence[str] = None) -> int:
     parser.add_argument(
         "--statement-timeout", type=int, default=DEFAULT_STATEMENT_TIMEOUT_SECONDS
     )
+    parser.add_argument(
+        "--standby", action="store_true",
+        help="模拟备机：读 statement_history 的脚本回 HTTP 400 + unlogged 报错，health.overview 的 in_recovery 置 t",
+    )
     args = parser.parse_args(argv)
 
     token = os.environ.get("GRMP_AUTH_TOKEN")
@@ -111,6 +115,7 @@ def main(argv: Sequence[str] = None) -> int:
         settings=settings,
         max_result_rows=args.max_result_rows,
         statement_timeout=args.statement_timeout,
+        standby=args.standby,
     )
 
     # 走 stderr 且立刻 flush：横幅是安全警告，重定向到文件时 stdout 会被

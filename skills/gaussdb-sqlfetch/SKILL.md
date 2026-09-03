@@ -1,6 +1,6 @@
 ﻿---
 name: gaussdb-sqlfetch
-version: 2.0.0
+version: 2.0.1
 description: "通过内置脚本把 OpenGauss/GaussDB 的 unique_sql_id 解析成完整 SQL 文本。用户要查看 SQL_ID 背后的原始 SQL、从 Top SQL/慢 SQL/WDR/SQL 审查/调优结果里取出语句、查看某条 sql_id 对应的完整文本，或展开归一化 SQL 时使用，包括“根据 sql_id 查 SQL”“把这条 SQL_ID 对应的原文取出来”“看完整 SQL”等请求。触发后运行 scripts/sqlfetch.py，输出真实 SQL，不要猜测或编造语句。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -41,6 +41,7 @@ metadata:
 
 3. 若输出提示存在占位符（Normalized），说明这是归一化 SQL，向用户索要真实值并展示替换后的 SQL。
 4. **若输出带 🛑「SQL 被 openGauss 截断」**：说明这条 SQL 太长、超过 `track_activity_query_size`，库里留存的就是半截文本（数据库侧 `track_activity_query_size` 的留存限制）。**不要**拿它去 explain/调优——向用户索要完整 SQL，后续 explain/sqltune 都用 `--sql-stdin` 传完整文本。
+5. **若输出带 ⚠️「statement_history 不可用，已降级到 dbe_perf.statement」**：当前实例是备机（unlogged 表读不到）或 statement_history 没权限，拿到的是归一化 SQL。按第 3 条向用户索要真实值；同时提醒用户要真实参数值需用**主库 IP** 重新 gaussdb-login。这是降级不是失败，不要重试同一条命令。
 5. 下一步建议：走 explain 工作流快速看计划，或走 sqltune 工作流做深度调优。
 
 

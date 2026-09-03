@@ -70,6 +70,7 @@ class App:
         open_db=None,
         max_result_rows: int = DEFAULT_MAX_RESULT_ROWS,
         statement_timeout: int = DEFAULT_STATEMENT_TIMEOUT_SECONDS,
+        standby: bool = False,
     ):
         self._store = store
         self._instances = instances
@@ -78,6 +79,9 @@ class App:
         self._open_db = open_db or _default_open_db
         self._max_result_rows = max_result_rows
         self._statement_timeout = statement_timeout
+        # 模拟备机:读 statement_history(unlogged 表)的脚本按真实 GRMP 的形态回 HTTP 400,
+        # health.overview 的 in_recovery 置 t。复现现场 2026-09-01 的 400,让 skill 的降级路径可测。
+        self._standby = standby
 
     # -- 入口 -------------------------------------------------------------
 
@@ -220,6 +224,10 @@ class App:
         if error_msg is not None:
             return fail(error_msg)
 
+        if self._standby and "statement_history" in record.script_content.lower():
+            print("[GRMP] FAIL %s :: standby(unlogged)" % record.script_name, file=sys.stderr, flush=True)
+            return 400, envelope.fail_invoke(STANDBY_ERROR, task_id)
+
         try:
             result = executor.execute(
                 record,
@@ -235,9 +243,24 @@ class App:
         except Exception as exc:  # 数据库错误等
             return fail(str(exc))
 
+        if self._standby:
+            result = mark_standby(result)
         print("[GRMP] OK   %s :: %d 行" % (record.script_name, len(result.get("data") or [])),
               file=sys.stderr, flush=True)
         return 200, envelope.ok_invoke(result, task_id)
+
+
+# 现场 provider.core.log 里 JDBC 报错的原文形态(实例 id / 地址已换成占位)
+STANDBY_ERROR = ("SQL execution failed via JDBC on instance standby-mock: "
+                 "ERROR: Temporary or unlogged table cannot be accessed on the standby.")
+
+
+def mark_standby(result: Dict[str, Any]) -> Dict[str, Any]:
+    """结果集里有 in_recovery 列就置成 t(不改原对象):模拟 pg_is_in_recovery() 在备机上的返回。"""
+    data = result.get("data") or []
+    return {**result, "data": [
+        {**row, "in_recovery": "t"} if isinstance(row, dict) and "in_recovery" in row else row
+        for row in data]}
 
 
 def _log_name(parsed: Mapping[str, Any]) -> str:

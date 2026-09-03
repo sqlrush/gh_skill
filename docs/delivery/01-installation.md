@@ -850,6 +850,7 @@ python3 $SKILLS/wdr/scripts/wdr.py render \
 | `sqltune verify 报"索引验证不可用"或需要 pg8000` | `driver: gsql` 生效（gsql 每次请求起独立子进程，无法保持 hypopg 会话级虚拟索引） | 在 config.yaml 中将该连接的 `driver` 改为 `pg8000` |
 | WDR `"WDR 未开启"` 或 `"快照不足"` | 实例 `enable_wdr_snapshot=off`，或快照数量不足 2 个 | 联系 DBA 执行 `ALTER SYSTEM SET enable_wdr_snapshot=on` 并 reload/重启；或手动 `SELECT create_wdr_snapshot()` 创建快照，但**本技能脚本不代为执行** |
 | `python3: command not found` | Python 未安装，或未加入 PATH | 参考 1.2 节安装 Python |
+| sqlfetch / sqltune / sqlreview / proctune 报 `HTTP 400`，错误里有 `cannot be accessed on the standby` | 登录的 dataIp 是**备机**：`dbe_perf.statement_history` 是 unlogged 表，备机读不到（slowsql/topsql 查的是内存视图 `dbe_perf.statement`，不受影响） | 用主库 IP 重新 `gaussdb-login`（登录输出的「主备」一行会直接告诉你）。不换也能用：脚本自动退到 `dbe_perf.statement`，拿到的是归一化 SQL，参数值用 `--bind` 补 |
 
 ---
 

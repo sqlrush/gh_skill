@@ -19,7 +19,10 @@ import urllib.request
 from typing import Any, Dict, List, Mapping, Optional
 
 from .errors import QueryError
+from .hints import with_hint
 from .params import to_param_value
+
+_ERROR_BODY_MAX = 4000   # 4xx/5xx 响应体最多读这么多字节:够装一条 JDBC 报错,不够装一个页面
 
 PATH_PREFIX = "/icbc/paas/aiops/grmp/diagnostic/agent"
 LIST_PATH = PATH_PREFIX + "/common-operations"
@@ -35,6 +38,27 @@ class GrmpError(QueryError):
     继承 QueryError，使 skill 只需 catch 一个类型 ——
     换一种访问方式时，skill 的降级逻辑不用动。
     """
+
+
+def _error_body(exc: urllib.error.HTTPError) -> str:
+    """把 4xx/5xx 响应体里中间件说的原因带出来;是 JSON 就取 msg 一类字段,不是就给原文。"""
+    try:
+        raw = exc.read(_ERROR_BODY_MAX).decode("utf-8", errors="replace").strip()
+    except Exception:  # 响应体读不了:至少还有状态码
+        return ""
+    if not raw:
+        return ""
+    detail = raw
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            for key in ("msg", "message", "error", "detail"):
+                if parsed.get(key):
+                    detail = str(parsed[key])
+                    break
+    except ValueError:
+        pass
+    return "；中间件返回：%s" % detail[:500]
 
 
 class GrmpClient:
@@ -71,6 +95,13 @@ class GrmpClient:
         try:
             with urllib.request.urlopen(request, timeout=self._timeout) as resp:
                 body = resp.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            # HTTPError 是 URLError 的子类,必须先接:4xx/5xx 的响应体里才有中间件说的失败原因。
+            # 现场 SQL 在备机上执行失败被包成 HTTP 400,只 catch URLError 时用户看到的是
+            # 「HTTP Error 400: 」后面一片空白,排查被带到参数名方向去了两天。
+            raise GrmpError(with_hint(
+                "请求 %s 失败：HTTP %s %s%s" % (path, exc.code, exc.reason, _error_body(exc))
+            )) from exc
         except urllib.error.URLError as exc:
             raise GrmpError("请求 %s 失败：%s" % (path, exc)) from exc
         try:
@@ -147,10 +178,10 @@ class GrmpClient:
         # 「查询结果为空」——「慢 SQL 返回 0 条」被读成「当前没有慢 SQL」。
         status = body.get("status")
         if status != "finished" or "result" not in body:
-            raise GrmpError(
+            raise GrmpError(with_hint(
                 "执行 %s 失败（status=%r，task_id=%s）：%s"
                 % (script_name, status, body.get("task_id"), body.get("msg", ""))
-            )
+            ))
 
         result = body["result"] or {}
         result_type = str(result.get("type", "")).lower()

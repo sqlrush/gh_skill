@@ -49,6 +49,7 @@ class FetchResult:
     placeholders: int
     truncated: bool = False
     truncated_reason: str = ""
+    degraded_reason: str = ""   # statement_history 不可用时退到 statement 的原因（备机 / 权限 …）
 
 
 def count_placeholders(sql_text: str) -> int:
@@ -105,7 +106,7 @@ def sql_fetch(runner, raw_id: str) -> FetchResult:
             f"sql id {raw_id!r}: must be a (possibly negative) integer") from exc
 
     # 按列名取值而不是下标：列序变了会当场 KeyError，不会安静地把 schema 当 SQL
-    rows = runner.run(HISTORY_SCRIPT, {"sid": sid})
+    rows, degraded = _history_rows(runner, HISTORY_SCRIPT, sid)
     if rows:
         schema, query = rows[0]["schema_name"], rows[0]["query"]
         source = "statement_history"
@@ -114,7 +115,8 @@ def sql_fetch(runner, raw_id: str) -> FetchResult:
         if not srows:
             raise ValueError(
                 f"sql id {raw_id} not found in dbe_perf.statement_history or "
-                f"dbe_perf.statement (check enable_stmt_track / track_stmt_parameter)")
+                f"dbe_perf.statement (check enable_stmt_track / track_stmt_parameter)"
+                + (f"; statement_history 本身不可用：{degraded}" if degraded else ""))
         schema, query = "", srows[0]["query"]
         source = "statement"
 
@@ -122,4 +124,18 @@ def sql_fetch(runner, raw_id: str) -> FetchResult:
     truncated, reason = looks_truncated(query)
     return FetchResult(sql_id=raw_id, sql=query, schema=schema or "",
                        source=source, normalized=n > 0, placeholders=n,
-                       truncated=truncated, truncated_reason=reason)
+                       truncated=truncated, truncated_reason=reason,
+                       degraded_reason=degraded)
+
+
+def _history_rows(runner, script: str, sid: int):
+    """statement_history 查不了(备机上它是 unlogged 表读不到、没权限……)不是终点：
+    退到 dbe_perf.statement 拿归一化文本，把原因带在结果里明写，而不是整条命令中断。"""
+    import sys
+    from common.grmp.errors import QueryError
+    try:
+        return runner.run(script, {"sid": sid}), ""
+    except QueryError as exc:
+        print(f"warning: statement_history 不可用，降级到 dbe_perf.statement（归一化文本）：{exc}",
+              file=sys.stderr)
+        return [], str(exc)

@@ -79,7 +79,8 @@ class DirectRunner:
         except Exception as exc:
             # 归一到 QueryError：skill 的降级逻辑只认这一个类型，
             # 换访问方式时不用改 skill。原因用 from 链住，不吞掉。
-            raise QueryError("执行脚本 %s 失败：%s" % (script_name, exc)) from exc
+            from .hints import with_hint   # 与中间件路径同一张「报错 → 提示」表
+            raise QueryError(with_hint("执行脚本 %s 失败：%s" % (script_name, exc))) from exc
         finally:
             db.close()
 

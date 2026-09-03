@@ -176,7 +176,34 @@ def _verify_direct(conn: Connection) -> tuple:
 
 # --- 输出 ---------------------------------------------------------------------
 
-def _describe(conn: Connection, note: str, path) -> str:
+ROLE_SCRIPT = "health.overview"     # 已注册脚本里带 pg_is_in_recovery() 的那条,不必新加白名单
+STANDBY_NOTE = (
+    "\n> ⚠ 这是**备机**：`dbe_perf.statement_history` 是 unlogged 表，备机上读不到。"
+    "sqlfetch / sqltune / sqlreview / proctune 取 SQL 文本时会退到 `dbe_perf.statement`"
+    "（归一化文本，参数值是占位符）；要真实参数值请用**主库 IP** 重新登录。\n"
+)
+
+
+def _probe_role(conn: Connection) -> str:
+    """登录时顺手看一眼主备，只提示不阻断。
+
+    备机上 unlogged 表读不到，四个取 SQL 文本的 skill 会报错降级——现场为这个 HTTP 400
+    追了两天参数名。登录时就把「这是备机」说出来，比事后翻日志便宜得多。
+    脚本没注册、版本没这列、查不动：如实写「未探测」，不猜。
+    """
+    try:
+        rows = access.runner_for(conn).run(ROLE_SCRIPT)
+    except Exception as exc:
+        return "未探测（%s）" % str(exc).splitlines()[0][:80]
+    if not rows or "in_recovery" not in rows[0]:
+        return "未探测（%s 没有 in_recovery 列）" % ROLE_SCRIPT
+    raw = str(rows[0].get("in_recovery", "")).strip().lower()
+    if raw in ("t", "true", "1", "yes", "on"):
+        return "备机（in_recovery=true）"
+    return "主库（in_recovery=false）"
+
+
+def _describe(conn: Connection, note: str, path, role: str = "") -> str:
     out = "# 已登录\n\n"
     if conn.driver == "grmp":
         out += render.table(
@@ -185,7 +212,8 @@ def _describe(conn: Connection, note: str, path) -> str:
          ["应用", conn.app or "—"],         
          ["实例 IP（dataIp）", conn.data_ip],
          ["数据库", conn.database] ,
-         ["验证", note]])
+         ["验证", note],
+         ["主备", role or "未探测"]])
     else:
          out += render.table(
         ["项", "值"],
@@ -195,8 +223,11 @@ def _describe(conn: Connection, note: str, path) -> str:
          ["目标", "%s:%s/%s" % (conn.host, conn.port, conn.database)],
          ["驱动", conn.driver],
          ["用户", conn.user],
-         ["验证", note]])
+         ["验证", note],
+         ["主备", role or "未探测"]])
    
+    if role.startswith("备机"):
+        out += STANDBY_NOTE
     out += "\n会话已写入 `%s`。\n\n" % path
 
     if conn.driver == "grmp":
@@ -315,8 +346,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                     "取数时才失败，那时错误看起来像是那个 skill 坏了。"
                     % (conn.qualified, note))
 
+        role = "未探测（--no-verify）" if args.no_verify else _probe_role(conn)
         path = session.save(conn)
-        print(_describe(conn, note, path))
+        print(_describe(conn, note, path, role))
         return 0
 
     except ConfigError as exc:
