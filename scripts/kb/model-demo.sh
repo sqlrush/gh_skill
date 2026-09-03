@@ -22,7 +22,7 @@ run 01-before "$ASK"
 run 02-spec "把 $DEMO/运维规范摘录.md 导入知识库。写入之前把条款清单给我确认。"
 run 03-spec-confirm "清单确认,全部写入,然后跑 index 和 validate,把 validate 结果告诉我。" -c
 run 04-tickets "把 $DEMO/工单导出-2025Q1.csv 导入知识库,原文脱敏。首次导入的策略问题逐题问我。" -c
-run 05-strategy "策略回答:1 默认引擎 gaussdb;2 没写级别默认 S3;3 业务系统名保持原样;4 对象名保留 schema 前缀;5 认可结论强度口径。把答案写进 strategies/tickets.yaml,然后继续:逐单填写候选并跑 review,把选择列表原样给我。" -c
+run 05-strategy "策略回答:全部按默认——案例;一单一条主链;涉及对象 + 引用条款;复发标志两者都要;同义节点合并;全部小节进向量;置信度按此口径;缺省元数据按此缺省。把答案按 key 写进 strategies/tickets.yaml,重跑 propose,然后继续:逐单填写候选并跑 review,把选择列表原样给我。" -c
 run 06-decide "全部接受,边也接受,录入人 12345。执行 apply,然后 validate 和 index,最后跑 health 把状态行给我。" -c
 run 07-after "$ASK"
 bash "$ROOT/scripts/kb/demo-reset.sh" >/dev/null

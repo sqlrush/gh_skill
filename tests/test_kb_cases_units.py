@@ -255,10 +255,26 @@ def test_propose_writes_worksheets_and_strategy_questions(tmp_path, capsys):
     assert ws["item_id"] == "ITSM-018823" and "candidate_template" in ws and "known_entities" in ws
     out = capsys.readouterr().out
     assert "首次导入工单" in out and "strategies/tickets.yaml" in out
+    # 问的是转化策略(因果链 / 关系 / 复发标志 / 合并 / 向量),不是元数据缺省值
+    for key in ("因果链", "复发标志", "合并", "向量", "默认:"):
+        assert key in out, key
     (kb / "strategies").mkdir()
-    (kb / "strategies" / "tickets.yaml").write_text("engine: gaussdb\n", encoding="utf-8")
+    (kb / "strategies" / "tickets.yaml").write_text(
+        "target: 案例\nchain: 允许多条\nrelations: 案例→涉及对象\nsignals: 材料里的告警代码\nmerge: 各自新建\nvector: 只现场 + 复发标志\n",
+        encoding="utf-8")
     kbmain.main(["propose", "q1", "--kb", str(kb)])
-    assert "首次导入工单" not in capsys.readouterr().out
+    out2 = capsys.readouterr().out
+    assert "首次导入工单" not in out2 and "转化策略" in out2
+    ws = json.loads((kb / "inbox" / "q1" / "work" / "001.json").read_text(encoding="utf-8"))
+    assert ws["strategy"]["chain"] == "允许多条"
+    rules = " ".join(ws["rules"])
+    assert "允许多条因果链" in rules and "不抽 引用条款" in rules and "只取材料里的告警代码" in rules
+    assert "各自新建" in rules and "向量只索引" in rules
+
+
+def test_strategy_rules_defaults_are_single_chain_and_merge():
+    rules = " ".join(kb_cases.strategy_rules({}))
+    assert "只抽一条主链" in rules and "同义节点合并" in rules and "告警代码" in rules
 
 
 def test_index_without_store_only_rebuilds_files(tmp_path, capsys):

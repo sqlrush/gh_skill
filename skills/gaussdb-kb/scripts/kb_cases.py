@@ -152,13 +152,77 @@ CANDIDATE_TEMPLATE = {
     }],
 }
 
+# 写图/写向量之前要定的转化策略——问的是"这批材料怎么变成向量和图",不是元数据缺省值。
+# 答案写进 strategies/tickets.yaml(key: 答案原文),之后每次 propose 都会把它塞进工作单约束模型抽取。
 STRATEGY_QUESTIONS = [
-    "这批材料的数据库引擎默认记作什么?(gaussdb / opengauss)",
-    "没写级别的工单默认几级?(S1–S4)",
-    "业务系统名保持原样(如 CBST)还是统一成某种写法?",
-    "对象名(表/GUC)保留 schema 前缀吗?(建议保留:同名表跨 schema 常见)",
-    "结论强度怎么判:原文写明根因且有验证 = 已确认;只有推测 = 推测;没写 = 待验证。认可这个口径吗?",
+    {"key": "target", "q": "这批材料沉淀成什么?",
+     "options": ["案例(现象→根因→处置,进向量 + 图)", "规范条款(进 rules/,只进向量)", "两者都有(报告里的规范引用也抽成条款)"],
+     "default": "案例"},
+    {"key": "chain", "q": "图里每单抽几条因果链?",
+     "options": ["一单一条主链(现象→根因→处置)", "允许多条(次要因素也建 caused_by 边,置信度打折)"],
+     "default": "一单一条主链"},
+    {"key": "relations", "q": "除因果链外还抽哪些关系进图?(可多选)",
+     "options": ["案例→涉及对象(表 / GUC / 等待事件 / 错误码)", "案例→引用条款", "对象→对象依赖(只在材料明确写了时)"],
+     "default": "涉及对象 + 引用条款"},
+    {"key": "signals", "q": "复发标志(各 skill 按发现匹配案例靠它)从哪取?",
+     "options": ["材料里的告警代码 / 等待事件 / GUC 名(优先)", "现象描述里的关键短语", "两者都要"],
+     "default": "两者都要"},
+    {"key": "merge", "q": "现象 / 根因与库里已有节点同义时?",
+     "options": ["合并到已有节点(canonical),让多个案例支持同一条链", "各自新建"],
+     "default": "合并"},
+    {"key": "vector", "q": "哪些小节进向量?",
+     "options": ["现场 / 判断 / 处置 / 复发标志全部", "只现场 + 复发标志(入口更准,但处置文本不可语义召回)"],
+     "default": "全部"},
+    {"key": "confidence", "q": "置信度口径?",
+     "options": ["结论强度 已确认=1.0 / 推测=0.6 / 待验证=0.3;用户在选择列表接受的边=1.0;模型自报封顶 0.9"],
+     "default": "按此口径"},
+    {"key": "defaults", "q": "缺省元数据(材料没写时)?",
+     "options": ["engine=gaussdb · severity=S3 · 系统名原样 · 对象名保留 schema 前缀"],
+     "default": "按此缺省"},
 ]
+
+
+def load_strategy(kb: pathlib.Path) -> Dict[str, str]:
+    path = kb / "strategies" / "tickets.yaml"
+    if not path.is_file():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        return {}
+    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+def strategy_rules(strategy: Dict[str, str]) -> List[str]:
+    """把策略答案翻成给模型的抽取约束(字符串匹配,答案是原文)。"""
+    rules: List[str] = []
+    if "条款" in strategy.get("target", "") and "案例" not in strategy.get("target", ""):
+        rules.append("这批材料只沉淀成规范条款:不写 case/edges,把每条可判定要求写成候选条款")
+    if "多条" in strategy.get("chain", ""):
+        rules.append("允许多条因果链:次要因素各建一条 caused_by 边,confidence 比主链低 0.2")
+    else:
+        rules.append("每单只抽一条主链:现象 —caused_by→ 根因 —handled_by→ 处置;次要因素写进 secondary_factors,不建边")
+    rel = strategy.get("relations", "")
+    if rel and "对象" not in rel:
+        rules.append("不抽 涉及对象(involves)关系")
+    if rel and "条款" not in rel:
+        rules.append("不抽 引用条款(references)关系")
+    if "依赖" in rel:
+        rules.append("材料明确写了对象依赖(A 依赖 B / A 下游是 B)时抽 depends_on 边,没写不猜")
+    sig = strategy.get("signals", "")
+    if "告警" in sig and "短语" not in sig:
+        rules.append("signals 只取材料里的告警代码 / 等待事件 / GUC 名,不写现象短语")
+    elif "短语" in sig and "告警" not in sig:
+        rules.append("signals 取现象描述里的关键短语")
+    else:
+        rules.append("signals 同时取告警代码 / 等待事件 / GUC 名 和 现象关键短语,告警代码写在前面")
+    if "新建" in strategy.get("merge", ""):
+        rules.append("现象 / 根因不与已有节点合并,各自新建(known_entities 只作参考)")
+    else:
+        rules.append("现象 / 根因与 known_entities 里的同义节点合并:直接用已有的名字")
+    if "只现场" in strategy.get("vector", ""):
+        rules.append("向量只索引 现场 与 复发标志 两节(judge/处置 仍写进案例文件)")
+    return rules
 
 
 def _known_entities(kb: pathlib.Path, limit: int = 60) -> List[str]:
@@ -190,26 +254,34 @@ def cmd_propose(args: argparse.Namespace, kb: pathlib.Path) -> int:
         shutil.rmtree(work_dir)
     work_dir.mkdir(parents=True)
     known = _known_entities(kb)
+    strategy = load_strategy(kb)
+    first_time = not strategy
+    base_rules = [
+        "每个 quotes/entities/edges 的 quote 必须是原文里逐字出现的片段(review 会逐条核对,对不上的整项作废)",
+        "拿不准的字段留空,不要编;conclusion 宁可写 推测",
+        "objects/entities 用原文的叫法;known_entities 里有同一个东西就用它的名字",
+        "edges 只写原文能支撑的 现象→根因(caused_by)、根因→处置(handled_by);confidence 是你的把握(0.5–0.9)",
+    ]
     for n, path in enumerate(batch, 1):
         text = path.read_text(encoding="utf-8")
         _write_json(work_dir / f"{n:03d}.json", {
             "item_id": _item_id(path), "file": str(path.relative_to(kb)), "text": text,
             "candidate_template": CANDIDATE_TEMPLATE, "known_entities": known,
-            "rules": [
-                "每个 quotes/entities/edges 的 quote 必须是原文里逐字出现的片段(review 会逐条核对,对不上的整项作废)",
-                "拿不准的字段留空,不要编;conclusion 宁可写 推测",
-                "objects/entities 用原文的叫法;known_entities 里有同一个东西就用它的名字",
-                "edges 只写原文能支撑的 现象→根因(caused_by)、根因→处置(handled_by);confidence 是你的把握(0.5–0.9)",
-            ],
+            "strategy": strategy,                       # 用户确认过的转化策略(首次为空:先确认再填候选)
+            "rules": base_rules + strategy_rules(strategy),
         })
-    strategy = kb / "strategies" / "tickets.yaml"
-    first_time = not strategy.is_file()
     print(f"工作单       : {work_dir.relative_to(kb)}/(本批 {len(batch)} 单,剩余 {max(0, len(pending) - len(batch))} 单)")
     print(f"候选输出到   : {cand_path.relative_to(kb)}(JSON 数组,每单一个对象,形状见工作单 candidate_template)")
     if first_time:
-        print("首次导入工单,先向用户确认策略(答案写进 strategies/tickets.yaml):")
+        print("首次导入工单:写图/写向量之前先和用户确认转化策略(逐题问,答案按 key 写进 strategies/tickets.yaml,"
+              "写完重跑 propose 让工作单带上策略):")
         for i, q in enumerate(STRATEGY_QUESTIONS, 1):
-            print(f"  {i}. {q}")
+            print(f"  {i}. [{q['key']}] {q['q']}")
+            for opt in q["options"]:
+                print(f"       - {opt}")
+            print(f"       默认:{q['default']}")
+    else:
+        print("转化策略     : " + " · ".join(f"{k}={v[:18]}" for k, v in strategy.items()))
     print(f"Next: 逐单阅读工作单填写候选 → python3 kb.py review {args.slug}")
     return 0 if batch else 2
 
@@ -494,10 +566,16 @@ def cmd_apply(args: argparse.Namespace, kb: pathlib.Path) -> int:
     alias_map, _ = gf.load_canonical(kb)
     written_cases, triples_out = [], []
     entered_by = args.user or "kb"
+    defaults = load_strategy(kb).get("defaults", "")
     for cid, slot in by_case.items():
         if slot["case"] is None or slot["case"][0] == "reject":
             continue
         case = dict(slot["case"][1]["case"])
+        if not case.get("engine"):                     # 缺省元数据来自策略确认(没确认就按 gaussdb/S3)
+            case["engine"] = "opengauss" if "opengauss" in defaults.lower() else "gaussdb"
+        if not case.get("severity"):
+            m = re.search(r"severity=(S[1-4])", defaults)
+            case["severity"] = m.group(1) if m else "S3"
         for fld, (d, val) in slot["fields"].items():
             if d == "reject":
                 case[fld] = ""

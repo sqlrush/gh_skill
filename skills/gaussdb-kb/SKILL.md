@@ -52,8 +52,11 @@ python3 {baseDir}/scripts/kb.py health
 1. **导入**:`python3 {baseDir}/scripts/kb.py ingest 工单导出.xlsx [--redact]`
    一单一文件到 `inbox/<slug>/items/`,脚本猜的列映射会打印出来——**列映射不对就告诉用户改列名或用 `--kind`/`--slug`**。
    `--redact` 确定性脱敏 IP / 手机号 / 证件号 / 邮箱(对象名不动)。原文马上进索引(`kind=raw`),当天可被检索。
-2. **首次导入这类材料**:`kb.py propose <slug>` 会打印 3–5 个策略问题(引擎、默认级别、系统命名、对象名前缀、结论强度口径)。
-   **逐题向用户确认**,把答案写进 `<kb>/strategies/tickets.yaml`(键值即可),之后同类材料不再问。
+2. **首次导入这类材料——写图/写向量之前先定转化策略**:`kb.py propose <slug>` 会打印 8 个策略问题(每题带选项与默认):
+   沉淀成案例还是条款 / 每单抽几条因果链 / 除因果链还抽哪些关系 / 复发标志从哪取 / 同义现象是否合并到已有节点 /
+   哪些小节进向量 / 置信度口径 / 缺省元数据。**逐题向用户确认**,把答案按 key 写进 `<kb>/strategies/tickets.yaml`
+   (如 `chain: 一单一条主链`),**然后重跑 `propose`**——工作单会带上策略与由它翻成的抽取约束,你填候选时必须遵守。
+   之后同类材料不再问。
 3. **抽取(你的核心工作)**:`propose` 出的 `inbox/<slug>/work/NNN.json` 每单一份:原文 + `candidate_template` + 已知实体。
    逐单阅读,按模板写 `inbox/<slug>/candidates.json`(JSON 数组)。硬性要求:
    - 每个 `quotes` / `entities[].quote` / `edges[].quote` 都必须是**原文里逐字出现的片段**(review 会逐条核对,对不上整项作废);
