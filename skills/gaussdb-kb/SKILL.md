@@ -1,6 +1,6 @@
 ---
 name: gaussdb-kb
-version: 2.0.0
+version: 2.1.0
 description: "客户知识库(原 kbimport):把客户的 GaussDB/OpenGauss 规范文档(txt/md/docx/doc/pdf)与故障工单/问题分析报告(md/docx/csv/xlsx)导入知识库——规范条款化进 rules/guides/errata,工单结构化成案例并抽成图谱关系,关键数据写入前一律生成编号选择列表交用户确认;向量进高斯/PG 向量库、关系进 Neo4j,各诊断 skill 按发现检索并优先引用客户先例。脚本负责转换、快照、校验、索引、检索、契约注入;你负责条款分类、案例抽取、呈现选择列表与收集确认。用户说「导入规范 / 导入工单 / 建知识库 / 把 xxx 加进知识库 / 更新规范库 / 知识库里有没有类似案例 / 让 skill 按我们的经验来」即用。"
 allowed-tools: ["exec", "read", "write"]
 compatibility: opencode
@@ -52,14 +52,16 @@ python3 {baseDir}/scripts/kb.py health
 1. **导入**:`python3 {baseDir}/scripts/kb.py ingest 工单导出.xlsx [--redact]`
    一单一文件到 `inbox/<slug>/items/`,脚本猜的列映射会打印出来——**列映射不对就告诉用户改列名或用 `--kind`/`--slug`**。
    `--redact` 确定性脱敏 IP / 手机号 / 证件号 / 邮箱(对象名不动)。原文马上进索引(`kind=raw`),当天可被检索。
-2. **首次导入这类材料——写图/写向量之前先定转化策略**:`kb.py propose <slug>` 会打印 8 个策略问题(每题带选项与默认):
-   沉淀成案例还是条款 / 每单抽几条因果链 / 除因果链还抽哪些关系 / 复发标志从哪取 / 同义现象是否合并到已有节点 /
-   哪些小节进向量 / 置信度口径 / 缺省元数据。**逐题向用户确认**,把答案按 key 写进 `<kb>/strategies/tickets.yaml`
-   (如 `chain: 一单一条主链`),**然后重跑 `propose`**——工作单会带上策略与由它翻成的抽取约束,你填候选时必须遵守。
-   之后同类材料不再问。
+2. **首次导入这类材料——写图/写向量之前先定转化策略**:没有 `<kb>/strategies/tickets.yaml` 时 `kb.py propose <slug>`
+   **不出工作单**,只打印 8 个策略问题(每题带选项与默认)并退出 2:沉淀成案例还是条款 / 每单抽几条因果链 / 除因果链还抽哪些关系 /
+   复发标志从哪取 / 同义现象是否合并到已有节点 / 哪些小节进向量 / 置信度口径 / 缺省元数据。**逐题向用户确认**,把答案按 key
+   写进 `strategies/tickets.yaml`(如 `chain: 一单一条主链`);用户说「全按默认」就 `kb.py propose <slug> --use-defaults`,脚本代写。
+   **然后重跑 `propose`**——工作单会带上策略与由它翻成的抽取约束,你填候选时必须遵守。之后同类材料不再问。
+   不要替用户定策略,也不要在没有工作单的情况下自己编候选。
 3. **抽取(你的核心工作)**:`propose` 出的 `inbox/<slug>/work/NNN.json` 每单一份:原文 + `candidate_template` + 已知实体。
    逐单阅读,按模板写 `inbox/<slug>/candidates.json`(JSON 数组)。硬性要求:
    - 每个 `quotes` / `entities[].quote` / `edges[].quote` 都必须是**原文里逐字出现的片段**(review 会逐条核对,对不上整项作废);
+   - `quotes.现场` 必填;`conclusion: 已确认` 时 `quotes.primary_factor` 必填——原文没写明根因就写 `推测`,不要编一句当已确认;
    - 拿不准的字段留空,不要编;根因没写明就 `conclusion: 推测`;
    - 实体用原文叫法,`known_entities` 里有同一个东西就用它的名字;
    - 边只写原文能支撑的 现象→根因(`caused_by`)、根因→处置(`handled_by`),`confidence` 是你的把握(0.5–0.9);
@@ -99,6 +101,8 @@ python3 {baseDir}/scripts/kb.py contract --apply    # 用户确认后执行
 
 - `kb.py health`:状态行、覆盖率、待处理、**缺口清单**(近期查不到条款/案例的发现——提示该补哪类材料);
 - `kb.py eval`:跑 `<kb>/eval/queries.yaml` 的黄金查询与金丝雀案例(与通用做法**故意相反**的客户处置),recall 不达标退出 2;
+- `kb.py cite-check --text "<回答>"`(或 `--file`、stdin):核对回答里引用的案例 ID / 条款 ID 是否真在库里——未找到的标「疑似编造」
+  并退出 2,已废止条款标 ⚠。用户要求复核时跑它;你自己作答引用了 ID,交稿前也先跑一遍,未找到的 ID 从回答里删掉;
 - 挑 1–2 条新入库案例演示 `kb.py query --q` 能命中;建议客户埋 2–3 个金丝雀案例定期抽查各 skill 是否真按知识库作答。
 
 ## 退出码语义

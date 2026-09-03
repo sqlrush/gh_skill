@@ -68,7 +68,8 @@ def _candidate(**over):
                               "判断": "表尾部空页回收持有8级锁,与DML互相cancel。",
                               "处置": "针对小表调大autovacuum_vacuum_threshold。",
                               "复发标志": "单条update偶发3s且autovacuum次数异常高。"}},
-        "quotes": {"primary_factor": "表尾部空页回收持有8级锁,与DML互相cancel", "处置": "调大autovacuum_vacuum_threshold"},
+        "quotes": {"现场": "业务偶现单条update走索引执行耗时3s",
+                   "primary_factor": "表尾部空页回收持有8级锁,与DML互相cancel", "处置": "调大autovacuum_vacuum_threshold"},
         "entities": [{"kind": "object", "name": "cbst.cosp_asyn_task_dtl", "quote": "cbst.cosp_asyn_task_dtl"},
                      {"kind": "guc", "name": "autovacuum_vacuum_threshold", "quote": "autovacuum_vacuum_threshold"}],
         "edges": [{"src": {"kind": "symptom", "name": "单条update偶发秒级"}, "rel": "caused_by",
@@ -167,6 +168,25 @@ def test_review_suggests_merge_with_similar_known_entity(tmp_path):
     assert merges and merges[0]["payload"]["into"] == "object:cbst.cosp_asyn_task_dtl" and merges[0]["default"] == "ask"
 
 
+def test_review_requires_scene_quote(tmp_path):
+    kb = _inbox(tmp_path)
+    c = _candidate(quotes={"primary_factor": "表尾部空页回收持有8级锁,与DML互相cancel"})   # 没有 现场 摘录
+    entries, errors = kb_cases.review_candidates(kb, "q1", [c])
+    assert any("quotes.现场" in e for e in errors) and entries == []
+
+
+def test_review_confirmed_conclusion_needs_root_cause_quote_but_guess_does_not(tmp_path):
+    kb = _inbox(tmp_path)
+    scene_only = {"现场": "业务偶现单条update走索引执行耗时3s"}
+    confirmed = _candidate(quotes=scene_only)                       # 已确认 却指不回根因
+    _, errors = kb_cases.review_candidates(kb, "q1", [confirmed])
+    assert any("primary_factor" in e and "已确认" in e for e in errors)
+    guess = _candidate(quotes=scene_only)
+    guess["case"] = {**guess["case"], "conclusion": "推测"}          # 原文没写根因:推测 不要求摘录
+    entries, errors = kb_cases.review_candidates(kb, "q1", [guess])
+    assert errors == [] and entries and entries[0]["kind"] == "case" and "推测" in entries[0]["text"]
+
+
 def test_review_refuses_duplicate_case_id(tmp_path):
     kb = _inbox(tmp_path)
     cid = "S2-20250224-CBST-偶现单条update慢"
@@ -247,24 +267,39 @@ def test_apply_refuses_when_review_has_errors(tmp_path):
 
 # ---------------------------------------------------------------- propose
 
-def test_propose_writes_worksheets_and_strategy_questions(tmp_path, capsys):
+def test_propose_gate_asks_strategy_and_writes_no_worksheets(tmp_path, capsys):
     kb = _inbox(tmp_path)
     rc = kbmain.main(["propose", "q1", "--kb", str(kb)])
-    assert rc == 0
-    ws = json.loads((kb / "inbox" / "q1" / "work" / "001.json").read_text(encoding="utf-8"))
-    assert ws["item_id"] == "ITSM-018823" and "candidate_template" in ws and "known_entities" in ws
+    assert rc == 2                                                  # 策略未确认:不出工作单,退出 2
+    assert not (kb / "inbox" / "q1" / "work").exists()
     out = capsys.readouterr().out
-    assert "首次导入工单" in out and "strategies/tickets.yaml" in out
+    assert "首次导入工单" in out and "strategies/tickets.yaml" in out and "--use-defaults" in out
     # 问的是转化策略(因果链 / 关系 / 复发标志 / 合并 / 向量),不是元数据缺省值
     for key in ("因果链", "复发标志", "合并", "向量", "默认:"):
         assert key in out, key
-    (kb / "strategies").mkdir()
-    (kb / "strategies" / "tickets.yaml").write_text(
-        "target: 案例\nchain: 允许多条\nrelations: 案例→涉及对象\nsignals: 材料里的告警代码\nmerge: 各自新建\nvector: 只现场 + 复发标志\n",
-        encoding="utf-8")
-    kbmain.main(["propose", "q1", "--kb", str(kb)])
+    # 用户说「全按默认」:脚本代写 yaml,同一次调用就出工作单
+    rc = kbmain.main(["propose", "q1", "--kb", str(kb), "--use-defaults"])
+    assert rc == 0
+    strat = yaml.safe_load((kb / "strategies" / "tickets.yaml").read_text(encoding="utf-8"))
+    assert set(strat) == {q["key"] for q in kb_cases.STRATEGY_QUESTIONS} and strat["chain"] == "一单一条主链"
+    ws = json.loads((kb / "inbox" / "q1" / "work" / "001.json").read_text(encoding="utf-8"))
+    assert ws["item_id"] == "ITSM-018823" and "candidate_template" in ws and "known_entities" in ws
+    assert ws["strategy"]["merge"] == "合并" and "只抽一条主链" in " ".join(ws["rules"])
     out2 = capsys.readouterr().out
     assert "首次导入工单" not in out2 and "转化策略" in out2
+
+
+def test_propose_uses_user_written_strategy_and_warns_unknown_keys(tmp_path, capsys):
+    kb = _inbox(tmp_path)
+    (kb / "strategies").mkdir()
+    (kb / "strategies" / "tickets.yaml").write_text(
+        "target: 案例\nchain: 允许多条\nrelations: 案例→涉及对象\nsignals: 材料里的告警代码\nmerge: 各自新建\nvector: 只现场 + 复发标志\n"
+        "typo_key: x\n",
+        encoding="utf-8")
+    assert kbmain.main(["propose", "q1", "--kb", str(kb)]) == 0
+    out2 = capsys.readouterr().out
+    assert "首次导入工单" not in out2 and "转化策略" in out2
+    assert "不认识的 key:typo_key" in out2                           # 模型手写 yaml 写错 key 要能看见
     ws = json.loads((kb / "inbox" / "q1" / "work" / "001.json").read_text(encoding="utf-8"))
     assert ws["strategy"]["chain"] == "允许多条"
     rules = " ".join(ws["rules"])

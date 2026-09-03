@@ -3,7 +3,8 @@
 分工:
   ingest   确定性——csv/xlsx/md/txt → inbox/<slug>/items/*.md(一单一文件),写 manifest;
   propose  确定性——出工作单 inbox/<slug>/work/NNN.json(原文 + 案例 schema + 已知实体),
-           模型据此写 inbox/<slug>/candidates.json;首次导入该类材料附策略问题;
+           模型据此写 inbox/<slug>/candidates.json;首次导入该类材料只问转化策略、不出工作单
+           (策略未经用户确认,模型没有可填的工作单——跳不过去);
   review   确定性——校验候选(schema / 出处回指 / 实体归一 / ID 唯一)→ 编号选择列表 review.md + review.json;
   apply    确定性——按 decisions(编号的接受/改/拒)写 cases/*.md、graph/<slug>.yaml、canonical.yaml。
 
@@ -225,6 +226,24 @@ def strategy_rules(strategy: Dict[str, str]) -> List[str]:
     return rules
 
 
+def write_default_strategy(kb: pathlib.Path) -> pathlib.Path:
+    """用户说「全按默认」时由脚本代写 strategies/tickets.yaml(key: 默认答案),模型不用手写 yaml。"""
+    path = kb / "strategies" / "tickets.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {q["key"]: q["default"] for q in STRATEGY_QUESTIONS}
+    path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def print_strategy_questions() -> None:
+    print("首次导入工单:写图/写向量之前先和用户确认转化策略——策略未确认,不出工作单。逐题问,每题带选项与默认:")
+    for i, q in enumerate(STRATEGY_QUESTIONS, 1):
+        print(f"  {i}. [{q['key']}] {q['q']}")
+        for opt in q["options"]:
+            print(f"       - {opt}")
+        print(f"       默认:{q['default']}")
+
+
 def _known_entities(kb: pathlib.Path, limit: int = 60) -> List[str]:
     aliases, _ = gf.load_canonical(kb)
     ids = sorted(set(aliases.values()))
@@ -249,13 +268,25 @@ def cmd_propose(args: argparse.Namespace, kb: pathlib.Path) -> int:
         done = {c.get("item_id") for c in _read_json(cand_path) if isinstance(c, dict)}
     pending = [p for p in items if p.stem not in done and _item_id(p) not in done]
     batch = pending[args.offset:args.offset + args.batch]
+    strategy = load_strategy(kb)
+    if not strategy and args.use_defaults:
+        write_default_strategy(kb)
+        strategy = load_strategy(kb)
+        print("转化策略     : 用户选「全按默认」,已写入 strategies/tickets.yaml")
+    if not strategy:                                   # 闸门:策略没经用户确认,不出工作单
+        print_strategy_questions()
+        print(f"Next: 逐题向用户确认 → 答案按 key 写进 strategies/tickets.yaml"
+              f"(用户说全按默认:python3 kb.py propose {args.slug} --use-defaults)→ 重跑 propose")
+        return 2
+    unknown = sorted(set(strategy) - {q["key"] for q in STRATEGY_QUESTIONS})
+    if unknown:
+        print(f"[warn ] strategies/tickets.yaml 有不认识的 key:{'、'.join(unknown)}"
+              f"(合法 key:{'、'.join(q['key'] for q in STRATEGY_QUESTIONS)})")
     work_dir = inbox / "work"
     if work_dir.is_dir():
         shutil.rmtree(work_dir)
     work_dir.mkdir(parents=True)
     known = _known_entities(kb)
-    strategy = load_strategy(kb)
-    first_time = not strategy
     base_rules = [
         "每个 quotes/entities/edges 的 quote 必须是原文里逐字出现的片段(review 会逐条核对,对不上的整项作废)",
         "拿不准的字段留空,不要编;conclusion 宁可写 推测",
@@ -272,16 +303,7 @@ def cmd_propose(args: argparse.Namespace, kb: pathlib.Path) -> int:
         })
     print(f"工作单       : {work_dir.relative_to(kb)}/(本批 {len(batch)} 单,剩余 {max(0, len(pending) - len(batch))} 单)")
     print(f"候选输出到   : {cand_path.relative_to(kb)}(JSON 数组,每单一个对象,形状见工作单 candidate_template)")
-    if first_time:
-        print("首次导入工单:写图/写向量之前先和用户确认转化策略(逐题问,答案按 key 写进 strategies/tickets.yaml,"
-              "写完重跑 propose 让工作单带上策略):")
-        for i, q in enumerate(STRATEGY_QUESTIONS, 1):
-            print(f"  {i}. [{q['key']}] {q['q']}")
-            for opt in q["options"]:
-                print(f"       - {opt}")
-            print(f"       默认:{q['default']}")
-    else:
-        print("转化策略     : " + " · ".join(f"{k}={v[:18]}" for k, v in strategy.items()))
+    print("转化策略     : " + " · ".join(f"{k}={v[:18]}" for k, v in strategy.items()))
     print(f"Next: 逐单阅读工作单填写候选 → python3 kb.py review {args.slug}")
     return 0 if batch else 2
 
@@ -364,6 +386,10 @@ def review_candidates(kb: pathlib.Path, slug: str, candidates: List[Dict[str, An
         if str(case.get("conclusion") or "") not in kbcases.CONCLUSION_CONFIDENCE:
             errors.append(f"候选 {item_id}:conclusion 必须是 已确认/推测/待验证")
         quotes = cand.get("quotes") or {}
+        if not str(quotes.get("现场") or "").strip():
+            errors.append(f"候选 {item_id}:quotes.现场 缺失——「现场」小节必须附原文摘录")
+        if str(case.get("conclusion") or "") == "已确认" and not str(quotes.get("primary_factor") or "").strip():
+            errors.append(f"候选 {item_id}:结论强度 已确认 但 quotes.primary_factor 没有原文摘录——补摘录,或把结论改成 推测")
         bad_quotes = [k for k, q in quotes.items() if not quote_found(str(q), text)]
         for k in bad_quotes:
             errors.append(f"候选 {item_id}:字段「{k}」的摘录在原文里找不到(出处回指失败)")
@@ -653,6 +679,8 @@ def add_subcommands(sub: "argparse._SubParsersAction") -> None:
     p.add_argument("--kb")
     p.add_argument("--batch", type=int, default=WORK_BATCH)
     p.add_argument("--offset", type=int, default=0)
+    p.add_argument("--use-defaults", action="store_true",
+                   help="用户说「全按默认」:脚本代写 strategies/tickets.yaml(8 题默认答案)后再出工作单")
     p.set_defaults(func=lambda a: cmd_propose(a, _kb(a)))
 
     p = sub.add_parser("review", help="校验候选并生成编号选择列表(写库前唯一闸门)")

@@ -13,6 +13,7 @@ entries. This script owns everything that must not depend on a model:
                         and that withdrawn clauses actually left rules/
     search <keyword>    grep across errata/ rules/ guides/ (errata first)
     contract [--apply]  inject the KB-reference contract block into the judging skills
+    cite-check          verify that case / clause IDs quoted in an answer exist (kb_cite.py)
 
 Withdrawing a clause is a *move*, not a flag. The contract (references/kb-contract.md)
 sends the skills at the KB with `grep -rn <kw> <kb>/errata <kb>/rules <kb>/guides`, and
@@ -1055,6 +1056,7 @@ def cmd_contract(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     import kb_cases
+    import kb_cite
     import kb_store
 
     parser = argparse.ArgumentParser(
@@ -1079,6 +1081,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_index.set_defaults(func=cmd_index_all)
     kb_store.add_subcommands(sub)
     kb_cases.add_subcommands(sub)
+    kb_cite.add_subcommands(sub)
 
     p_validate = sub.add_parser("validate", help="校验 ID/schema/INDEX 一致性")
     p_validate.add_argument("--kb")
@@ -1128,11 +1131,13 @@ def cmd_index_all(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     import kb_cases
+    import kb_cite
     import kb_store
     from common.kb import config as kbconfig
     try:
         return args.func(args)
-    except (KbError, kb_store.StoreCmdError, kb_cases.CaseCmdError, kbconfig.KbConfigError) as exc:
+    except (KbError, kb_store.StoreCmdError, kb_cases.CaseCmdError, kb_cite.CiteCmdError,
+            kbconfig.KbConfigError) as exc:
         print(f"错误:{exc}", file=sys.stderr)
         return 1
 
