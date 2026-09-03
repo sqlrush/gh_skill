@@ -188,6 +188,18 @@ def _wait_display(p: dict) -> str:
     return "未知" if is_null(raw) else str(raw)
 
 
+def kb_section(findings) -> str:
+    """「客户知识库参照」:按每条 finding 查客户知识库(脚本层接入,与 health 同款)。
+
+    知识库不存在 / 没配 / 连不上,小节只剩「> 知识库未接入(原因)」——报告照常,不许静默省略。
+    """
+    try:
+        from common.kb import query as kbquery
+    except ImportError as exc:                       # 旧安装没有 common/kb
+        return f"## 客户知识库参照\n> 知识库未接入(common/kb 未安装:{exc})\n\n"
+    return kbquery.section_for(list(findings))[0]
+
+
 def render_markdown(rep: LockReport) -> str:
     if not rep.pairs:
         # **空结果要明说。** 空白会被读成「这项没查」。
@@ -198,9 +210,9 @@ def render_markdown(rep: LockReport) -> str:
             return ("# 锁堵塞分析\n\n检测到死锁环，但未能取得对应的持有者/"
                     "等待者明细（两次查询之间状态发生了变化）。环上的会话："
                     + "；".join(" → ".join(str(s) for s in ring) + " → …回到起点"
-                                for ring in rep.deadlocks) + "\n")
+                                for ring in rep.deadlocks) + "\n\n" + kb_section(rep.findings))
         return ("# 锁堵塞分析\n\n当前无锁等待 —— 查询正常返回，"
-                "没有任何会话在等锁。\n")
+                "没有任何会话在等锁。\n\n" + kb_section(rep.findings))
 
     waiter_ids = sorted({as_int(p.get("waiter_sessionid")) for p in rep.pairs})
     deepest = max((chain.depth(rep.edges, sid) for sid in waiter_ids), default=0)
@@ -220,6 +232,8 @@ def render_markdown(rep: LockReport) -> str:
         out.append("> **检测到死锁**：" + "；".join(
             " → ".join(str(s) for s in ring) + " → …回到起点"
             for ring in rep.deadlocks) + "\n")
+    # 客户知识库对这些锁发现怎么说——放在明细之前,处置建议(含下面的快速恢复语句)以它为首选依据。
+    out.append(kb_section(rep.findings))
 
     body = []
     for p in rep.pairs:

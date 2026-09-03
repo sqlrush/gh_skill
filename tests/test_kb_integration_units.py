@@ -135,3 +135,30 @@ def test_sqltune_report_unattached_is_explicit(monkeypatch, load):
     monkeypatch.setattr(sqltune, "evidence_report", lambda ev: "")
     out = sqltune.sqltune_report(_tr())
     assert "> 知识库未接入(" in out
+
+
+# ---------------------------------------------------------------- lockwait
+
+def test_lockwait_report_has_kb_section_even_when_empty(monkeypatch, load):
+    """锁等待为空时也要有小节——空白会被读成「这项没查」。"""
+    monkeypatch.setenv("GSDB_KB_DIR", "/nonexistent/kb")
+    lockwait = load("gaussdb-lockwait", "lockwait")
+    rep = lockwait.LockReport(pairs=[], edges=[], deadlocks=[], findings=[])
+    out = lockwait.render_markdown(rep)
+    assert "当前无锁等待" in out and "## 客户知识库参照" in out and "> 知识库未接入(" in out
+
+
+def test_lockwait_report_renders_hits_before_detail(monkeypatch, load):
+    lockwait = load("gaussdb-lockwait", "lockwait")
+    monkeypatch.setattr(kbquery, "from_findings", _canned)
+    pair = {"waiter_sessionid": 2, "holder_sessionid": 1, "waiter_mode": "ShareLock", "holder_mode": "ExclusiveLock",
+            "locktype": "transactionid", "lock_object": "", "waiter_wait_s": 3.0, "holder_query": "UPDATE t",
+            "waiter_pid": 20, "holder_pid": 10, "waiter_query": "UPDATE t", "holder_state": "idle in transaction",
+            "holder_user": "u", "holder_app": "cbst-batch-adjust", "holder_xact_age_s": 40.0, "waiter_user": "u",
+            "waiter_app": "cbst-online", "locktag": ""}
+    f = Finding(dimension="locks", code="LOCK_ROOT_IDLE_XACT", severity=Severity.WARN, metric="根阻塞会话",
+                value="1", threshold="0", evidence="idle in transaction 40s cbst-batch-adjust")
+    rep = lockwait.LockReport(pairs=[pair], edges=[(2, 1)], deadlocks=[], findings=[f])
+    out = lockwait.render_markdown(rep)
+    assert "## 客户知识库参照" in out and "### 对 🟠 LOCK_ROOT_IDLE_XACT" in out
+    assert out.index("## 客户知识库参照") < out.index("## 阻塞明细")
