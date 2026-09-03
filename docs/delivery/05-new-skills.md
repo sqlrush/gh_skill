@@ -1,4 +1,4 @@
-# 新增三个 skill：gaussdb-sqlreview / gaussdb-memanalyze / gaussdb-kbimport
+# 新增三个 skill：gaussdb-sqlreview / gaussdb-memanalyze / gaussdb-kb
 
 > 面向使用者与开发者。这三个是本项目在 Go 版 `gdaa` 之外**新增**的能力，无 Go 版对应实现。
 > 通用的分层、`common/` 连接层、编码规范见 [02-代码结构详解](02-architecture.md) 与
@@ -9,7 +9,7 @@
 1. [三者的定位与关系](#1-三者的定位与关系)
 2. [gaussdb-sqlreview —— SQL 规范审查](#2-sqlreview--sql-规范审查)
 3. [gaussdb-memanalyze —— 动态内存冲高分析](#3-memanalyze--动态内存冲高分析)
-4. [gaussdb-kbimport —— 用户知识库导入与治理](#4-kbimport--用户知识库导入与治理)
+4. [gaussdb-kb —— 用户知识库导入与治理](#4-kb--用户知识库导入与治理)
 5. [知识库落点与优先级链（跨 skill）](#5-知识库落点与优先级链跨-skill)
 6. [测试](#6-测试)
 
@@ -21,9 +21,9 @@
 |---------------------|---|---|---|
 | `gaussdb-sqlreview` | `sql-governance` | 按规则审查 DDL/DML/DQL 是否合规 | 部分（文本审查不连） |
 | `gaussdb-memanalyze`        | `diagnostics` | 动态内存冲高六层下钻 | 是 |
-| `gaussdb-kbimport`          | `sql-governance` | 把客户规范文档导入知识库，供各 skill 参考 | **否** |
+| `gaussdb-kb`          | `sql-governance` | 把客户规范文档导入知识库，供各 skill 参考 | **否** |
 
-关系：`gaussdb-kbimport` 建立的**用户知识库**，被 6 个会做规范/阈值判断的 skill 参考
+关系：`gaussdb-kb` 建立的**用户知识库**，被 6 个会做规范/阈值判断的 skill 参考
 （`gaussdb-sqlreview` / `gaussdb-health` / `gaussdb-wdr` / `gaussdb-memanalyze` / `gaussdb-sqltune` / `gaussdb-proctune`）——但**只作参考**，
 不改变这些 skill 的判定逻辑。详见[第 5 节](#5-知识库落点与优先级链跨-skill)。
 
@@ -284,7 +284,7 @@ watch:    probe → 循环采 [L1 L3] ×N → trend.analyze      ─┘
 
 ---
 
-## 4. gaussdb-kbimport —— 用户知识库导入与治理
+## 4. gaussdb-kb —— 用户知识库导入与治理
 
 ### 4.1 分工铁律
 
@@ -298,22 +298,22 @@ watch:    probe → 循环采 [L1 L3] ×N → trend.analyze      ─┘
 
 ```bash
 # 1) 导入（脚本）：格式转换 + 原文快照 + 标题大纲
-python3 {baseDir}/scripts/kbimport.py ingest 客户规范.docx
+python3 {baseDir}/scripts/kb.py ingest 客户规范.docx
 
 # 2) 条款化（模型）：读 source.md，分类写入 rules/ guides/ errata/，然后删掉 inbox/
 
 # 3) 重建索引（脚本）
-python3 {baseDir}/scripts/kbimport.py index
+python3 {baseDir}/scripts/kb.py index
 
 # 4) 校验（脚本）：ID 格式/唯一性、schema、INDEX 一致性
-python3 {baseDir}/scripts/kbimport.py validate
+python3 {baseDir}/scripts/kb.py validate
 
 # 5) 检索（脚本）：errata > rules > guides 优先级
-python3 {baseDir}/scripts/kbimport.py search 索引命名
+python3 {baseDir}/scripts/kb.py search 索引命名
 
 # 6) 契约注入（脚本）：让做判断的 skill 先查知识库
-python3 {baseDir}/scripts/kbimport.py contract            # 先扫描
-python3 {baseDir}/scripts/kbimport.py contract --apply    # 确认后执行
+python3 {baseDir}/scripts/kb.py contract            # 先扫描
+python3 {baseDir}/scripts/kb.py contract --apply    # 确认后执行
 ```
 
 **退出码**：`0` = 成功、`1` = 运行错误（格式不支持、转换失败、路径不存在）、
@@ -364,13 +364,13 @@ frontmatter、INDEX 与实际文件的一致性、inbox 是否还有未处理项
 ### 4.5 代码结构
 
 ```
-skills/gaussdb-kbimport/
+skills/gaussdb-kb/
 ├── SKILL.md
 ├── references/
 │   ├── kb-contract.md    注入各 SKILL.md 的契约块模板（用户可编辑）
 │   └── kb-layout.md      条款格式与 ID 规范（模型条款化时必读）
 └── scripts/
-    └── kbimport.py  641 行   五个子命令，纯 stdlib + PyYAML，**不连数据库**
+    └── kb.py  641 行   五个子命令，纯 stdlib + PyYAML，**不连数据库**
 ```
 
 单文件，按职责分区：`kb layout`（路径解析/骨架）、`ingest`（格式转换）、
@@ -457,7 +457,7 @@ skills/gaussdb-kbimport/
 |---|---|---|
 | `tests/test_sqlreview_units.py` | 41 | lexer（注释/字面量/切句/行号）、rules 加载校验、每个 checker 的命中与不命中、report |
 | `tests/test_memanalyze_units.py` | 45 | probe 视图选择与列自适应、capability 的 GUC 判定、trend 泄漏/尖峰/平稳、会话关联、采集器降级、CLI 参数解析 |
-| `tests/test_kbimport_units.py` | 34 | 契约注入的幂等与**标记损坏时拒写**、模板反斜杠、GBK 编码、`.doc` 超时、rule schema 校验、KB 路径推导 |
+| `tests/test_kb_units.py` | 34 | 契约注入的幂等与**标记损坏时拒写**、模板反斜杠、GBK 编码、`.doc` 超时、rule schema 校验、KB 路径推导 |
 | `tests/test_sqlreview_live.py` | 2 | **方言 SQL 必须能在真库上跑通**——FakeDB 单测原理上抓不到方言语法错误 |
 
 跑法：
@@ -473,4 +473,4 @@ python3 -m pytest -q -m live          # 实机测试（无连接时自动 skip�
 
 ---
 
-*文档生成于 2026-07-13，对应 gaussdb-sqlreview 1.0.0 / gaussdb-memanalyze 1.0.0 / gaussdb-bimport 1.0.0。*
+*文档生成于 2026-07-13，对应 gaussdb-sqlreview 1.0.0 / gaussdb-memanalyze 1.0.0 / gaussdb-kb 2.0.0(见 docs/delivery/09-客户知识库.md)。*
