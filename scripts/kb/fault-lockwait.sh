@@ -20,11 +20,15 @@ case "${1:-status}" in
     gsql "CREATE TABLE IF NOT EXISTS cbst.acct_balance(acct_id int PRIMARY KEY, balance numeric(18,2), updated_at timestamptz DEFAULT now())" >/dev/null
     gsql "INSERT INTO cbst.acct_balance SELECT g, 1000, now() FROM generate_series(1,50) g ON DUPLICATE KEY UPDATE NOTHING" >/dev/null 2>&1 \
       || gsql "INSERT INTO cbst.acct_balance SELECT g, 1000, now() FROM generate_series(1,50) g WHERE NOT EXISTS (SELECT 1 FROM cbst.acct_balance)" >/dev/null
-    # 阻塞会话:gsql 读 stdin,发完 BEGIN/UPDATE 后 stdin 挂着不结束 → 事务保持 idle in transaction
-    docker exec -d "$CTR" bash -c "(echo \"SET application_name='cbst-batch-adjust';\"; echo 'BEGIN;'; echo 'UPDATE cbst.acct_balance SET balance = balance + 1 WHERE acct_id = 1;'; sleep 86400) | su - omm -c 'gsql -d postgres -q' > /tmp/kb-blocker.log 2>&1"
+    # 先清上一轮残留(gsql 被服务端收掉后管道里的 sleep 还在)
+    docker exec "$CTR" bash -c "pkill -f 'sleep 86400'; pkill -f cbst-online; true" >/dev/null 2>&1
+    # 阻塞会话:gsql 读 stdin,发完 BEGIN/UPDATE 后 stdin 挂着不结束 → 事务保持 idle in transaction。
+    # openGauss 的 session_timeout(默认 10 分钟)会把空闲会话断掉——演示要撑几十分钟,会话级先关掉它。
+    docker exec -d "$CTR" bash -c "(echo \"SET application_name='cbst-batch-adjust';\"; echo 'SET session_timeout = 0;'; echo 'SET idle_in_transaction_session_timeout = 0;'; echo 'BEGIN;'; echo 'UPDATE cbst.acct_balance SET balance = balance + 1 WHERE acct_id = 1;'; sleep 86400) | su - omm -c 'gsql -d postgres -q' > /tmp/kb-blocker.log 2>&1"
     sleep 3
-    # 被堵会话:同一行 update,等锁
-    docker exec -d "$CTR" bash -c "su - omm -c \"gsql -d postgres -q -c \\\"SET application_name='cbst-online'; SET statement_timeout='86400s'; UPDATE cbst.acct_balance SET balance = balance - 1 WHERE acct_id = 1;\\\"\" > /tmp/kb-waiter.log 2>&1"
+    # 被堵会话:同一行 update,等锁(等锁期间是 active,不受 session_timeout 影响;statement_timeout 放大)
+    # openGauss 的 update_lockwait_timeout(默认 2 分钟)/ lockwait_timeout(默认 20 分钟)会让等锁的会话报错退出——会话级放到最大
+    docker exec -d "$CTR" bash -c "su - omm -c \"gsql -d postgres -q -c \\\"SET application_name='cbst-online'; SET session_timeout = 0; SET statement_timeout = '86400s'; SET lockwait_timeout = 2147483647; SET update_lockwait_timeout = 2147483647; UPDATE cbst.acct_balance SET balance = balance - 1 WHERE acct_id = 1;\\\"\" > /tmp/kb-waiter.log 2>&1"
     sleep 3
     show_status
     ;;
