@@ -95,6 +95,11 @@ def _version(kb: pathlib.Path) -> str:
 def cmd_setup(args: argparse.Namespace) -> int:
     kb = kbconfig.resolve_kb_dir(args.kb)
     cfg = _cfg(kb)
+    if cfg.store.pg is None:
+        print("高斯/PG   : kb.yaml 未配置 store.pg——文件模式(词法检索 + graph/*.yaml 图文件),无表可建")
+        print("Neo4j     : " + ("未配置" if cfg.store.graph is None else "已配置,但没有 store.pg 时不启用(整体走文件模式)"))
+        print("要向量库/图库时按 references/storage-setup.md 配好 kb.yaml 与凭据后重跑 setup;现在可直接 kb.py index / health")
+        return 0
     pg = open_pg(cfg)
     try:
         caps = pg.setup()
@@ -212,9 +217,12 @@ def cmd_health(args: argparse.Namespace) -> int:
     sess = kbquery.KbSession.open(kb)
     try:
         status = sess.status()
+        file_warnings = list(getattr(sess.pg, "warnings", ()))[:5]    # 文件模式:坏文件在这里露头
     finally:
         sess.close()
     print(render.status_line(status))
+    for w in file_warnings:
+        print(f"[warn ] 文件:{w}")
     state = indexer.read_state(kb) or {}
     if state:
         print(f"上次索引  : {state.get('indexed_at', '?')} · 文档新写 {state.get('docs_indexed', '?')} · "

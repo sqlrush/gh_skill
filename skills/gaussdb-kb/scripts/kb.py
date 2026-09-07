@@ -571,6 +571,31 @@ def render_rules_listing(kb: pathlib.Path) -> str:
     return "\n".join(header + (body or ["", "(暂无现行条款)"])) + "\n"
 
 
+def render_cases_listing(kb: pathlib.Path) -> str:
+    """CASES.md:案例的逐条清单,与 RULES.md 同级。文件模式(没配向量库/图库)下模型靠它把案例当 md
+    知识库加载:先扫清单挑相关案例,再读 cases/ 全文。坏文件以 ⚠ 露头,不静默少一条。"""
+    from common.kb import cases as kbcases
+    cases, findings = kbcases.load_cases(kb)
+    header = [
+        "# 案例速查(CASES)",
+        "",
+        f"> 由 `kb.py index` 自动生成,勿手工编辑。版本 {read_version(kb)} · 案例 {len(cases)} 条。",
+        "> **这是全部案例的逐条清单。** 没配向量库/图库(文件模式)时,先在此按现象 / 对象 / 复发标志挑相关案例,",
+        "> 再读 `cases/` 里的全文(现场 / 判断 / 处置 / 复发标志)。引用必带案例 ID;结论强度不是「已确认」的要带上标签。",
+        "",
+    ]
+    body: list[str] = []
+    for c in sorted(cases, key=lambda c: (c.occurred_at, c.id), reverse=True):
+        try:
+            rel = c.path.relative_to(kb).as_posix()
+        except ValueError:
+            rel = f"cases/{c.path.name}"
+        signals = f" · 复发标志:{';'.join(c.signals)}" if c.signals else ""
+        body.append(f"- `{c.id}` · {c.system} · {c.occurred_at} · {c.conclusion} · {c.title}{signals} · `{rel}`")
+    body += [f"- ⚠ {m}(修好后重跑 index)" for lvl, m in findings if lvl == "error"]
+    return "\n".join(header + (body or ["(暂无案例)"])) + "\n"
+
+
 def cmd_index(args: argparse.Namespace) -> int:
     kb = resolve_kb_dir(args.kb)
     if not kb.is_dir():
@@ -591,7 +616,8 @@ def cmd_index(args: argparse.Namespace) -> int:
         f"勘误 {len(errata)} 篇 · 条款 {rule_total} 条 · 指南 {len(guides)} 篇 · "
         f"已废止 {archive_total} 条。",
         "> 查询优先级:errata/ > rules/ > guides/ > 模型自带知识。",
-        "> **现行条款的逐条清单见 `RULES.md`**(判定前先读它);本索引到文件级为止。",
+        "> **现行条款的逐条清单见 `RULES.md`**(判定前先读它);**案例的逐条清单见 `CASES.md`**"
+        "(查历史相似先读它);本索引到文件级为止。",
         "",
         "## errata/(修正与例外 —— 最高优先级)",
         "",
@@ -616,8 +642,12 @@ def cmd_index(args: argparse.Namespace) -> int:
     (kb / "INDEX.md").write_text("\n".join(lines), encoding="utf-8")
     listing = render_rules_listing(kb)
     (kb / "RULES.md").write_text(listing, encoding="utf-8")
+    cases_listing = render_cases_listing(kb)
+    (kb / "CASES.md").write_text(cases_listing, encoding="utf-8")
+    case_total = sum(1 for ln in cases_listing.splitlines() if ln.startswith("- `"))
     print(f"INDEX.md 已重建:{kb / 'INDEX.md'}({len(lines)} 行);"
-          f"RULES.md 已重建:{kb / 'RULES.md'}({rule_total} 条现行条款)")
+          f"RULES.md 已重建:{kb / 'RULES.md'}({rule_total} 条现行条款);"
+          f"CASES.md 已重建:{kb / 'CASES.md'}({case_total} 条案例)")
     return 0
 
 
@@ -842,8 +872,34 @@ def validate_cases_and_graph(kb: pathlib.Path, findings: list) -> None:
 
     cases, case_findings = kbcases.load_cases(kb)
     findings.extend(case_findings)
-    _, tri_findings = gf.load_triples(kb, case_ids=[c.id for c in cases])
+    triples, tri_findings = gf.load_triples(kb, case_ids=[c.id for c in cases])
     findings.extend(tri_findings)
+    validate_symptom_reachability(triples, findings)
+
+
+def validate_symptom_reachability(triples, findings: list) -> None:
+    """现象节点断成两半是静默失效:案例 `exhibits` 的现象与因果链起点的现象没归一,
+    这个案例就永远走不到自己的 现象→根因→处置 链。向量检索靠语义相似能绕过去,
+    纯词法(文件模式 / 没配 embedding)绕不过去——不报错,只是「路径:无」。"""
+    exhibited: dict[str, str] = {}      # 被案例指到的现象 id → 名字
+    chained: dict[str, str] = {}        # 有 caused_by 出边的现象 id → 名字
+    for t in triples:
+        if t.status == "rejected":
+            continue
+        if t.rel == "exhibits" and t.dst.kind == "symptom":
+            exhibited.setdefault(t.dst.id, t.dst.name)
+        elif t.rel == "caused_by" and t.src.kind == "symptom":
+            chained.setdefault(t.src.id, t.src.name)
+    orphan = sorted(set(exhibited) - set(chained))
+    if not orphan or not chained:
+        return
+    for sid in orphan:
+        findings.append((
+            "warn",
+            f"graph: 现象 `{exhibited[sid]}`({sid})只有案例 exhibits 指向它,没有 caused_by 出边——"
+            f"引用这个现象的案例走不到「现象→根因→处置」路径。库里另有 {len(chained)} 个带因果链的现象"
+            f"(如 `{chained[sorted(chained)[0]]}`):同一个现象的不同叫法请在 graph/canonical.yaml 里归一到同一个 id,"
+            f"否则纯词法检索(文件模式 / 未配 embedding)查不到这条路径"))
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
@@ -1123,9 +1179,18 @@ def cmd_index_all(args: argparse.Namespace) -> int:
     kb = resolve_kb_dir(args.kb)
     cfg = kbconfig.load(kb)
     if cfg.store.pg is None:
-        print("存储        : kb.yaml 未配置 store.pg——只重建了文件索引;配好后重跑 index 即写库")
+        print("存储        : kb.yaml 未配置 store.pg——文件模式:已重建 INDEX.md / RULES.md / CASES.md,"
+              "检索走文件(词法 + 图文件);要向量库/图库时按 references/storage-setup.md 配好后重跑 index 即写库")
         return 0
-    return kb_store.cmd_index(args)
+    try:
+        return kb_store.cmd_index(args)
+    except kb_store.StoreCmdError as exc:
+        # 配了库却写不进去:文件索引已经建好,检索会自动退到文件模式。两句都要说——
+        # 只报错会让人以为知识库废了,只报「还能用」会把一个真故障藏起来。
+        print(f"存储        : 写库失败:{exc}")
+        print("            : 已回退到文件模式——INDEX.md / RULES.md / CASES.md 已重建,检索照常"
+              "(词法 + 图文件,无向量召回);修好存储后重跑 `kb.py index` 即写库。")
+        return 2
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -16,6 +16,18 @@
 节点 id = canonical:先查 `graph/canonical.yaml` 别名表(`<id>: [别名…]`),查不到按 `kind:归一化名字` 生成;
 标识符类(对象/GUC/等待事件)直接用小写原名。同一个东西的不同叫法必须落到同一个 id,否则图里是孤岛。
 
+**最常犯、也最难自己发现的错:同一个现象写成两个节点。**
+抽边时很容易把「案例 exhibits 的现象」按发现代码命名(`CACHE_LOW`),把因果链起点按描述命名
+(`缓存命中率低,报表时段 blks_read 冲高`)。两个 id 一分家,这个案例就**永远走不到自己的 现象→根因→处置 链**——
+不报错,只是路径小节写「无」。`kb.py validate` 会把这种现象逐个点名(「只有案例 exhibits 指向它,没有 caused_by 出边」),
+修法是在 `canonical.yaml` 里把描述名作为别名并到代码名那个 id 上:
+
+```yaml
+symptom:cache_low: [缓存命中率低, "缓存命中率低,报表时段 blks_read 冲高"]
+```
+
+一条案例的 `exhibits` 目标与它的 `caused_by` 起点,**必须是同一个 id**。
+
 ## 关系 rel → 类型
 
 `exhibits`(case→symptom)· `caused_by`(symptom→rootcause)· `handled_by`(rootcause→action)· `involves`(case→对象/GUC/等待事件/错误)·

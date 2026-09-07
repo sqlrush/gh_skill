@@ -701,6 +701,63 @@ def test_index_points_at_the_rule_listing(tmp_path):
     assert "RULES.md" in (d / "INDEX.md").read_text(encoding="utf-8")
 
 
+# --------------------------------------------------------------------------
+# CASES.md —— 案例的逐条清单,与 RULES.md 同级。没配向量库/图库(文件模式)时模型靠它
+# 把案例当 md 知识库加载:先扫清单挑相关案例,再读 cases/ 里的全文。
+# --------------------------------------------------------------------------
+_CASE_ID = "S1-20250224-CBST-偶现单条update慢"
+_CASE_MD = f"""---
+id: {_CASE_ID}
+title: 偶现单条 update 走索引耗时 3s
+system: CBST
+occurred_at: 2025-02-24
+conclusion: 已确认
+source: sources/report.v1.docx#前言
+objects: [cbst.cosp_asyn_task_dtl]
+signals: [autovacuum 频繁触发]
+---
+## 现场
+慢。
+## 判断
+锁。
+## 处置
+调大阈值。
+"""
+
+
+def _write_case(d: pathlib.Path, text: str = _CASE_MD, name: str = _CASE_ID) -> None:
+    (d / "cases").mkdir(parents=True, exist_ok=True)
+    (d / "cases" / f"{name}.md").write_text(text, encoding="utf-8")
+
+
+def test_index_writes_a_case_listing(tmp_path):
+    """逐条:ID、标题、系统、时间、结论强度、复发标志、文件路径都要在 CASES.md 里。"""
+    d = _kb_dir(tmp_path)
+    _write_case(d)
+    _index(d)
+    listing = (d / "CASES.md").read_text(encoding="utf-8")
+    assert _CASE_ID in listing and "偶现单条 update 走索引耗时 3s" in listing
+    assert "CBST" in listing and "2025-02-24" in listing and "已确认" in listing
+    assert "autovacuum 频繁触发" in listing and f"cases/{_CASE_ID}.md" in listing
+    assert "CASES.md" in (d / "INDEX.md").read_text(encoding="utf-8")
+
+
+def test_case_listing_says_when_empty(tmp_path):
+    d = _kb_dir(tmp_path)
+    _index(d)
+    assert "暂无案例" in (d / "CASES.md").read_text(encoding="utf-8")
+
+
+def test_case_listing_flags_a_broken_case_file_instead_of_dropping_it(tmp_path):
+    """坏文件要在清单里露头(⚠ + 文件名),不能静默少一条——否则模型以为库里没这个案例。"""
+    d = _kb_dir(tmp_path)
+    _write_case(d)
+    _write_case(d, "---\nid: [\n---\n", "broken")
+    _index(d)
+    listing = (d / "CASES.md").read_text(encoding="utf-8")
+    assert _CASE_ID in listing and "⚠" in listing and "broken" in listing
+
+
 def test_validate_errors_when_the_rule_listing_is_missing(tmp_path):
     d = _kb_dir(tmp_path)
     _write_rules(d, [_GOOD])

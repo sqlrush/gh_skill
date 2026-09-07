@@ -86,6 +86,66 @@ def _session(tmp_path, pg, graph=None, embedder=None, thresholds=None):
 
 CASE_ID = "S1-20250224-CBST-偶现单条update慢"
 
+# 文件模式用的最小知识库:一个案例、一条条款、三条已确认边(现象 → 根因 → 处置)。
+_FILE_CASE = f"""---
+id: {CASE_ID}
+title: 偶现单条 update 走索引耗时 3s
+system: CBST
+occurred_at: 2025-02-24
+conclusion: 已确认
+source: sources/report.v1.docx#前言
+objects: [cbst.cosp_asyn_task_dtl]
+signals: [autovacuum 频繁触发]
+rules: [GS-VAC-002]
+---
+## 现场
+业务偶现单条 update 耗时 3s,cbst.cosp_asyn_task_dtl 的 autovacuum 次数异常高。
+## 判断
+autovacuum 持 8 级锁。
+## 处置
+针对小表调大 autovacuum_vacuum_threshold。
+## 复发标志
+单条 update 偶发 3s 且该表 autovacuum 次数异常高。
+"""
+_FILE_TRIPLES = f"""
+- src: {{kind: symptom, name: 单条 update 偶发秒级}}
+  rel: caused_by
+  dst: {{kind: rootcause, name: autovacuum 持 8 级锁}}
+  confidence: 1.0
+  source: cases/{CASE_ID}.md#判断
+  case: {CASE_ID}
+- src: {{kind: rootcause, name: autovacuum 持 8 级锁}}
+  rel: handled_by
+  dst: {{kind: action, name: 表级调大 autovacuum_vacuum_threshold}}
+  confidence: 1.0
+  source: cases/{CASE_ID}.md#处置
+  case: {CASE_ID}
+- src: {{kind: case, name: x, canonical: "case:{CASE_ID}"}}
+  rel: exhibits
+  dst: {{kind: symptom, name: 单条 update 偶发秒级}}
+  confidence: 1.0
+  source: cases/{CASE_ID}.md#现场
+  case: {CASE_ID}
+"""
+_FILE_RULES = """- id: GS-VAC-002
+  severity: warn
+  check: advisory
+  rule: 小表 autovacuum 阈值按表级调大 autovacuum_vacuum_threshold
+  keywords: [autovacuum 阈值]
+  source: 《运维规范》v5 §6.2
+"""
+
+
+def _file_kb(tmp_path, kb_yaml="embeddings: {source: none}\n"):
+    for sub in ("cases", "graph", "rules"):
+        (tmp_path / sub).mkdir(parents=True, exist_ok=True)
+    (tmp_path / "VERSION").write_text("2026.09\n", encoding="utf-8")
+    (tmp_path / "cases" / f"{CASE_ID}.md").write_text(_FILE_CASE, encoding="utf-8")
+    (tmp_path / "graph" / "cbst.yaml").write_text(_FILE_TRIPLES, encoding="utf-8")
+    (tmp_path / "rules" / "vacuum.yaml").write_text(_FILE_RULES, encoding="utf-8")
+    (tmp_path / "kb.yaml").write_text(kb_yaml, encoding="utf-8")
+    return tmp_path
+
 
 def _rich_pg():
     # 假命中的正文必须真含查询里的强 token(autovacuum / cbst.cosp_asyn_task_dtl):相关度门槛会核对。
@@ -230,17 +290,86 @@ def test_from_findings_never_raises_when_unattached(tmp_path):
     assert res.status.attached is False and "不存在" in res.status.reason and res.items == ()
 
 
-def test_open_reports_missing_store_config(tmp_path):
-    (tmp_path / "kb.yaml").write_text("embeddings: {source: none}\n", encoding="utf-8")
+# ---------------------------------------------------------------- 三种模式的感知与回退
+
+def test_open_without_store_falls_back_to_file_mode(tmp_path):
+    """没配向量库/图库不是「未接入」:直接在 <kb>/ 文件上检索,小节格式一样,状态行写明模式与原因。"""
+    sess = query.KbSession.open(_file_kb(tmp_path))
+    try:
+        assert sess.attached and sess.mode == "文件"
+        st = sess.status()
+        assert st.attached and st.mode == "文件" and "store.pg" in st.reason
+        assert st.counts["docs.case"] == 1 and st.counts["docs.rule"] == 1
+        assert st.vector.startswith("未启用") and st.graph.startswith("图文件") and "条已确认边" in st.graph
+        refs = sess.search("VAC_FREQ", "🟠 VAC_FREQ", "VAC_FREQ autovacuum 次数异常高 cbst.cosp_asyn_task_dtl")
+        assert [c.short_id for c in refs.cases] == [CASE_ID]
+        assert [c.short_id for c in refs.clauses] == ["GS-VAC-002"]
+        assert refs.cases[0].sections["处置"].startswith("针对小表")
+        assert len(refs.paths) == 1 and refs.paths[0].action.startswith("表级调大") and refs.paths[0].cases == (CASE_ID,)
+    finally:
+        sess.close()
+
+
+def test_open_falls_back_to_files_when_credential_missing(tmp_path):
+    kb = _file_kb(tmp_path, "store:\n  pg: {host: 127.0.0.1, port: 1, database: d, user: u, credential: kb}\n")
+    sess = query.KbSession.open(kb, password_lookup=lambda n: (_ for _ in ()).throw(RuntimeError("no cred")))
+    assert sess.attached and sess.mode == "文件" and "口令" in sess.status().reason
+
+
+def test_open_falls_back_to_files_when_pg_unreachable(tmp_path):
+    kb = _file_kb(tmp_path, "store:\n  pg: {host: 127.0.0.1, port: 1, database: d, user: u, credential: kb}\n")
+    sess = query.KbSession.open(kb, password_lookup=lambda n: "pw")
+    assert sess.attached and sess.mode == "文件" and sess.status().reason
+    assert sess.search("k", "l", "autovacuum 次数异常高 cbst.cosp_asyn_task_dtl").cases
+
+
+def test_open_graph_uses_graph_files_when_neo4j_unreachable(tmp_path):
+    kb = _file_kb(tmp_path)
+    cfg = kbconfig.KbConfig(kb_dir=kb, embeddings=kbconfig.EmbeddingConfig(), thresholds=kbconfig.Thresholds(),
+                            defaults={}, store=kbconfig.StoreConfig(
+                                graph=kbconfig.GraphStore(url="http://127.0.0.1:1", user="neo4j", credential="g")))
+    graph, note = query.open_graph(cfg, lambda n: "pw")
+    assert graph is not None and graph.ping() and "Neo4j 不可用" in note
+    assert graph.paths(["symptom:单条_update_偶发秒级"], today="2026-09-05")
+    none_cfg = kbconfig.KbConfig(kb_dir=kb, embeddings=kbconfig.EmbeddingConfig(), thresholds=kbconfig.Thresholds(),
+                                 defaults={}, store=kbconfig.StoreConfig())
+    graph2, note2 = query.open_graph(none_cfg, lambda n: "pw")
+    assert graph2 is not None and "store.graph" in note2
+
+
+def test_mode_reflects_which_backends_are_live(tmp_path):
+    from common.kb import store_files as sf
+    kb = _file_kb(tmp_path)
+    assert _session(tmp_path, _rich_pg(), FakeGraph()).mode == "向量库+图库"
+    assert _session(tmp_path, _rich_pg(), sf.load_graph(kb)).mode == "向量库+图文件"
+    assert _session(tmp_path, _rich_pg(), None).mode == "向量库"
+    assert _session(tmp_path, sf.FileStore.load(kb), sf.load_graph(kb)).mode == "文件"
+
+
+def test_open_reports_missing_dir_and_bad_yaml_as_unattached(tmp_path):
+    """文件模式也要有目录和合法的 kb.yaml:这两种才是真正的「未接入」。"""
+    assert not query.KbSession.open(tmp_path / "nope").attached
+    (tmp_path / "kb.yaml").write_text("store: [\n", encoding="utf-8")
     sess = query.KbSession.open(tmp_path)
-    assert not sess.attached and "store.pg" in sess.reason
+    assert not sess.attached and "kb.yaml" in sess.reason
 
 
-def test_open_reports_credential_failure(tmp_path):
-    (tmp_path / "kb.yaml").write_text(
-        "store:\n  pg: {host: 127.0.0.1, port: 1, database: d, user: u, credential: kb}\n", encoding="utf-8")
-    sess = query.KbSession.open(tmp_path, password_lookup=lambda n: (_ for _ in ()).throw(RuntimeError("no cred")))
-    assert not sess.attached and "口令" in sess.reason
+def test_empty_kb_stays_unattached_instead_of_a_section_full_of_none(tmp_path):
+    """装完还没导入任何材料时,不要给每条发现挂一串「无对应条款 / 无相似案例」——
+    那是噪音,且与契约里「客户尚未导入就别提知识库」相抵触。空库 = 未接入(说明是空的)。"""
+    (tmp_path / "kb.yaml").write_text("embeddings: {source: none}\n", encoding="utf-8")
+    (tmp_path / "rules").mkdir()
+    sess = query.KbSession.open(tmp_path)
+    assert not sess.attached and "空" in sess.reason
+    assert render.render_section(query.from_findings([_finding()], kb_dir=tmp_path)).count("\n") <= 3
+
+
+def test_file_mode_reports_a_graph_that_could_not_be_loaded(tmp_path):
+    """图文件加载不出来时状态行要说原因,不能显示成「未配置」——那是两回事。"""
+    sess = query.KbSession(None, None, None, None)
+    st = query.KbSession(_session(tmp_path, _rich_pg(), None).cfg, _rich_pg(), None, None,
+                         graph_reason="Neo4j 不可用:连不上").status()
+    assert "Neo4j 不可用" in st.graph
 
 
 # ---------------------------------------------------------------- render
@@ -256,7 +385,7 @@ def test_render_item_has_all_four_lines_and_explicit_none(tmp_path):
     sess = _session(tmp_path, _rich_pg(), FakeGraph([_path()]), None)
     res = query.from_findings([_finding(), _finding("IDX_UNUSED", Severity.NOTICE)], session=sess)
     out = render.render_section(res)
-    assert "> 知识库 v2026.09 · 条款 2 · 案例 3 · 原始工单 1 · 向量:" in out
+    assert "> 知识库 v2026.09 · 模式:向量库+图库 · 条款 2 · 案例 3 · 原始工单 1 · 向量:" in out
     assert "### 对 🟠告警 VAC_FREQ" in out
     assert "- **贵行规范** GS-VAC-002《小表 autovacuum 阈值》(warn) ——《运维规范》v5 §6.2" in out
     assert f"- **历史相似** {CASE_ID}(结论强度:已确认,2025-02-24):处置 = 针对小表调大 autovacuum_vacuum_threshold" in out
@@ -266,6 +395,19 @@ def test_render_item_has_all_four_lines_and_explicit_none(tmp_path):
     assert "### 对 🟡关注 IDX_UNUSED" in out
     assert "- 贵行规范:无对应条款 · 历史相似:无相似案例 · 路径:无" in out
     assert "违规汇总" not in out
+
+
+def test_render_file_mode_status_line_names_mode_and_reason(tmp_path):
+    sess = query.KbSession.open(_file_kb(tmp_path))
+    try:
+        res = query.from_findings([_finding()], session=sess)
+    finally:
+        sess.close()
+    out = render.render_section(res)
+    assert out.startswith("## 客户知识库参照\n> 知识库 v2026.09 · 模式:文件(kb.yaml 未配置 store.pg")
+    assert "· 向量:未启用" in out and "· 图:图文件" in out
+    assert f"- **历史相似** {CASE_ID}(结论强度:已确认,2025-02-24):处置 = 针对小表调大" in out
+    assert "- **本行历史路径** 单条 update 偶发秒级 → autovacuum 持 8 级锁 → 表级调大 autovacuum_vacuum_threshold (1 案例支持:" in out
 
 
 def test_render_partial_hits_state_missing_kinds(tmp_path):

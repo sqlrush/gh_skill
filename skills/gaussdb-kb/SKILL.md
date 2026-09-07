@@ -1,6 +1,6 @@
 ---
 name: gaussdb-kb
-version: 2.1.0
+version: 2.2.0
 description: "客户知识库(原 kbimport):把客户的 GaussDB/OpenGauss 规范文档(txt/md/docx/doc/pdf)与故障工单/问题分析报告(md/docx/csv/xlsx)导入知识库——规范条款化进 rules/guides/errata,工单结构化成案例并抽成图谱关系,关键数据写入前一律生成编号选择列表交用户确认;向量进高斯/PG 向量库、关系进 Neo4j,各诊断 skill 按发现检索并优先引用客户先例。脚本负责转换、快照、校验、索引、检索、契约注入;你负责条款分类、案例抽取、呈现选择列表与收集确认。用户说「导入规范 / 导入工单 / 建知识库 / 把 xxx 加进知识库 / 更新规范库 / 知识库里有没有类似案例 / 让 skill 按我们的经验来」即用。"
 allowed-tools: ["exec", "read", "write"]
 compatibility: opencode
@@ -10,7 +10,7 @@ metadata:
   family: sql-governance
 ---
 
-# KB(客户知识库:规范 + 工单 → 向量库 + 图库)
+# KB(客户知识库:规范 + 工单 → 文件 + 向量库 + 图库;后两者按环境自动感知,没有也能用)
 
 分工铁律:**确定性工作由脚本做**(转换 / 快照 / 校验 / 出处回指 / 索引 / 检索 / 契约注入 / 写库),
 **语义工作由你做**(条款分类、案例抽取、把选择列表呈现给用户并收集回答)。
@@ -26,9 +26,14 @@ metadata:
 python3 {baseDir}/scripts/kb.py health
 ```
 
-状态行第一行说明一切:`知识库未接入(原因)` 时按 `{baseDir}/references/storage-setup.md` 引导用户配 `kb.yaml`
-与凭据(`python3 -m common.credential_cli set kb-pg` / `kb-graph`),然后 `kb.py setup`。**不要自己去读凭据文件**。
-没配存储也能走规范路径(文件级索引照常),只是各 skill 的「客户知识库参照」小节会写「未接入」。
+状态行第一行说明一切,`模式:` 是脚本按环境自动感知的,三种都正常:
+- `模式:向量库+图库`——高斯/PG 与 Neo4j 都连上了,词法 ∥ 向量 ∥ 图三路检索;
+- `模式:向量库+图文件`——Neo4j 没配或连不上,路径改从 `graph/*.yaml` 里走(状态行「图:图文件」);
+- `模式:文件(原因)`——高斯/PG 没配或连不上或还没 index,整个检索直接在 `<kb>/` 文件上做(词法 + 图文件),
+  导入与查询流程**一字不变**,只是没有向量语义召回;`index` 只重建 `INDEX.md / RULES.md / CASES.md`。
+`知识库未接入(原因)` 只在目录不存在 / `kb.yaml` 无效时出现。用户想升到向量库+图库时按 `{baseDir}/references/storage-setup.md`
+引导他配 `kb.yaml` 与凭据(`python3 -m common.credential_cli set kb-pg` / `kb-graph`),然后 `kb.py setup && kb.py index`。
+**不要自己去读凭据文件**;也不要因为是文件模式就跳过导入或降低引用要求。
 
 ## 1. 规范路径(txt/md/docx/doc/pdf → 条款)
 
@@ -64,6 +69,8 @@ python3 {baseDir}/scripts/kb.py health
    - `quotes.现场` 必填;`conclusion: 已确认` 时 `quotes.primary_factor` 必填——原文没写明根因就写 `推测`,不要编一句当已确认;
    - 拿不准的字段留空,不要编;根因没写明就 `conclusion: 推测`;
    - 实体用原文叫法,`known_entities` 里有同一个东西就用它的名字;
+   - **一条案例的 `exhibits` 目标现象与它 `caused_by` 起点的现象必须是同一个名字**(写成两个就是两个节点,
+     这条案例永远走不到自己的路径,`validate` 会点名;修法见 `references/graph-schema.md` 的 canonical.yaml);
    - 边只写原文能支撑的 现象→根因(`caused_by`)、根因→处置(`handled_by`),`confidence` 是你的把握(0.5–0.9);
    - 每轮 5–10 单,多的下一轮 `propose --offset` 续跑。
 4. **选择列表(写库前的唯一闸门)**:`kb.py review <slug>` 生成 `review.md`——**原样呈现给用户**(格式与各类默认见
@@ -84,6 +91,8 @@ python3 {baseDir}/scripts/kb.py query --q "<用户的问题>"
 输出就是各诊断 skill 里同款的「客户知识库参照」小节:贵行规范 / 历史相似(带结论强度与处置)/ 本行历史路径
 (只含客户确认过的边,标几个案例支持)/ 原始工单。**引用必带 ID 与出处**;写着「无」就如实说「本行无先例,以下为通用做法」;
 绝不编案例或规范。有 findings 的 skill(health / sqltune / …)不用你查——它们的脚本已经把这一节写进输出了。
+三种模式输出同一格式;文件模式的状态行写「模式:文件(原因)」,引用要求不变。要看案例全文时先读 `<kb>/CASES.md`
+(案例逐条清单)再读 `<kb>/cases/` 的文件,不要整目录灌进上下文。
 
 ## 4. 契约注入(让做判断的 skill 先查知识库)
 
@@ -99,6 +108,8 @@ python3 {baseDir}/scripts/kb.py contract --apply    # 用户确认后执行
 
 ## 5. 验证闭环
 
+- `kb.py validate`:除 schema / 出处 / ID 外,还会点名**走不到路径的现象**(只被案例 exhibits、没有 caused_by 出边)
+  ——这是纯词法检索(文件模式 / 未配 embedding)下「路径:无」的头号原因,按提示在 `graph/canonical.yaml` 里归一;
 - `kb.py health`:状态行、覆盖率、待处理、**缺口清单**(近期查不到条款/案例的发现——提示该补哪类材料);
 - `kb.py eval`:跑 `<kb>/eval/queries.yaml` 的黄金查询与金丝雀案例(与通用做法**故意相反**的客户处置),recall 不达标退出 2;
 - `kb.py cite-check --text "<回答>"`(或 `--file`、stdin):核对回答里引用的案例 ID / 条款 ID 是否真在库里——未找到的标「疑似编造」
@@ -115,7 +126,8 @@ python3 {baseDir}/scripts/kb.py contract --apply    # 用户确认后执行
 - 条款分类、案例抽取是**你**的语义判断;写入前必须经用户确认(选择列表),且每项都要能指回原文;指不回去的作废。
 - `.doc` / `.pdf` 依赖系统转换器(textutil / antiword / pdftotext);扫描件不做 OCR,脚本会拒绝并说明。
 - 向量检索依赖 `kb.yaml` 配的 embedding 端点;没配或端点无嵌入模型时只走词法 + 图,状态行会写「向量:未启用」——**不要假装有向量**。
-- Neo4j 不可达时路径小节为空、状态行写「图:不可用」;高斯/PG 不可达时整节只剩「未接入」。这些都是降级,不是失败,skill 照常。
+- Neo4j 没配或不可达时路径改走 `graph/*.yaml`(状态行「图:图文件(原因)」);高斯/PG 没配或不可达时整体退到文件模式
+  (状态行「模式:文件(原因)」,词法 + 图文件,无向量召回)。这些都是降级,不是失败,skill 照常;目录不存在 / `kb.yaml` 无效才是「未接入」。
 - 「哪条边该确认」「哪个实体该归一」是用户的决定;脚本只能确定性地把候选摆出来、把回答落盘。
 
 ## 安全红线

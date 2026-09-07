@@ -21,7 +21,10 @@ def status_line(status: KbStatus) -> str:
         return f"{NOT_ATTACHED}({status.reason})" if status.reason else NOT_ATTACHED
     c = status.counts
     ver = f" v{status.version}" if status.version else ""
-    return (f"> 知识库{ver} · 条款 {c.get('docs.rule', 0)} · 案例 {c.get('docs.case', 0)} · "
+    mode = f" · 模式:{status.mode}" if status.mode else ""
+    if status.mode == "文件" and status.reason:          # 为什么退到了文件:不藏,写在状态行里
+        mode += f"({status.reason})"
+    return (f"> 知识库{ver}{mode} · 条款 {c.get('docs.rule', 0)} · 案例 {c.get('docs.case', 0)} · "
             f"原始工单 {c.get('docs.raw', 0)} · 向量:{status.vector} · 图:{status.graph}")
 
 

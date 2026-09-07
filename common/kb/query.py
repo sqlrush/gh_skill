@@ -20,11 +20,18 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import config as kbconfig
+from . import store_files as sf
 from . import store_graph as sg
 from . import store_pg as spg
 from . import text as kbtext
 from .embed import Embedder, EmbedError
 from .indexer import read_state
+
+# 三种模式,按环境里实际连得上什么自动感知(状态行「模式:」):
+MODE_FULL = "向量库+图库"          # 高斯/PG + Neo4j 都在
+MODE_PG_FILEGRAPH = "向量库+图文件"  # 高斯/PG 在,Neo4j 没配或不可达 → 路径改走 graph/*.yaml
+MODE_PG_ONLY = "向量库"            # 高斯/PG 在,没有任何图(只在测试替身里出现)
+MODE_FILES = "文件"                # 没配 / 连不上高斯·PG → 整个检索走 <kb>/ 文件(词法 + 图文件)
 
 RRF_K = 60
 TIME_BUDGET_S = 3.0
@@ -80,11 +87,12 @@ class FindingRefs:
 @dataclass(frozen=True)
 class KbStatus:
     attached: bool
-    reason: str = ""
+    reason: str = ""            # 未接入的原因;文件模式下是「为什么退到了文件」
     version: str = ""
     counts: Dict[str, int] = field(default_factory=dict)
     vector: str = "未启用"
     graph: str = "未配置"
+    mode: str = ""              # MODE_* 之一;未接入为空
 
 
 @dataclass(frozen=True)
@@ -168,17 +176,63 @@ def identifiers_in(text: str) -> List[str]:
 
 # ---------------------------------------------------------------- session
 
+def open_pg(cfg: kbconfig.KbConfig, lookup: Callable[[str], str]) -> Tuple[Optional[spg.PgStore], str]:
+    """(高斯/PG 连接, 连不上的原因)。没配 / 取不到口令 / 连不上 / 还没索引 都不抛,原因带回去。"""
+    if cfg.store.pg is None:
+        return None, "kb.yaml 未配置 store.pg(向量/词法存储)"
+    try:
+        pw = lookup(cfg.store.pg.credential)
+    except Exception as exc:
+        return None, f"取不到存储口令 {cfg.store.pg.credential}:{exc}"
+    try:
+        pg = spg.PgStore.connect(cfg.store.pg.host, cfg.store.pg.port, cfg.store.pg.database,
+                                 cfg.store.pg.user, pw, dims=cfg.embeddings.dims,
+                                 sslmode=cfg.store.pg.sslmode)
+    except spg.PgStoreError as exc:
+        return None, str(exc)
+    try:
+        if not pg.has_index():
+            pg.close()
+            return None, "存储里还没有索引(先运行 kb.py index)"
+    except spg.PgStoreError as exc:
+        pg.close()
+        return None, str(exc)
+    return pg, ""
+
+
+def _graph_files(kb: pathlib.Path) -> Optional[sf.FileGraph]:
+    try:
+        return sf.load_graph(kb)
+    except Exception:            # 文件树本身坏到组不出图:没有图,状态行会写出来
+        return None
+
+
+def open_graph(cfg: kbconfig.KbConfig, lookup: Callable[[str], str]) -> Tuple[Optional[object], str]:
+    """(图, 退到图文件的原因)。Neo4j 通就用 Neo4j(原因为空);没配或不可达就退到 graph/*.yaml 组的内存图。"""
+    if cfg.store.graph is None:
+        return _graph_files(cfg.kb_dir), "kb.yaml 未配置 store.graph"
+    try:
+        gpw = lookup(cfg.store.graph.credential)
+        graph = sg.GraphStore(cfg.store.graph.url, cfg.store.graph.user, gpw,
+                              database=cfg.store.graph.database, timeout_s=5.0)
+        graph.ping()
+        return graph, ""
+    except Exception as exc:
+        return _graph_files(cfg.kb_dir), f"Neo4j 不可用:{exc}"
+
+
 class KbSession:
-    """一次调用内共用的连接。open() 永不抛:连不上就是 attached=False。"""
+    """一次调用内共用的连接。open() 永不抛:连不上就退到文件模式;目录不存在 / kb.yaml 无效才是 attached=False。"""
 
     def __init__(self, cfg: Optional[kbconfig.KbConfig], pg: Optional[spg.PgStore],
                  graph: Optional[sg.GraphStore], embedder: Optional[Embedder],
-                 reason: str = "", notes: Sequence[str] = ()):
+                 reason: str = "", notes: Sequence[str] = (), graph_reason: str = ""):
         self.cfg = cfg
         self.pg = pg
         self.graph = graph
         self.embedder = embedder
         self.reason = reason
+        self.graph_reason = graph_reason
         self.notes: List[str] = list(notes)
         self._vector_failed = False
 
@@ -192,36 +246,15 @@ class KbSession:
             cfg = kbconfig.load(kb)
         except kbconfig.KbConfigError as exc:
             return cls(None, None, None, None, reason=f"kb.yaml 无效:{exc}")
-        if cfg.store.pg is None:
-            return cls(cfg, None, None, None, reason="kb.yaml 未配置 store.pg(向量/词法存储)")
         lookup = password_lookup or _default_password_lookup
-        try:
-            pw = lookup(cfg.store.pg.credential)
-        except Exception as exc:
-            return cls(cfg, None, None, None, reason=f"取不到存储口令 {cfg.store.pg.credential}:{exc}")
-        try:
-            pg = spg.PgStore.connect(cfg.store.pg.host, cfg.store.pg.port, cfg.store.pg.database,
-                                     cfg.store.pg.user, pw, dims=cfg.embeddings.dims,
-                                     sslmode=cfg.store.pg.sslmode)
-            if not pg.has_index():
-                pg.close()
-                return cls(cfg, None, None, None, reason="存储里还没有索引(先运行 kb.py index)")
-            caps = pg.capabilities()
-        except spg.PgStoreError as exc:
-            return cls(cfg, None, None, None, reason=str(exc))
+        pg, why = open_pg(cfg, lookup)
+        if pg is None:
+            return cls._open_files(cfg, why)
 
+        graph, graph_reason = open_graph(cfg, lookup)
         notes: List[str] = []
-        graph: Optional[sg.GraphStore] = None
-        if cfg.store.graph is not None:
-            try:
-                gpw = lookup(cfg.store.graph.credential)
-                graph = sg.GraphStore(cfg.store.graph.url, cfg.store.graph.user, gpw,
-                                      database=cfg.store.graph.database, timeout_s=5.0)
-                graph.ping()
-            except Exception as exc:
-                notes.append(f"图:不可用({exc})")
-                graph = None
         embedder: Optional[Embedder] = None
+        caps = pg.capabilities()
         if caps.vector:
             try:
                 embedder = Embedder.from_config(cfg)
@@ -231,7 +264,19 @@ class KbSession:
                 notes.append(f"向量:未启用({exc})")
         else:
             notes.append("向量:未启用(存储引擎无 vector 类型)")
-        return cls(cfg, pg, graph, embedder, notes=notes)
+        return cls(cfg, pg, graph, embedder, notes=notes, graph_reason=graph_reason)
+
+    @classmethod
+    def _open_files(cls, cfg: kbconfig.KbConfig, reason: str) -> "KbSession":
+        """文件模式:<kb>/ 文件上做词法检索,路径走 graph/*.yaml;原因写进状态行,不藏。"""
+        try:
+            fs = sf.FileStore.load(cfg.kb_dir)
+        except Exception as exc:
+            return cls(cfg, None, None, None, reason=f"{reason};文件模式加载失败:{exc}")
+        if not fs.has_index():
+            # 装完还没导入任何材料:整节写「未接入(空库)」就够了,不要给每条发现挂一串「无」。
+            return cls(cfg, None, None, None, reason=f"知识库是空的(还没导入任何规范或工单;{reason})")
+        return cls(cfg, fs, fs.graph, None, reason=reason, notes=["向量:未启用(文件模式无向量)"])
 
     def close(self) -> None:
         if self.pg is not None:
@@ -240,6 +285,16 @@ class KbSession:
     @property
     def attached(self) -> bool:
         return self.pg is not None
+
+    @property
+    def mode(self) -> str:
+        if self.pg is None:
+            return ""
+        if isinstance(self.pg, sf.FileStore):
+            return MODE_FILES
+        if self.graph is None:
+            return MODE_PG_ONLY
+        return MODE_PG_FILEGRAPH if isinstance(self.graph, sf.FileGraph) else MODE_FULL
 
     def status(self) -> KbStatus:
         if not self.attached or self.cfg is None or self.pg is None:
@@ -259,16 +314,24 @@ class KbSession:
             vector = f"{engine}(覆盖 {pct})" + ("·本次超时未用" if self._vector_failed else "")
         else:
             vector = next((n.split(":", 1)[1] for n in self.notes if n.startswith("向量:")), "未启用")
-        if self.graph is not None:
-            try:
-                gc = self.graph.counts()
-                graph = f"Neo4j {gc.get('edges.confirmed', 0)} 条已确认边"
-            except sg.GraphStoreError as exc:
-                graph = f"不可用({exc})"
-        else:
-            graph = next((n.split(":", 1)[1] for n in self.notes if n.startswith("图:")), "未配置")
-        return KbStatus(attached=True, version=version or str(state.get("kb_version", "")),
-                        counts=counts, vector=vector, graph=graph)
+        mode = self.mode
+        return KbStatus(attached=True, reason=self.reason if mode == MODE_FILES else "",
+                        version=version or str(state.get("kb_version", "")),
+                        counts=counts, vector=vector, graph=self._graph_label(), mode=mode)
+
+    def _graph_label(self) -> str:
+        if self.graph is None:
+            # 「加载不出来」和「没配」是两回事,别显示成同一句
+            if self.graph_reason:
+                return self.graph_reason
+            return next((n.split(":", 1)[1] for n in self.notes if n.startswith("图:")), "未配置")
+        if isinstance(self.graph, sf.FileGraph):
+            n = self.graph.counts().get("edges.confirmed", 0)
+            return f"图文件 {n} 条已确认边" + (f"({self.graph_reason})" if self.graph_reason else "")
+        try:
+            return f"Neo4j {self.graph.counts().get('edges.confirmed', 0)} 条已确认边"
+        except sg.GraphStoreError as exc:
+            return f"不可用({exc})"
 
     # --- 检索 -------------------------------------------------------------
 
