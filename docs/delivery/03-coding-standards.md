@@ -77,11 +77,11 @@ _VALID_SSLMODES = frozenset(
     {"disable", "allow", "prefer", "require", "verify-ca", "verify-full"}
 )
 _VALID_TYPES  = frozenset({"opengauss", "gaussdb"})
-_VALID_DRIVERS = frozenset({"gsql", "pg8000"})
+_VALID_DRIVERS = frozenset({"gsql", "psycopg2"})
 ```
 
 ```python
-# file: common/backends/pg8000_backend.py
+# file: common/backends/psycopg2_backend.py
 _SSL_MODES = frozenset({"allow", "prefer", "require", "verify-ca", "verify-full"})
 ```
 
@@ -213,10 +213,10 @@ class Options:
 | `CredentialError` | `common/credential.py` | 凭据缺失、解密失败、名称非法 |
 | `DBError` | `common/backends/base.py` | 连接失败、查询失败（与后端无关） |
 
-所有后端（`GsqlBackend`、`Pg8000Backend`）只抛 `DBError`，不透传原始库异常：
+所有后端（`GsqlBackend`、`Psycopg2Backend`）只抛 `DBError`，不透传原始库异常：
 
 ```python
-# file: common/backends/pg8000_backend.py — Pg8000Backend.query
+# file: common/backends/psycopg2_backend.py — Psycopg2Backend.query
 except Exception as exc:
     raise DBError(_format_pg_error(exc)) from exc
 ```
@@ -282,10 +282,10 @@ except Exception:
     pass  # 禁止：吞掉所有异常
 ```
 
-`Pg8000Backend.close()` 是唯一例外，因为关闭时连接可能已断开，且关闭失败对调用方无意义：
+`Psycopg2Backend.close()` 是唯一例外，因为关闭时连接可能已断开，且关闭失败对调用方无意义：
 
 ```python
-# file: common/backends/pg8000_backend.py — close()
+# file: common/backends/psycopg2_backend.py — close()
 def close(self) -> None:
     try:
         self._raw.close()
@@ -375,7 +375,7 @@ if args.begin <= 0 or args.end <= 0 or args.end <= args.begin:
 def set_statement_timeout(self, seconds: int) -> None:
     self._timeout_ms = int(seconds) * 1000   # 防止 float 混入
 
-# file: common/backends/pg8000_backend.py
+# file: common/backends/psycopg2_backend.py
 def set_statement_timeout(self, seconds: int) -> None:
     self.execute(f"SET statement_timeout = {int(seconds) * 1000}")
 ```
@@ -453,11 +453,11 @@ except FileExistsError:
 
 ### 6.5 参数化查询防 SQL 注入——两种形式
 
-**pg8000 后端**：原生参数化，占位符 `%s`，值以 tuple 传递，驱动负责转义：
+**psycopg2 后端**：原生参数化，占位符 `%s`，值以 tuple 传递，驱动负责转义：
 
 ```python
-# file: common/backends/pg8000_backend.py — query()
-cur.execute(sql, params or ())   # pg8000 处理转义
+# file: common/backends/psycopg2_backend.py — query()
+cur.execute(sql, params or ())   # psycopg2 处理转义
 ```
 
 **gsql 后端**：字符串参数走 `:'pN'`（gsql 自行转义为带引号字面量），数值走 `:pN`（裸值，调用方已确保来自我方可控的 int/float/Decimal）：
@@ -476,10 +476,10 @@ if isinstance(val, str):
 
 ### 6.6 默认只读会话（绝不执行变更）
 
-pg8000 后端在 `open()` 后立即钉只读：
+psycopg2 后端在 `open()` 后立即钉只读：
 
 ```python
-# file: common/backends/pg8000_backend.py — open()
+# file: common/backends/psycopg2_backend.py — open()
 if read_only:
     try:
         b.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
@@ -528,7 +528,7 @@ raise DBError(
 
 ```
 # file: requirements.txt
-pg8000>=1.30       # PostgreSQL wire 驱动
+psycopg2>=1.30       # PostgreSQL wire 驱动
 cryptography>=41   # AES-256-GCM 凭据解密
 PyYAML>=6          # config.yaml 解析
 ```
@@ -537,7 +537,7 @@ PyYAML>=6          # config.yaml 解析
 
 ### 7.2 gsql 后端纯 stdlib，无需第三方库
 
-`gsql_backend.py` 和 `gsql_protocol.py` 只用标准库（`os`、`subprocess`、`json`、`re`、`decimal`），在没有安装 pg8000 的环境下也能使用 gsql 后端。新增代码维持这个约束。
+`gsql_backend.py` 和 `gsql_protocol.py` 只用标准库（`os`、`subprocess`、`json`、`re`、`decimal`），在没有安装 psycopg2 的环境下也能使用 gsql 后端。新增代码维持这个约束。
 
 ### 7.3 惰性导入——按需加载后端
 
@@ -546,15 +546,15 @@ PyYAML>=6          # config.yaml 解析
 ```python
 # file: common/db.py — _load_backend()
 def _load_backend(driver: str):
-    if driver == "pg8000":
-        from .backends.pg8000_backend import Pg8000Backend
-        return Pg8000Backend
+    if driver == "psycopg2":
+        from .backends.psycopg2_backend import Psycopg2Backend
+        return Psycopg2Backend
     if driver == "gsql":
         from .backends.gsql_backend import GsqlBackend
         return GsqlBackend
 ```
 
-只在实际使用时才导入，gsql-only 环境不会因 `import pg8000` 失败而崩溃。
+只在实际使用时才导入，gsql-only 环境不会因 `import psycopg2` 失败而崩溃。
 
 ---
 
@@ -610,7 +610,7 @@ CI 默认跑 `-m "not live"`，只跑单元测试。开发者在本机手动运�
 ### 8.5 mock 约定
 
 - mock subprocess（gsql 后端）：`monkeypatch.setattr(gb.subprocess, "run", fake_run)`
-- mock pg8000 连接：`monkeypatch.setattr`/`unittest.mock.MagicMock`
+- mock psycopg2 连接：`monkeypatch.setattr`/`unittest.mock.MagicMock`
 - mock 环境变量：`monkeypatch.setenv` / `monkeypatch.delenv`
 - mock 文件系统：`tmp_path` fixture + `monkeypatch.setenv("GDAA_HOME", str(tmp_path))`
 
@@ -648,7 +648,7 @@ def test_read_only_prefix_present(monkeypatch):
 ```python
 # file: common/backends/base.py — Backend
 class Backend(abc.ABC):
-    name: str            # 后端标识符，如 "gsql" / "pg8000"
+    name: str            # 后端标识符，如 "gsql" / "psycopg2"
     provides_session: bool = True  # 是否提供跨语句持久会话
 
     @classmethod
@@ -675,7 +675,7 @@ class Backend(abc.ABC):
 
 | 值 | 含义 | 现有实现 |
 |----|------|---------|
-| `True` | 单条持久连接，GUC 设置和 hypopg 虚拟索引跨语句留存 | `Pg8000Backend` |
+| `True` | 单条持久连接，GUC 设置和 hypopg 虚拟索引跨语句留存 | `Psycopg2Backend` |
 | `False` | 每次查询独立子进程/连接，会话级状态不留存 | `GsqlBackend` |
 
 依赖 hypopg 虚拟索引的代码（`skills/gaussdb-sqltune/scripts/hypoindex.py`、`skills/proctune/scripts/hypoindex.py`）在入口处检查此属性：
@@ -685,7 +685,7 @@ class Backend(abc.ABC):
 def verify_indexes(db, sql, min_speedup=MIN_SPEEDUP):
     if not db.provides_session:
         raise DBError(
-            "hypopg 索引验证需要持久会话（请改用 pg8000 驱动）"
+            "hypopg 索引验证需要持久会话（请改用 psycopg2 驱动）"
         )
 ```
 
@@ -707,8 +707,8 @@ except Exception as exc:
     raise DBError(_format_pg_error(exc)) from exc
 
 # 错误：
-except pg8000.DatabaseError:
-    raise  # 泄露 pg8000 内部类型
+except psycopg2.DatabaseError:
+    raise  # 泄露 psycopg2 内部类型
 ```
 
 ---
@@ -797,8 +797,8 @@ SKILL.md 正文、`## 工作流`、`## 规则`、`## 安全红线` 均用中文�
 ```
 feat: 环境变量改 GSDB_HOME/GSDB_PASSWORD(旧 GDAA_* 兜底兼容)
 fix: hypopg 索引验证在无会话后端(gsql)下明确报错,不再静默失效
-refactor: db.py 门面化 + pg8000 后端搬迁(行为不变)
-test: 双后端 live 参数化(本机 gsql 自动兜底 pg8000)
+refactor: db.py 门面化 + psycopg2 后端搬迁(行为不变)
+test: 双后端 live 参数化(本机 gsql 自动兜底 psycopg2)
 docs: 记录 gsql hypopg verify 已知限制(待修)
 ```
 

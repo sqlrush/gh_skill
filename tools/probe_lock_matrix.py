@@ -5,7 +5,7 @@
     GSDB_HOME=~/.gdaa python3 tools/probe_lock_matrix.py -c og
 
 一条会话持 A 模式，另一条请求 B 模式；能在超时内拿到就是不互斥，
-被挡住就是互斥。需要持久会话，所以只能用 driver: pg8000 的连接。
+被挡住就是互斥。需要持久会话，所以只能用 driver: psycopg2 的连接。
 
 **这是矩阵的事实来源。** common/lockmodes.py 里的表若与本工具的结果不一致，
 以本工具为准 —— 表是人写的，撞出来的是数据库说的。
@@ -124,7 +124,7 @@ def measure(conn: str, holder_mode: str, waiter_mode: str) -> bool:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("-c", "--conn", default="og",
-                    help="连接名（必须是 driver: pg8000 —— 需要持久会话）")
+                    help="连接名（必须是 driver: psycopg2 —— 需要持久会话）")
     args = ap.parse_args()
 
     admin = Database.connect(args.conn, read_only=False)

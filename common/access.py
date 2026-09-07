@@ -7,7 +7,7 @@ skill 不感知自己走的是中间件还是直连，两条路径返回相同�
 （全字符串化的行字典）。这一点就是本层的全部价值：skill 代码在本地
 与客户环境完全相同，不需要为两边各留一套。
 
-    driver: pg8000 / gsql  →  直连路径
+    driver: psycopg2 / gsql  →  直连路径
     driver: grmp           →  中间件路径
 """
 from __future__ import annotations
@@ -37,7 +37,7 @@ __all__ = ["for_conn", "runner_for", "session_for", "session_for_conn",
 TOKEN_ENV = "GRMP_AUTH_TOKEN"
 HOST_ENV = "GRMP_API_HOST"
 
-DIRECT_DRIVERS = frozenset({"gsql", "pg8000"})
+DIRECT_DRIVERS = frozenset({"gsql", "psycopg2"})
 
 # ---------------------------------------------------------------------------
 # 驱动的能力位
@@ -139,7 +139,7 @@ def session_for_conn(conn: Connection, read_only: bool = True):
         raise SessionUnavailable(
             "连接 %s 的 driver 是 %s：该后端每条语句起独立子进程，"
             "不提供跨语句的持久会话。\n"
-            "本机调试请改用 driver: pg8000 的连接。" % (conn.name, driver)
+            "本机调试请改用 driver: psycopg2 的连接。" % (conn.name, driver)
         )
     return db
 
@@ -168,7 +168,7 @@ def whitelist_only(name: str) -> bool:
     """这条访问路径是不是只执行预注册脚本的白名单型通道。
 
     给的是**措辞**的依据，不是能力的依据：同一句「拿不到 hypopg 背书」，
-    本机调试时下一步是「换 driver: pg8000 重跑」，而客户的白名单部署里
+    本机调试时下一步是「换 driver: psycopg2 重跑」，而客户的白名单部署里
     压根没有直连通道 —— 那句话在那边不是建议，是噪音，还会把人往
     「绕过白名单」的方向引。
     """

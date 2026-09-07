@@ -1,7 +1,7 @@
 """common.kb —— 客户知识库的共享层,所有 skill 都从这里查库。
 
 真相在 <kb>/ 下的文件;高斯/PG(向量 + 词法)与 Neo4j(图)是可重建的派生索引。
-本包只依赖标准库 + pg8000(已在 requirements.txt 白名单内),Neo4j 走 HTTP。
+本包只依赖标准库 + psycopg2(已在 requirements.txt 白名单内),Neo4j 走 HTTP。
 
 模块分工:
     config      kb.yaml / OpenCode provider 端点 / 凭据名(密钥只在内存,repr 不泄露)

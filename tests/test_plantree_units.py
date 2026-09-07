@@ -83,7 +83,7 @@ def test_parse_from_json_text():
 
 
 def test_parse_from_decoded_object():
-    """pg8000 会把 json 列自动解码 —— 两条路径喂进来的形态不同，结果必须一致。"""
+    """psycopg2 会把 json 列自动解码 —— 两条路径喂进来的形态不同，结果必须一致。"""
     assert plantree.parse(_PLAN) == plantree.parse(json.dumps(_PLAN))
 
 

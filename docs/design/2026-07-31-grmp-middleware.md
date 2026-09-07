@@ -17,8 +17,8 @@
 
 | 路径 | 说明 | 用途 |
 |---|---|---|
-| **中间件路径** | skill → HTTP → grmp-mock → pg8000 → 数据库 | 模拟客户环境，交付前验证 |
-| **直连路径** | skill → `common.Database` → gsql/pg8000 → 数据库 | 本地开发调试，能力不受白名单限制 |
+| **中间件路径** | skill → HTTP → grmp-mock → psycopg2 → 数据库 | 模拟客户环境，交付前验证 |
+| **直连路径** | skill → `common.Database` → gsql/psycopg2 → 数据库 | 本地开发调试，能力不受白名单限制 |
 
 两条路径**共用同一份 SQL 定义**（脚本仓库），避免维护两套。
 
@@ -44,8 +44,8 @@
 | 开发/调试机 | Mac，`ssh sqlrush@192.168.128.1` |
 | 文件系统 | Mac 与 Linux 容器**共享** `/Users/sqlrush/`，可在任一侧编辑、Mac 侧运行 |
 | Python | Mac 系统 python3 **3.9.6**（无 venv） |
-| 已装依赖 | `pg8000 1.31.5`、`PyYAML`、`cryptography` —— 均已就绪 |
-| **无** gsql / psql | 直连路径在 Mac 上实际走 pg8000 自动兜底 |
+| 已装依赖 | `psycopg2 1.31.5`、`PyYAML`、`cryptography` —— 均已就绪 |
+| **无** gsql / psql | 直连路径在 Mac 上实际走 psycopg2 自动兜底 |
 | 无 node / go / docker CLI | 中间件必须是**纯 Python + 标准库**，不引入新依赖 |
 
 **Python 3.9 约束**：不能用 `match`、不能用运行时 `X | Y` 注解。仓库已普遍 `from __future__ import annotations`，沿用即可。
@@ -65,7 +65,7 @@
 
 1. `~/.gdaa/config.yaml` 中 `og`/`og-pri`/`og-std` 的 `host:port` 全部过期（写的是 `*.orb.local:5432`，该域名不解析）。至少需把 `og` 改为 `127.0.0.1:5433`。
 2. 客户改造版 `common/config.py:76` 把配置目录硬编码为 `/workspace/.opencode/skills/common`。本机运行必须设 `GSDB_HOME=$HOME/.gdaa`。
-3. `common/config.py` 的 `_VALID_DRIVERS` 只接受 `gsql`/`pg8000`，新增访问路径需扩展。
+3. `common/config.py` 的 `_VALID_DRIVERS` 只接受 `gsql`/`psycopg2`，新增访问路径需扩展。
 
 ### 2.4 参数替换方式：采用文本替换，不用绑定变量
 
@@ -136,7 +136,7 @@ rows = runner.run("slowsql.slow_sql",             # 逻辑脚本名，不是数�
                   {"threshold_ms": 200, "limit": 20})
 ```
 
-- `driver: pg8000` / `gsql` → 直连路径：本地渲染模板 + 绑定参数
+- `driver: psycopg2` / `gsql` → 直连路径：本地渲染模板 + 绑定参数
 - `driver: grmp` → 中间件路径：查列表拿 ID → invoke
 
 **逻辑名而非数字 ID**，这一点是硬要求：接口文档里 `id=56` 是「查看数据库信息」，客户调用示例里同一个 `id=56` 却被传了慢 SQL 的参数——**脚本 ID 是环境相关数据**。硬编码 ID 的失败方式极其隐蔽：换环境后 ID 依然存在，指向另一条脚本，执行成功、结果无关、不报错。
@@ -400,7 +400,7 @@ POST {base}/icbc/paas/aiops/grmp/diagnostic/agent/common-operations/invoke
 - `common/access.py` / `grmp_client.py` / `script_runner.py`
 - `config.py` 扩展 `_VALID_DRIVERS`
 - 改造 `slowsql` 一个 skill 走新入口
-- **验收**：同一个 skill，`driver: pg8000` 与 `driver: grmp` 两条路径跑出的结果**逐行一致**
+- **验收**：同一个 skill，`driver: psycopg2` 与 `driver: grmp` 两条路径跑出的结果**逐行一致**
 
 ### P6 — 全量迁移（按 skill 数量估）
 

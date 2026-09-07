@@ -13,8 +13,17 @@ def _conn(**kw):
 def test_driver_defaults_to_gsql():
     assert _conn().driver == "gsql"
 
-def test_validate_accepts_pg8000():
-    validate(_conn(driver="pg8000"))  # 不抛即通过
+def test_validate_accepts_psycopg2():
+    validate(_conn(driver="psycopg2"))  # 不抛即通过
+
+
+def test_retired_pg8000_driver_is_rejected_with_the_fix(tmp_path):
+    """pg8000 已整体换成 psycopg2,不保留别名。老配置必须**当场报错并说清怎么改**——
+    留个别名或给一句泛泛的 must be one of,都会让客户不知道该动哪一行。"""
+    with pytest.raises(ConfigError) as ei:
+        validate(_conn(driver="pg8000"))
+    msg = str(ei.value)
+    assert "pg8000" in msg and "psycopg2" in msg and "config.yaml" in msg
 
 def test_validate_rejects_unknown_driver():
     with pytest.raises(ConfigError):
@@ -39,12 +48,12 @@ def test_load_reads_explicit_driver(tmp_path, monkeypatch):
     cfg.write_text(
         "connections:\n"
         "  - name: a\n    type: opengauss\n    host: h\n"
-        "    port: 5432\n    database: d\n    user: u\n    driver: pg8000\n"
+        "    port: 5432\n    database: d\n    user: u\n    driver: psycopg2\n"
     )
     monkeypatch.delenv("GSDB_HOME", raising=False)
     monkeypatch.setenv("GDAA_HOME", str(tmp_path))
     conns = load()
-    assert conns[0].driver == "pg8000"
+    assert conns[0].driver == "psycopg2"
 
 
 def test_state_dir_honors_gsdb_home(tmp_path, monkeypatch):

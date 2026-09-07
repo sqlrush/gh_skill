@@ -29,7 +29,7 @@ python3 -m pip install -r requirements.txt
 
 完整步骤(前置依赖、建连接、验证、排障)见 [docs/INSTALL-opencode.md](docs/INSTALL-opencode.md);**成套交付/上手文档**(安装部署、代码结构、编码规范、参与开发)见 [docs/delivery/](docs/delivery/README.md)。
 
-连接配置放在一个本地目录里,位置由环境变量 `GSDB_HOME` 指定(任意名/路径,默认 `$GSDB_HOME`,`$GSDB_HOME/config.yaml` + `$GSDB_HOME/credentials/`(和 Go 版 `$GSDB_HOME` 共用同一份存储)。`GSDB_PASSWORD`(旧 `GDAA_PASSWORD` 仍兼容)可临时覆盖存储的密码(一次性 / CI 用)。支持 gsql（默认）与 pg8000 双后端，连接级自动兜底；详见 [docs/connection-drivers.md](docs/connection-drivers.md)。
+连接配置放在一个本地目录里,位置由环境变量 `GSDB_HOME` 指定(任意名/路径,默认 `$GSDB_HOME`,`$GSDB_HOME/config.yaml` + `$GSDB_HOME/credentials/`(和 Go 版 `$GSDB_HOME` 共用同一份存储)。`GSDB_PASSWORD`(旧 `GDAA_PASSWORD` 仍兼容)可临时覆盖存储的密码(一次性 / CI 用)。支持 gsql（默认）与 psycopg2 双后端，连接级自动兜底；详见 [docs/connection-drivers.md](docs/connection-drivers.md)。
 
 ## 范围(当前)
 
@@ -63,4 +63,4 @@ SQL 优化族:
 
 前 10 个 skill 的输出都对照 Go 版 `$GSDB_HOME` 二进制做了交叉验证(gaussdb-sqlreview / gaussdb-memanalyze / gaussdb-kb 为本项目新增,无 Go 版对应实现)。gaussdb-health 与 gaussdb-wdr 做了逐字节 diff:维度、表头、阈值串、确定性发现完全一致(wdr 因快照不可变,证据数值完全相同;`wdr render` 除脚注里有意去掉「$GSDB_HOME」一词外完全一致)。gaussdb-slowsql/gaussdb-topsql/gaussdb-sqlfetch 仅在末尾的 "Next:" 提示行不同——指向本地 Python 脚本而非 `$GSDB_HOME`。
 
-驱动:gsql（默认）+ pg8000 双后端，连接级自动兜底（gsql 不可用时自动降为 pg8000）。pg8000 已对 openGauss-lite 5.0.3 的 `opengauss` 与 `gaussdb` 两种连接类型实证；gsql parity 待在 Linux 主机验证，见 [docs/connection-drivers.md](docs/connection-drivers.md)。
+驱动:gsql（默认）+ psycopg2 双后端，连接级自动兜底（gsql 不可用时自动降为 psycopg2）。psycopg2 已对 openGauss-lite 5.0.3 的 `opengauss` 与 `gaussdb` 两种连接类型实证；gsql parity 待在 Linux 主机验证，见 [docs/connection-drivers.md](docs/connection-drivers.md)。

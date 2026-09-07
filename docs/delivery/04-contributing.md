@@ -24,10 +24,10 @@ source .venv/bin/activate
 
 ```bash
 python3 -m pip install -r requirements.txt
-# 安装: pg8000>=1.30  cryptography>=41  PyYAML>=6
+# 安装: psycopg2>=1.30  cryptography>=41  PyYAML>=6
 ```
 
-三个包均为纯 Python，无需编译。
+`cryptography` 与 `PyYAML` 是纯 Python；`psycopg2` 是 C 扩展，没有编译条件时用 `psycopg2-binary` 的预编译轮子。
 
 ### 1.4 跑单测，确认环境绿
 
@@ -88,7 +88,7 @@ db_connections:
       port: 15432
       database: postgres
       user: gaussdb
-      driver: pg8000
+      driver: psycopg2
 YAML
 chmod 600 "$GSDB_HOME/config.yaml"
 ```
@@ -135,7 +135,7 @@ opencode_skill/
 │   ├── config.py          # 读 GSDB_HOME/config.yaml，find(name) 取连接
 │   ├── credential.py      # load_secret / save_secret（AES-256-GCM）
 │   ├── db.py              # Database 门面：connect / query / scalar / close
-│   └── backends/          # gsql 后端 + pg8000 后端（skill 不需关心）
+│   └── backends/          # gsql 后端 + psycopg2 后端（skill 不需关心）
 │
 ├── skills/                # 每个子目录 = 一个 skill
 │   ├── gaussdb-slowsql/
@@ -191,7 +191,7 @@ metadata:
 
 # Biggest Tables（OpenGauss/GaussDB）
 
-1. **预检。** 运行 `python3 {baseDir}/scripts/biggest_tables.py -h`。若报缺少依赖，`python3 -m pip install pg8000 cryptography PyYAML` 后停下让用户处理。
+1. **预检。** 运行 `python3 {baseDir}/scripts/biggest_tables.py -h`。若报缺少依赖，`python3 -m pip install psycopg2 cryptography PyYAML` 后停下让用户处理。
 2. **选择连接。** 连接名沿用 `$GSDB_HOME/config.yaml` 的 `name` 字段。仅在有多个时才问用哪一个。
 3. 运行：
 

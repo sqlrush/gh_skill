@@ -22,7 +22,7 @@ db_connections:
       port: 5435
       database: postgres
       user: gaussdb
-      driver: gsql            # gsql（默认）| pg8000 | grmp
+      driver: gsql            # gsql（默认）| psycopg2 | grmp
 ```
 
 `connection_mode: api` 时改用 `api_connection`：
@@ -47,7 +47,7 @@ api_connection:
 | 值 | 说明 |
 |---|---|
 | `gsql`（默认） | 本机 `gsql` 命令行客户端，每条查询起一个子进程，通过 `-c` 执行 |
-| `pg8000` | 纯 Python 驱动，TCP 直连，无需安装 gsql 二进制 |
+| `psycopg2` | libpq 驱动（C 扩展），TCP 直连，无需安装 gsql 二进制 |
 
 旧版 config.yaml 不含 `driver` 字段时，默认视为 `gsql`（向后兼容）。
 
@@ -75,14 +75,14 @@ api_connection:
 ```
 gsql 不可用（DBError）
     ↓ 自动兜底
-pg8000 连接成功
+psycopg2 连接成功
     ↓
 返回 Database（透明，调用方无感知）
 ```
 
-**示例**：在 macOS 开发机（无 `gsql` 二进制）上，配置了 `driver: gsql` 的连接会自动降为 pg8000，所有 skill 照常工作，无需改 config.yaml。
+**示例**：在 macOS 开发机（无 `gsql` 二进制）上，配置了 `driver: gsql` 的连接会自动降为 psycopg2，所有 skill 照常工作，无需改 config.yaml。
 
-如果你希望**跳过 gsql 尝试**（节省延迟 / 避免日志噪音），在 config.yaml 中显式设置 `driver: pg8000`。
+如果你希望**跳过 gsql 尝试**（节省延迟 / 避免日志噪音），在 config.yaml 中显式设置 `driver: psycopg2`。
 
 ---
 
@@ -105,19 +105,19 @@ hypopg 虚拟索引）**无法跨多次 `db.*` 调用存活**。
 下一个子进程里消失 → `EXPLAIN` 看不到虚拟索引 → `hypo_cost == orig_cost` →
 speedup ≈ 1.0 → 所有候选会被否决。**修复前**这是一个静默的假负例。
 
-**已修（守卫）**：`Backend.provides_session`（pg8000=True / gsql=False）暴露后端是否
+**已修（守卫）**：`Backend.provides_session`（psycopg2=True / gsql=False）暴露后端是否
 提供持久会话；`gaussdb-sqltune` / `gaussdb-proctune` 的 `verify_indexes()` 入口检查 `db.provides_session`，
 无持久会话时**抛 `DBError` 明确报错**（不再静默返回 speedup≈1.0）。skill 的验证降级块会把
-该错误转成「索引验证不可用：…请用 driver: pg8000」的 note 展示给用户。
+该错误转成「索引验证不可用：…请用 driver: psycopg2」的 note 展示给用户。
 
 **影响范围**：
 
 - 仅当 `driver: gsql` **真正生效**（Linux 主机装了 gsql 二进制）时触发。
-- macOS / 无 gsql 主机会自动兜底到 pg8000，pg8000 使用持久 TCP 连接，hypopg 正常工作，**不受影响**。
+- macOS / 无 gsql 主机会自动兜底到 psycopg2，psycopg2 使用持久 TCP 连接，hypopg 正常工作，**不受影响**。
 - CI 容器（无 gsql）同 macOS，不受影响。
 
 **规避方法**：对依赖 hypopg 的 skill（`gaussdb-sqltune`、`gaussdb-proctune` 的 verify 阶段）使用
-`driver: pg8000`：
+`driver: psycopg2`：
 
 ```yaml
 # $GSDB_HOME/config.yaml
@@ -125,12 +125,12 @@ db_connections:
   app1:
     - name: og-pri
       ...
-      driver: pg8000   # 确保 hypopg verify 阶段使用持久连接
+      driver: psycopg2   # 确保 hypopg verify 阶段使用持久连接
 ```
 
 **状态：已修**（commit `6b3e811`）。采用「显式报错」方案：`verify_indexes` 在无持久
 会话的后端下抛 `DBError`，而非静默返回 speedup≈1.0。要在真 gsql 主机上实际跑 hypopg
-验证,请对该连接设 `driver: pg8000`。（备选的「自动钉 pg8000」方案未采用——显式报错更
+验证,请对该连接设 `driver: psycopg2`。（备选的「自动钉 psycopg2」方案未采用——显式报错更
 透明,不会在用户配了 gsql 时悄悄换后端。）后续 Linux+gsql 的 parity diff 仍建议包含
 `gaussdb-sqltune verify` / `gaussdb-proctune verify` 用例作回归。
 
@@ -144,9 +144,9 @@ db_connections:
 **关键洞察**：gsql 后端把可包裹的 SELECT 包成
 `SELECT json_agg(row_to_json(_t)) FROM (...) _t`，再用
 `json.loads(text, parse_float=Decimal)` 解析。这意味着——对 **JSON 原生标量类型**，
-gsql 解析出的 Python 值与 pg8000 返回的**完全一致**：
+gsql 解析出的 Python 值与 psycopg2 返回的**完全一致**：
 
-| 数据库类型 | JSON 中间形态 | gsql 后端 Python 值 | pg8000 后端 Python 值 | 是否一致 |
+| 数据库类型 | JSON 中间形态 | gsql 后端 Python 值 | psycopg2 后端 Python 值 | 是否一致 |
 |---|---|---|---|---|
 | 整数（`int`/`bigint`） | JSON number（整数） | `int` | `int` | ✅ 一致 |
 | 数值/浮点（`numeric`/`float`/`double`） | JSON number（小数，有小数位） | `Decimal`（`parse_float=Decimal`） | `Decimal` | ✅ 一致（待验证） |
@@ -156,11 +156,11 @@ gsql 解析出的 Python 值与 pg8000 返回的**完全一致**：
 > **numeric 细化说明（待验证）**：`numeric` 类型仅在**有小数位**时（如 `3.14`）在
 > JSON 中呈现为小数，触发 `parse_float=Decimal` → `Decimal`。若无小数位（如
 > `count(*)::numeric` 返回整数值 `42`），JSON 中表现为整数 → gsql 下解析为 `int`，
-> 而 pg8000 返回 `Decimal('42')`。若探针对 `count(*)::numeric` 做精确类型检查，
+> 而 psycopg2 返回 `Decimal('42')`。若探针对 `count(*)::numeric` 做精确类型检查，
 > 需注意此差异。
 
 > **jsonb 列说明（待验证）**：`jsonb` 列经 `row_to_json` 嵌入后，JSON 文档本身作为
-> 嵌套 JSON 对象/数组存在 → gsql 下解析为 Python `dict`/`list`；pg8000 依版本不同
+> 嵌套 JSON 对象/数组存在 → gsql 下解析为 Python `dict`/`list`；psycopg2 依版本不同
 > 可能返回字符串或已解码对象。如探针涉及 `jsonb` 列，建议显式 `::text` 转型。
 
 **EXPLAIN(FORMAT JSON) 文本旁路行形差异**：`EXPLAIN (FORMAT JSON)` 等以非 SELECT
@@ -168,14 +168,14 @@ gsql 解析出的 Python 值与 pg8000 返回的**完全一致**：
 
 - gsql 后端：`parse_text_result` 返回**逐行单元素 tuple** `[(line,), ...]`，JSON 文档
   按行切割。消费方须 `"".join(r[0] for r in rows) + json.loads(...)` 重组。
-- pg8000 后端：返回单个已解码 Python 对象（`dict`）。
+- psycopg2 后端：返回单个已解码 Python 对象（`dict`）。
 - `skills/gaussdb-sqltune/scripts/cost.py` 已兼容两路。新探针若用 `EXPLAIN(FORMAT JSON)` 必须
   同样处理，而非假设返回单个对象。
 
 **真正的残留差异**只出现在 **非 JSON 原生类型**——这些类型在 `row_to_json` 里被
-渲染成 ISO/文本字符串，于是经 gsql 解析后是 Python `str`，而 pg8000 返回的是带类型的对象：
+渲染成 ISO/文本字符串，于是经 gsql 解析后是 Python `str`，而 psycopg2 返回的是带类型的对象：
 
-| 数据库类型 | gsql 后端 Python 值 | pg8000 后端 Python 值 |
+| 数据库类型 | gsql 后端 Python 值 | psycopg2 后端 Python 值 |
 |---|---|---|
 | 时间戳（`timestamp`/`timestamptz`） | `str`（ISO 串，如 `"2024-01-01T12:00:00"`） | `datetime.datetime` 对象 |
 | 日期（`date`） | `str`（如 `"2024-01-01"`） | `datetime.date` 对象 |
@@ -196,11 +196,11 @@ gsql 解析出的 Python 值与 pg8000 返回的**完全一致**：
 
 | 场景 | 说明 |
 |---|---|
-| Linux 生产主机（含 gsql） | `driver: gsql` 完全可用；若不存在则兜底 pg8000 |
-| macOS 开发机 | gsql 二进制不存在，`shutil.which("gsql")` 返回空，自动兜底到 pg8000；或显式配置 `driver: pg8000` 跳过尝试 |
-| CI/容器（无 gsql） | 同 macOS，兜底 pg8000 |
+| Linux 生产主机（含 gsql） | `driver: gsql` 完全可用；若不存在则兜底 psycopg2 |
+| macOS 开发机 | gsql 二进制不存在，`shutil.which("gsql")` 返回空，自动兜底到 psycopg2；或显式配置 `driver: psycopg2` 跳过尝试 |
+| CI/容器（无 gsql） | 同 macOS，兜底 psycopg2 |
 
-> 若要固定只用 pg8000（推荐 macOS 开发 / CI 环境）：在 config.yaml 对应连接中设置 `driver: pg8000`，消除兜底路径的日志干扰。
+> 若要固定只用 psycopg2（推荐 macOS 开发 / CI 环境）：在 config.yaml 对应连接中设置 `driver: psycopg2`，消除兜底路径的日志干扰。
 
 ---
 
@@ -215,13 +215,13 @@ DBError: gsql binary not found (set GDAA_GSQL or add gsql to PATH)
 **原因**：`PATH` 中找不到 `gsql`，且未设置 `GDAA_GSQL`。
 
 **解决**：
-- macOS / CI：改用 pg8000（`driver: pg8000` 或等待自动兜底）。
+- macOS / CI：改用 psycopg2（`driver: psycopg2` 或等待自动兜底）。
 - Linux：安装 openGauss 客户端包，确保 `gsql` 在 `PATH`，或 `export GDAA_GSQL=/path/to/gsql`。
 
 ### 连接被拒（Connection refused）
 
 ```
-DBError: pg8000: ... Connection refused
+DBError: psycopg2: ... Connection refused
 DBError: gsql: ... could not connect to server: Connection refused
 ```
 
@@ -245,7 +245,7 @@ DBError: password authentication failed for user "gaussdb"
 
 ---
 
-## 待验证 — gsql vs pg8000 真库 parity diff
+## 待验证 — gsql vs psycopg2 真库 parity diff
 
 在配备 gsql 二进制的 **Linux 主机**上，可执行如下 parity 验证：
 
@@ -254,7 +254,7 @@ DBError: password authentication failed for user "gaussdb"
 python3 skills/gaussdb-health/scripts/health.py --conn og-pri > /tmp/health.gsql.txt
 
 # 切换 driver
-# 临时改 config.yaml driver: pg8000，或用一个不存在的路径强制 gsql 走 "binary not found" 分支兜底到 pg8000：
+# 临时改 config.yaml driver: psycopg2，或用一个不存在的路径强制 gsql 走 "binary not found" 分支兜底到 psycopg2：
 GDAA_GSQL=/nonexistent/path python3 skills/gaussdb-health/scripts/health.py --conn og-pri > /tmp/health.pg.txt
 
 diff /tmp/health.gsql.txt /tmp/health.pg.txt || true
@@ -264,6 +264,6 @@ diff /tmp/health.gsql.txt /tmp/health.pg.txt || true
 
 > **重要**：Linux + gsql 的 parity diff **必须**包含 `gaussdb-sqltune verify` / `gaussdb-proctune verify`
 > 用例（当前示例仅列 gaussdb-health，无法暴露上文所述的 hypopg 静默否决 Critical）。在 Linux 主机
-> 上执行 parity 时，需分别对 `driver: gsql` 和 `driver: pg8000` 运行完整的 gaussdb-sqltune/gaussdb-proctune
-> 流程（含索引验证），对比推荐结果是否一致——若 gsql 下索引验证均被否决而 pg8000 下有推荐，
+> 上执行 parity 时，需分别对 `driver: gsql` 和 `driver: psycopg2` 运行完整的 gaussdb-sqltune/gaussdb-proctune
+> 流程（含索引验证），对比推荐结果是否一致——若 gsql 下索引验证均被否决而 psycopg2 下有推荐，
 > 即可确认该 Critical 已复现，需在修复 `require_session` 语义后重测。

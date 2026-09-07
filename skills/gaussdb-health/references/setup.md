@@ -5,7 +5,7 @@
 ## 依赖
 
 ```bash
-python3 -m pip install pg8000 cryptography PyYAML
+python3 -m pip install psycopg2 cryptography PyYAML
 python3 {baseDir}/scripts/health.py -h     # 验证脚本可运行
 ```
 
@@ -29,7 +29,7 @@ connections:
 
 | 症状 | 含义 | 处理 |
 |---|---|---|
-| `ModuleNotFoundError: pg8000` 等 | 缺 Python 依赖 | `python3 -m pip install pg8000 cryptography PyYAML` |
+| `ModuleNotFoundError: psycopg2` 等 | 缺 Python 依赖 | `python3 -m pip install psycopg2 cryptography PyYAML` |
 | 退出码 2 / `connect ...` 报错 | 连不上（主机/端口/口令/库名错） | 核对 `$GSDB_HOME/config.yaml` 与网络；口令用 `GSDB_PASSWORD`（旧 `GDAA_PASSWORD` 仍兼容）临时覆盖验证 |
 | 退出码 1 / `insufficient privilege` | 采集账号缺系统视图权限 | 用有 `pg_stat_*` / `dbe_perf` / `pg_thread_wait_status` 读权限的账号；缺权限的维度会在 `## Collection Notes` 标降级 |
 | 退出码 1 / `statement timeout` | 采集超时 | `--timeout <秒>` 调大；或先 `--include` 只采关键维度 |

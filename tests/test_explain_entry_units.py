@@ -63,7 +63,7 @@ def test_template_path_does_not_touch_the_none_db(monkeypatch, capsys):
     ("CREATE TABLE t(i int)", 1),
     ("SELECT 1; SELECT 2;", 1),
     # --- 以下每条都是实测绕过，不是补齐用的等价变形 ---
-    # 前导注释让 DML 蒙混过关：og5 上 gsql 与 pg8000 两条直连都真写了库
+    # 前导注释让 DML 蒙混过关：og5 上 gsql 与 psycopg2 两条直连都真写了库
     ("/* c */ UPDATE t SET a = 1", 1),
     ("-- c\nUPDATE t SET a = 1", 1),
     ("/* c */ DELETE FROM t", 1),

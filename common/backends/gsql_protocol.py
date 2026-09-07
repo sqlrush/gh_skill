@@ -31,7 +31,7 @@ def rewrite_params(sql: str, params: Sequence[Any]) -> tuple[str, dict]:
 
     **没有参数就原样返回，一个字符都不动。** 没参数就没有占位符要填，此时
     SQL 里的 `%` 全是用户的数据，不是我们的语法。原先无条件扫一遍的后果
-    （实测 og5，pg8000 与中间件两条路都没这毛病，只有 gsql 走样）：
+    （实测 og5，直连驱动与中间件两条路都没这毛病，只有 gsql 走样）：
 
         LIKE 'x%y'    → Filter: (relname ~~ 'x%y')      对
         LIKE 'x%%y'   → Filter: (relname ~~ 'x%y')      **静默改写**
@@ -151,7 +151,7 @@ _ROWCOUNT_FOOTER = re.compile(r"^\(\d+ rows?\)$")
 def parse_text_result_with_header(stdout: str) -> tuple[list[str], list[tuple]]:
     """解析 -A（不带 -t）文本输出：首行是列名，末行是行数页脚。
 
-    EXPLAIN 走这条路。pg8000 跑 EXPLAIN 会返回列名 QUERY PLAN，而 -t
+    EXPLAIN 走这条路。psycopg2 跑 EXPLAIN 会返回列名 QUERY PLAN，而 -t
     把表头去掉了，于是 gsql 返回空列名 —— runner 的 `if not cols` 把它
     判成「未返回结果集」，explain / proctune / sqltune 的 plan_text 和
     wdr 那几条在 driver: gsql 下全部跑不了。两条驱动必须给出同一形状。

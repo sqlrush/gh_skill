@@ -22,14 +22,15 @@ OpenCode 原生支持 Agent Skills：它会从下列目录发现 `SKILL.md`—�
 | 依赖 | 说明 |
 |---|---|
 | Python ≥ 3.9 | 运行各 skill 的脚本 |
-| `pg8000` / `cryptography` / `PyYAML` | 纯 Python，无需编译 |
+| `psycopg2` | C 扩展：有 `pg_config` 时 `pip install psycopg2==2.9.10`，否则装 `psycopg2-binary==2.9.10` 预编译轮子 |
+| `cryptography` / `PyYAML` | 纯 Python，无需编译 |
 | OpenGauss/GaussDB 连接配置目录 | 位置由环境变量 `GSDB_HOME` 指定；存连接元数据 + 凭据 |
 
 安装 Python 依赖：
 
 ```bash
 python3 -m pip install -r requirements.txt
-# 或： python3 -m pip install pg8000 cryptography PyYAML
+# 或： python3 -m pip install psycopg2 cryptography PyYAML
 ```
 
 ---
@@ -68,7 +69,7 @@ db_connections:
       port: 5432
       database: appdb
       user: tuner
-      driver: gsql           # gsql(默认) | pg8000 | grmp；见 connection-drivers.md
+      driver: gsql           # gsql(默认) | psycopg2 | grmp；见 connection-drivers.md
 YAML
 chmod 600 "$GSDB_HOME/config.yaml"
 
@@ -212,7 +213,7 @@ OpenCode 会按 `SKILL.md` 的 description 选中对应 skill 并按其工作流
 
 | 现象 | 处理 |
 |---|---|
-| `ModuleNotFoundError: No module named 'pg8000'` | `python3 -m pip install -r requirements.txt` |
+| `ModuleNotFoundError: No module named 'psycopg2'` | `python3 -m pip install -r requirements.txt` |
 | `ModuleNotFoundError: No module named 'common'` | 没用安装脚本（漏拷 `common/`）。重跑 `install-opencode.sh` |
 | SKILL.md 里出现字面量 `{baseDir}` | 没做替换。用安装脚本，或手动跑第 2 步的替换片段 |
 | `no connection named 'xxx'` | `$GSDB_HOME/config.yaml` 里没有该 name；见第 1 步（确认 `GSDB_HOME` 指对目录） |

@@ -150,7 +150,7 @@ def is_dml(sql: str) -> bool:
     抄了一份 `^\\s*(insert|update|delete|merge)\\b`：`^\\s*` 跳空白但不跳注释，
     于是 `/* c */ UPDATE t SET ...` 判成非 DML。
 
-    实测后果（og5，gsql 与 pg8000 两条直连各复现一次）：explain --analyze
+    实测后果（og5，gsql 与直连驱动两条各复现一次）：explain --analyze
     下这条载荷既没被拒绝（拒绝检查用的就是本函数），也没被包进回滚事务
     （包不包也用本函数），UPDATE/DELETE 直接落盘 —— 表被改、被清空，
     而 explain 退出码 0，报告里是一份看起来完全正常的执行计划。
@@ -227,6 +227,6 @@ def ensure_explainable(sql: str, analyze: bool = False) -> None:
             "EXPLAIN ANALYZE 只受理只读语句，本次是 %s。\n"
             "带 ANALYZE 时语句会**真执行**。写语句要包在回滚事务里跑，"
             "而回滚包装实测可被一个 `--` 注释绕过，那条通道等于开放写权限。\n"
-            "写语句的实际执行计划请走直连（driver: pg8000）。"
+            "写语句的实际执行计划请走直连（driver: psycopg2）。"
             % (leading_keyword(statements[0]).upper() or "非查询语句")
         )

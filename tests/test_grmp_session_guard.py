@@ -47,7 +47,7 @@ def _conn(**kw):
 # ===========================================================================
 
 def test_direct_runner_does_not_provide_a_session(tmp_path):
-    """即便底层是 pg8000（本身支持持久会话），DirectRunner 也每次开关连接。
+    """即便底层是 psycopg2（本身支持持久会话），DirectRunner 也每次开关连接。
 
     能力属于「这个入口」，不属于「这个驱动」——按驱动判断会得出错误结论。
     """
@@ -109,7 +109,7 @@ def test_session_for_returns_the_handle_when_supported(monkeypatch):
 
     fake = FakeDB()
     monkeypatch.setattr(access, "_open_database", lambda conn, read_only=True: fake)
-    assert access.session_for_conn(_conn(driver="pg8000")) is fake
+    assert access.session_for_conn(_conn(driver="psycopg2")) is fake
 
 
 def test_session_for_defaults_to_read_only(monkeypatch):
@@ -124,7 +124,7 @@ def test_session_for_defaults_to_read_only(monkeypatch):
         return FakeDB()
 
     monkeypatch.setattr(access, "_open_database", _fake_open)
-    access.session_for_conn(_conn(driver="pg8000"))
+    access.session_for_conn(_conn(driver="psycopg2"))
     assert seen["read_only"] is True
-    access.session_for_conn(_conn(driver="pg8000"), read_only=False)
+    access.session_for_conn(_conn(driver="psycopg2"), read_only=False)
     assert seen["read_only"] is False

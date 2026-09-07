@@ -45,7 +45,7 @@ class PlanNode:
 def parse(raw: Any) -> PlanNode:
     """把 EXPLAIN (FORMAT JSON) 的输出解析成根节点。
 
-    raw 可以是 JSON 文本，也可以是已解码的 list/dict —— pg8000 会把 json 列
+    raw 可以是 JSON 文本，也可以是已解码的 list/dict —— psycopg2 会把 json 列
     自动解码成 Python 对象，而中间件路径拿回来的是字符串。两条路径共用这一份
     解析，正是为了让「本地跑通、换条路径就错」无处可藏。
     """

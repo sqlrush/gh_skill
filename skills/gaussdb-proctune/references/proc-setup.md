@@ -4,7 +4,7 @@
 
 `gaussdb-proctune` 由本仓库的 Python 脚本运行。
 
-- Python ≥ 3.9，并装好依赖：`python3 -m pip install -r requirements.txt`（`pg8000` / `cryptography` / `PyYAML`）。
+- Python ≥ 3.9，并装好依赖：`python3 -m pip install -r requirements.txt`（`psycopg2` / `cryptography` / `PyYAML`）。
 - 预检入口脚本 `proctune.py -h`（实际路径见 `docs/INSTALL-opencode.md` 或安装目录）。报缺依赖时按上面装齐。
 - 安装到 OpenCode：见 `docs/INSTALL-opencode.md`。
 
@@ -30,7 +30,7 @@
 
 | 症状 | 可能原因 | 处理 |
 |---|---|---|
-| `ModuleNotFoundError: No module named 'pg8000'` | 缺 Python 依赖 | `python3 -m pip install -r requirements.txt` |
+| `ModuleNotFoundError: No module named 'psycopg2'` | 缺 Python 依赖 | `python3 -m pip install -r requirements.txt` |
 | `ModuleNotFoundError: No module named 'common'` | 没用安装脚本（漏拷 `common/`） | 重跑 `install-opencode.sh` |
 | `no connection named 'xxx'` | 连接名未配置 | 见「二、配置连接」，核对 `$GSDB_HOME/config.yaml` |
 | 连接失败（退出码 2） | host/port/凭据错或库不可达 | 跑一次 `proctune.py collect` 验证；确认网络与账号；或用 `GSDB_PASSWORD`（旧 `GDAA_PASSWORD` 仍兼容） |

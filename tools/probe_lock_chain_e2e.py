@@ -30,7 +30,7 @@
 用法（mac 上）：
     GSDB_HOME=~/.gdaa python3 tools/probe_lock_chain_e2e.py -c og
 
-`-c` 必须是 `driver: pg8000` 的连接——三条持锁会话要跨语句保持事务
+`-c` 必须是 `driver: psycopg2` 的连接——三条持锁会话要跨语句保持事务
 （BEGIN 之后一直不提交/不回滚，直到探针主动放它们走），gsql 驱动
 每条语句起独立子进程，做不到。
 """
@@ -269,7 +269,7 @@ def main(argv: Optional[list] = None) -> int:
     ap = argparse.ArgumentParser(
         description="三层堵塞链真库实测：A 等 B、B 等 C，验证根算到 C")
     ap.add_argument("-c", "--conn", default="og",
-                    help="连接名（必须是 driver: pg8000——需要持久会话）")
+                    help="连接名（必须是 driver: psycopg2——需要持久会话）")
     args = ap.parse_args(argv)
 
     try:

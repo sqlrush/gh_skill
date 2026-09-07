@@ -62,7 +62,7 @@
 ┌────────────────────────────────────────────────────────────────┐
 │  common/access.py        按 config.yaml 的 driver 选路          │
 └──────────┬──────────────────────────────────┬──────────────────┘
-           │ driver: grmp                     │ driver: pg8000 / gsql
+           │ driver: grmp                     │ driver: psycopg2 / gsql
            ▼                                  ▼
 ┌──────────────────────┐            ┌──────────────────────┐
 │ common/grmp_client.py│            │common/script_runner.py│
@@ -90,7 +90,7 @@
                    │
                    ▼
 ┌────────────────────────────────────────────────────────────────┐
-│  common/db.py  →  pg8000  →  og5 (127.0.0.1:5433)              │
+│  common/db.py  →  psycopg2  →  og5 (127.0.0.1:5433)              │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -268,7 +268,7 @@ skill          grmp_client        grmp-mock       script_config      og5
 │   ORDER BY ... LIMIT 20
 │                        ↑ 到这里才是一条普通 SQL
 ▼
-┌─ ⑥ pg8000 标准 PostgreSQL wire 协议 → og5:5433
+┌─ ⑥ psycopg2 标准 PostgreSQL wire 协议 → og5:5433
 │   （从这一层往下，和直连路径完全一样）
 │
 ▼
@@ -301,7 +301,7 @@ skill          grmp_client        grmp-mock       script_config      og5
 | **HTTP 一层** | ③ | 多一跳网络，多一套错误语义（HTTP 200 + `code`） |
 | **类型擦除** | ③⑧ | 参数和结果全变字符串，类型信息丢失 |
 
-第 ⑥ 步往下和直连路径**完全一样**——同一个 pg8000、同一个 og5、同一条 SQL。
+第 ⑥ 步往下和直连路径**完全一样**——同一个 psycopg2、同一个 og5、同一条 SQL。
 所以双路径一致性测试比对的是 ①~⑤ 和 ⑧ 这几层，og 本身不是变量。
 
 第三样「类型擦除」是 skill 改造时最容易踩的坑：直连路径拿到的 `calls` 是 `int 12`，

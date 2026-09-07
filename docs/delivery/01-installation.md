@@ -76,7 +76,7 @@ docker run --rm -it \
   -v "$GSDB_HOME:/root/.my-gsdb-home" \
   -e GSDB_PASSWORD="$GSDB_PASSWORD" \
   python:3.12-slim bash
-# 容器内：pip install pg8000 cryptography PyYAML && python3 skills/gaussdb-slowsql/scripts/slowsql.py -h
+# 容器内：pip install psycopg2 cryptography PyYAML && python3 skills/gaussdb-slowsql/scripts/slowsql.py -h
 ```
 
 ---
@@ -88,7 +88,7 @@ git clone https://github.com/your-org/opencode_skill.git
 cd opencode_skill
 ```
 
-安装 Python 依赖（纯 Python，无需编译）：
+安装 Python 依赖：
 
 ```bash
 python3 -m pip install -r requirements.txt
@@ -98,21 +98,38 @@ python3 -m pip install -r requirements.txt
 
 | 包 | 版本要求 | 用途 |
 |---|---|---|
-| `pg8000` | ≥ 1.30 | PostgreSQL 协议驱动，用于连接 openGauss/GaussDB |
+| `psycopg2` | 2.9.10 | PostgreSQL 协议驱动，用于连接 openGauss/GaussDB |
 | `cryptography` | ≥ 41 | AES-256-GCM 凭据解密 |
 | `PyYAML` | ≥ 6 | 读取 `$GSDB_HOME/config.yaml` |
 
+**`psycopg2` 是 C 扩展，不是纯 Python，装法二选一**（另两个包是纯 Python，随便装）：
+
+| 现场条件 | 装法 | 说明 |
+|---|---|---|
+| 有 `gcc` 与 `pg_config`（`postgresql-devel` / `libpq-devel`） | `pip install psycopg2==2.9.10` | 得到官方包，链接现场自己的 libpq，生产首选 |
+| 没有编译条件（多数离线现场） | `pip install psycopg2-binary==2.9.10` | 预编译轮子，自带 libpq；上游不建议生产长期使用，但免编译 |
+
+两者提供同一个 `psycopg2` 模块名，skill 代码不区分。
+
 **离线 / 无网络环境**
 
-在有网络的机器上先下载 wheel 包，再拷到目标机安装：
+`psycopg2-binary` 的轮子按「Python 主次版本 × CPU 架构」精确匹配，**cp39 的轮子装不到 Python 3.12 上**。
+目标机的 Python 版本不确定时，把该架构下各版本的轮子全下过去，pip 会自己挑：
 
 ```bash
-# 有网络的机器上（架构需一致）：
-pip download -r requirements.txt -d ./wheels/
+# 有网络的机器上，按目标机架构下(x86_64 与鲲鹏 aarch64 各一套)：
+for PY in 38 39 310 311 312 313; do
+  pip download psycopg2-binary==2.9.10 --no-deps -d ./wheels/ \
+      --only-binary :all: --python-version $PY --platform manylinux2014_x86_64
+done
+pip download cryptography PyYAML -d ./wheels/          # 纯 Python，一份通用
 
 # 目标机（无网络）：
-python3 -m pip install --no-index --find-links ./wheels/ -r requirements.txt
+python3 -m pip install --no-index --find-links ./wheels/ psycopg2-binary==2.9.10 cryptography PyYAML
 ```
+
+目标机架构是鲲鹏时把 `manylinux2014_x86_64` 换成 `manylinux2014_aarch64`。
+有编译条件的现场也可以只带源码包 `psycopg2-2.9.10.tar.gz`，一份通吃所有 Python 版本与架构。
 
 ---
 
@@ -131,13 +148,15 @@ docker run -d \
 等待约 30 秒数据库初始化完成，然后验证连通性：
 
 ```bash
-# 用 pg8000 测试（macOS 上无 gsql 二进制可用此法）
+# 用 psycopg2 测试（macOS 上无 gsql 二进制可用此法）
 python3 - <<'PY'
-import pg8000.native
-conn = pg8000.native.Connection(
-    user="gaussdb", password="Test@1234",
-    host="127.0.0.1", port=5432, database="postgres")
-print(conn.run("SELECT version()"))
+import psycopg2
+conn = psycopg2.connect(host="127.0.0.1", port=5432, dbname="postgres",
+                        user="gaussdb", password="Test@1234",
+                        connect_timeout=15, sslmode="disable")
+cur = conn.cursor()
+cur.execute("SELECT version()")
+print(cur.fetchone()[0])
 conn.close()
 PY
 ```
@@ -238,11 +257,17 @@ chmod 600 "$GSDB_HOME/config.yaml"
 | 值 | 说明 | 适用场景 |
 |---|---|---|
 | `gsql`（默认） | 调用本机 `gsql` 命令行客户端，每条查询起一个子进程 | Linux 生产主机（已安装 openGauss 客户端） |
-| `pg8000` | 纯 Python TCP 驱动，无需安装任何二进制 | macOS 开发机、CI/容器、或需要 hypopg 验证 |
+| `psycopg2` | libpq TCP 驱动，无需 gsql 二进制（但要装 psycopg2 或 psycopg2-binary） | macOS 开发机、CI/容器、或需要 hypopg 验证 |
 
-> 注意：`gsql` 是 openGauss 的 Linux 客户端，**macOS 上没有原生版本**。在 macOS 上配置 `driver: gsql` 时，连接层会检测到 gsql 二进制不存在，自动回退到 pg8000（透明，调用方无感知）。如想明确指定跳过 gsql 尝试，直接设 `driver: pg8000`。
+> 注意：`gsql` 是 openGauss 的 Linux 客户端，**macOS 上没有原生版本**。在 macOS 上配置 `driver: gsql` 时，连接层会检测到 gsql 二进制不存在，自动回退到 psycopg2（透明，调用方无感知）。如想明确指定跳过 gsql 尝试，直接设 `driver: psycopg2`。
 >
-> 额外注意：`gaussdb-sqltune` 和 `gaussdb-proctune` 的 hypopg 索引验证依赖持久 TCP 连接（会话级虚拟索引），**gsql 后端无持久会话，验证步骤会明确报错**并提示改用 pg8000。建议需要 hypopg 验证的连接显式设置 `driver: pg8000`。
+> 额外注意：`gaussdb-sqltune` 和 `gaussdb-proctune` 的 hypopg 索引验证依赖持久 TCP 连接（会话级虚拟索引），**gsql 后端无持久会话，验证步骤会明确报错**并提示改用 psycopg2。建议需要 hypopg 验证的连接显式设置 `driver: psycopg2`。
+>
+> **`driver: psycopg2` 对数据库账号有一条硬要求**：openGauss 默认 `password_encryption_type=2`（私有 sha256 握手），
+> 标准 PostgreSQL 客户端都不认，psycopg2 会报认证失败且口令看起来没错。直连账号必须在
+> `password_encryption_type` 为 `0` 或 `1` 时创建（口令另存一份 md5），`pg_hba.conf` 对应行用 `md5`；
+> 已建好的账号改完参数后 `ALTER USER <user> IDENTIFIED BY '<口令>'` 重设一次口令即可。
+> `driver: gsql` 与 GRMP 中间件不受此限（gsql 是 openGauss 自带客户端，认得私有握手）。
 
 可通过环境变量 `GDAA_GSQL` 覆盖 gsql 二进制路径，例如：`export GDAA_GSQL=/usr/local/bin/gsql`。
 
@@ -322,7 +347,7 @@ python3 skills/gaussdb-sqlfetch/scripts/sqlfetch.py -c og-prod 1
 ```
 
 安装脚本做三件事：
-1. 检查 Python 及必要模块（`pg8000`、`cryptography`、`yaml`）
+1. 检查 Python 及必要模块（`psycopg2`、`cryptography`、`yaml`）
 2. 把 `common/` 共享连接层拷到目标目录
 3. 把每个技能目录拷到目标，并把 `SKILL.md` 中的 `{baseDir}` 占位符替换为该技能的真实绝对路径
 
@@ -838,16 +863,16 @@ python3 $SKILLS/wdr/scripts/wdr.py render \
 
 | 现象 | 原因 | 解决方法 |
 |---|---|---|
-| `ModuleNotFoundError: No module named 'pg8000'`（或 `cryptography`、`yaml`） | Python 依赖未安装 | `python3 -m pip install -r requirements.txt` |
+| `ModuleNotFoundError: No module named 'psycopg2'`（或 `cryptography`、`yaml`） | Python 依赖未安装 | `python3 -m pip install -r requirements.txt` |
 | `ModuleNotFoundError: No module named 'common'` | 安装时漏拷 `common/` 目录，或直接软链了源码树 | 重跑 `install-opencode.sh`（会自动拷 `common/`） |
 | `SKILL.md` 中出现字面量 `{baseDir}` | 跳过了安装脚本，或手动安装时忘记替换 | 重跑 `install-opencode.sh`，或手动执行替换（见 5.2 节的替换命令） |
 | `no connection named 'og-prod'` | `$GSDB_HOME/config.yaml` 中没有该名称的连接定义 | 检查 `$GSDB_HOME` 是否指向正确目录（`echo $GSDB_HOME`），以及 config.yaml 中的 `name` 字段是否与 `-c` 参数一致 |
 | `decrypt credential ...` 失败（解密失败） | `$GSDB_HOME/key` 与 `.enc` 文件不匹配（例如跨机迁移时只拷了 `.enc` 没拷 `key`） | 迁移时需同时迁移 `key` 文件；或改用 `export GSDB_PASSWORD=...` 临时覆盖 |
 | `Session is read-only` / 写操作被拦截 | 所有技能脚本默认使用只读会话，写/DDL 语句被会话级 `SET SESSION READ ONLY` 拦截 | 这是预期行为，技能不支持写操作；需要写操作请用独立的数据库连接工具 |
-| `DBError: gsql binary not found` | `gsql` 不在 PATH 中（macOS 上无原生版本） | 设置 `driver: pg8000`（在 config.yaml 中），或 `export GDAA_GSQL=/path/to/gsql`（Linux 上安装 openGauss 客户端后设置） |
+| `DBError: gsql binary not found` | `gsql` 不在 PATH 中（macOS 上无原生版本） | 设置 `driver: psycopg2`（在 config.yaml 中），或 `export GDAA_GSQL=/path/to/gsql`（Linux 上安装 openGauss 客户端后设置） |
 | `慢SQL/gaussdb-topsql 结果为空` | 实例未开启 `enable_stmt_track`，或阈值过高 | 联系 DBA 确认 `SHOW enable_stmt_track`；或降低 `--threshold`（slowsql），如改为 `--threshold 100` |
 | `gaussdb-topproc 结果为空（无函数级统计）` | `track_functions=none`，函数级统计关闭 | 联系 DBA 执行 `SET track_functions='pl'`（或 `'all'`），然后调用一次目标存储过程，再重跑 |
-| `sqltune verify 报"索引验证不可用"或需要 pg8000` | `driver: gsql` 生效（gsql 每次请求起独立子进程，无法保持 hypopg 会话级虚拟索引） | 在 config.yaml 中将该连接的 `driver` 改为 `pg8000` |
+| `sqltune verify 报"索引验证不可用"或需要 psycopg2` | `driver: gsql` 生效（gsql 每次请求起独立子进程，无法保持 hypopg 会话级虚拟索引） | 在 config.yaml 中将该连接的 `driver` 改为 `psycopg2` |
 | WDR `"WDR 未开启"` 或 `"快照不足"` | 实例 `enable_wdr_snapshot=off`，或快照数量不足 2 个 | 联系 DBA 执行 `ALTER SYSTEM SET enable_wdr_snapshot=on` 并 reload/重启；或手动 `SELECT create_wdr_snapshot()` 创建快照，但**本技能脚本不代为执行** |
 | `python3: command not found` | Python 未安装，或未加入 PATH | 参考 1.2 节安装 Python |
 | sqlfetch / sqltune / sqlreview / proctune 报 `HTTP 400`，错误里有 `cannot be accessed on the standby` | 登录的 dataIp 是**备机**：`dbe_perf.statement_history` 是 unlogged 表，备机读不到（slowsql/topsql 查的是内存视图 `dbe_perf.statement`，不受影响） | 用主库 IP 重新 `gaussdb-login`（登录输出的「主备」一行会直接告诉你）。不换也能用：脚本自动退到 `dbe_perf.statement`，拿到的是归一化 SQL，参数值用 `--bind` 补 |

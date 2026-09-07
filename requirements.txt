@@ -1,4 +1,10 @@
-# opencode_skill runtime dependencies (pure-Python, no compile required).
-pg8000>=1.30        # PostgreSQL-wire driver; connects to openGauss & GaussDB
+# opencode_skill runtime dependencies.
+#
+# psycopg2 是 C 扩展，不是纯 Python：安装方式二选一。
+#   有 gcc + pg_config（postgresql-devel）：pip install psycopg2==2.9.10
+#   没有编译条件（离线现场常见）：装 psycopg2-binary==2.9.10 的预编译轮子，
+#   轮子按「Python 主次版本 × CPU 架构」精确匹配，x86_64 与鲲鹏 aarch64 各一套。
+# 两者提供同一个 `psycopg2` 模块名，代码不区分。
+psycopg2==2.9.10    # PostgreSQL-wire driver; connects to openGauss & GaussDB
 cryptography>=41    # AES-256-GCM credential decryption (gdaa-compatible)
 PyYAML>=6           # ~/.gdaa/config.yaml parsing

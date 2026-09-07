@@ -1,5 +1,9 @@
 # common 连接层 gsql + pg8000 双后端设计
 
+> **2026-09-07 更新：文中的 pg8000 已整体换成 psycopg2 2.9.10（`common/backends/psycopg2_backend.py`），驱动名也从 `pg8000` 改为 `psycopg2`，不保留别名。**
+> 本文保留当时的写法作为历史记录，不再反映当前实现；现状见 `docs/connection-drivers.md` 与 `docs/delivery/02-architecture.md`。
+
+
 - 日期：2026-06-30
 - 目标模块：`common/`（Python 共享连接层）
 - 影响面：各 skill 代码**零改动**（`Database` 公开接口不变）

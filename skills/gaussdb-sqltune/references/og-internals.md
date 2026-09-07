@@ -18,7 +18,10 @@
 
 ## OG 与原生 PostgreSQL 的关键差异
 
-- 认证:OG 用 sha256,GaussDB 用 SCRAM-SHA256(10) —— 原生 psql/libpq 客户端通常连不上;本工具用纯 Python 的 pg8000 驱动。
+- 认证:openGauss 默认 `password_encryption_type=2`(私有 sha256),标准 PostgreSQL 客户端都不认这套握手——
+  psycopg2/libpq 不认,换掉的 pg8000 同样不认。**直连用的账号必须在 `password_encryption_type` 为 0 或 1 时创建**
+  (口令按 md5 存一份),`pg_hba.conf` 对应行用 `md5`;已建的账号改完参数后 `ALTER USER … IDENTIFIED BY …` 重设口令即可。
+  走 gsql 后端或 GRMP 中间件时没有这个限制(gsql 是 openGauss 自带客户端,认得私有握手)。
 - GaussDB 要求 DSN 带 `database=` 键,且走简单查询协议(xid64)。
 - 部分 `enable_*` 优化器 GUC 是 OG 专有;从 `## Key Parameters (GUC)` 证据小节读真实值,别套 PG 默认值。
 - WDR(工作负载诊断报告)在 OG 上存在;本工具已由 `wdr` 技能覆盖(snaps/collect/render)。

@@ -18,9 +18,9 @@
 - **我要用/改 gaussdb-sqlreview、gaussdb-memanalyze、gaussdb-kb** → 05
 - **我要导入客户的规范文档** → 05 第 4 节(gaussdb-kb)+ 第 5 节(知识库落点与优先级链)
 - **我要把知识库(向量库 + 图库)装起来** → 10(安装手册),原理与日常使用 → 09
-- **连接/驱动细节**(gsql/pg8000、`GSDB_HOME`、已知差异) → 见 [../connection-drivers.md](../connection-drivers.md)
+- **连接/驱动细节**(gsql/psycopg2、`GSDB_HOME`、已知差异) → 见 [../connection-drivers.md](../connection-drivers.md)
 
-> 说明:连接配置目录由环境变量 `GSDB_HOME` 指定(任意名/路径,默认 `$GSDB_HOME`,;双后端 gsql(默认)/ pg8000,连接级自动兜底。gsql 是 openGauss 的 Linux 客户端,macOS 上会自动回退 pg8000。gsql/pg8000 的类型 parity 差异标注为"待验证"(未在 Linux+gsql 真库实证)。
+> 说明:连接配置目录由环境变量 `GSDB_HOME` 指定(任意名/路径,默认 `$GSDB_HOME`,;双后端 gsql(默认)/ psycopg2,连接级自动兜底。gsql 是 openGauss 的 Linux 客户端,macOS 上会自动回退 psycopg2。gsql/psycopg2 的类型 parity 差异标注为"待验证"(未在 Linux+gsql 真库实证)。
 
 补充：
 

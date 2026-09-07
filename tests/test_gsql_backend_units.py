@@ -85,7 +85,7 @@ def test_show_uses_text_bypass(monkeypatch):
 
 
 def test_explain_text_path_returns_query_plan_column(monkeypatch):
-    """pg8000 跑 EXPLAIN 给出列名 QUERY PLAN —— gsql 必须给出同一形状。
+    """psycopg2 跑 EXPLAIN 给出列名 QUERY PLAN —— gsql 必须给出同一形状。
 
     否则 runner 的 `if not cols` 把它判成「未返回结果集」，
     explain / proctune / sqltune 的 plan_text 在 driver: gsql 下全部跑不了。

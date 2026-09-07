@@ -18,7 +18,14 @@ _VALID_TYPES = frozenset({"opengauss", "gaussdb"})
 
 # grmp：不直连数据库，改走 GRMP 兼容中间件的两个 HTTP 接口。
 # 此时 host/port 指向中间件端点，data_ip 是中间件用来路由到目标实例的键。
-_VALID_DRIVERS = frozenset({"gsql", "pg8000", "grmp"})
+_VALID_DRIVERS = frozenset({"gsql", "psycopg2", "grmp"})
+
+# 2026-09 直连驱动由 pg8000 整体换成 psycopg2,**不保留别名**。老配置里写着
+# driver: pg8000 的连接会在这里当场报错——泛泛一句 "must be one of" 不足以让
+# 客户知道该动哪一行,所以单独给一条带改法的提示。
+_RETIRED_DRIVERS = {
+    "pg8000": "psycopg2（直连驱动已整体更换，pg8000 不再受支持，也没有保留别名）",
+}
 
 
 MODE_GSQL = "gsql"
@@ -111,6 +118,12 @@ def validate(conn: Connection) -> None:
         raise ConfigError(
             f"sslmode {conn.sslmode!r}: must be one of "
             f"disable/allow/prefer/require/verify-ca/verify-full"
+        )
+    if conn.driver in _RETIRED_DRIVERS:
+        raise ConfigError(
+            f"connection {conn.name!r}: driver {conn.driver!r} 已停用，"
+            f"请改成 {_RETIRED_DRIVERS[conn.driver]}——"
+            f"编辑 config.yaml 里这条连接的 driver 字段即可，其余字段不用动。"
         )
     if conn.driver not in _VALID_DRIVERS:
         raise ConfigError(

@@ -5,7 +5,7 @@
 ## 依赖
 
 ```bash
-python3 -m pip install pg8000 cryptography PyYAML
+python3 -m pip install psycopg2 cryptography PyYAML
 python3 {baseDir}/scripts/wdr.py -h     # 验证脚本可运行
 ```
 
@@ -18,4 +18,4 @@ python3 {baseDir}/scripts/wdr.py -h     # 验证脚本可运行
 - `generate_wdr_report 不可用`：实例版本/权限不支持原生 WDR；自算 delta 仍可用，原生留底显示降级备注即可（不影响确定性发现）。
 - 某维度降级 `relation ... does not exist` 或 `column ... does not exist`：该版本快照视图结构不同（如 lite 缺某视图）；属正常降级，如实说明、不臆测。
 - `permission denied`：WDR 快照视图通常需 `monadmin` 或具相应权限的角色；用具备权限的账号连接。
-- `ModuleNotFoundError: pg8000` 等：缺 Python 依赖，按上「依赖」安装。
+- `ModuleNotFoundError: psycopg2` 等：缺 Python 依赖，按上「依赖」安装。

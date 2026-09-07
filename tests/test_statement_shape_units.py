@@ -77,7 +77,7 @@ def test_leading_comment_does_not_hide_dml(sql):
     """**这条实测写过库。**
 
     原先三个 skill 各抄一份 `^\\s*(insert|update|delete|merge)\\b`，
-    `^\\s*` 跳空白但不跳注释。og5 上 gsql 与 pg8000 两条直连各复现一次：
+    `^\\s*` 跳空白但不跳注释。og5 上 gsql 与直连驱动两条各复现一次：
     explain `--analyze` 下 `/* c */ UPDATE ...` 退出 0、报告一切正常，
     而表真被改了；`/* c */ DELETE FROM t` 把表清空了。
 

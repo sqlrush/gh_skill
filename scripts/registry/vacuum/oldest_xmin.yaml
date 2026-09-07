@@ -14,11 +14,12 @@
 #                        **执行这条 SELECT 本身的会话**当成一条挡着回收的
 #                        长事务报出来——libpq 驱动会给自己这个 session 填上
 #                        非空的 connection_info（形如
-#                        `{"driver_name":"libpq",...}`），拿 pg8000 驱动
-#                        （`driver: pg8000`）发起同一条查询则不会（那条驱动
-#                        对自己这一行的 connection_info 是空串），已用
+#                        `{"driver_name":"libpq",...}`），走 Python 直连驱动
+#                        （`driver: psycopg2`，当时是 pg8000）发起同一条查询则
+#                        不会（对自己这一行的 connection_info 是空串），已用
 #                        `pg_backend_pid()` 对照两条路径各自的 pg_stat_activity
-#                        自身行核实过。后果不是多一行噪音：R4 会因此被点燃，
+#                        自身行核实过；2026-09-07 换成 psycopg2 后在 og5 上复测，
+#                        自身行仍是空串，这条守卫对两条路径都必须留着。后果不是多一行噪音：R4 会因此被点燃，
 #                        报告说"有事务挡着回收，VACUUM 现在跑也没用"——
 #                        这条**压制了本该给出的正确建议**，还会把 DBA 支去
 #                        找一个根本不存在的事务。见

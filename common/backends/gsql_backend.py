@@ -27,7 +27,7 @@ from typing import Any, Optional
 from .base import Backend, DBError
 from . import gsql_protocol as gp
 
-CONNECT_TIMEOUT = 15  # 秒，对齐 pg8000
+CONNECT_TIMEOUT = 15  # 秒，对齐 psycopg2
 
 
 class GsqlBackend(Backend):
@@ -133,7 +133,7 @@ class GsqlBackend(Backend):
             return cols, rows
         # 非 SELECT（EXPLAIN / SHOW …）走文本旁路。**带表头跑**：runner 用
         # `if not cols` 判断有没有结果集，空列名会被判成「未返回结果集」，
-        # 而 pg8000 那条路会给出 QUERY PLAN —— 同一条脚本两个驱动结果不同。
+        # 而 psycopg2 那条路会给出 QUERY PLAN —— 同一条脚本两个驱动结果不同。
         full = f"{self._prefix(read_only=self._read_only)} {body}".strip()
         return gp.parse_text_result_with_header(
             self._run(full, vars_, tuples_only=False))
@@ -146,7 +146,7 @@ class GsqlBackend(Backend):
     def query_in_rollback(self, sql, params=None):
         # 始终走文本旁路，返回形式为 ([], [(line,), ...])。
         # 当前第一方消费者仅为 EXPLAIN ANALYZE 纯文本输出，不涉及行返回语句。
-        # 若将来有行返回语句走此路径，须注意其行形与 pg8000 的 (cols, rows) 不同。
+        # 若将来有行返回语句走此路径，须注意其行形与 psycopg2 的 (cols, rows) 不同。
         body, vars_ = gp.rewrite_params(sql, params or ())
         parts = ["BEGIN;"]
         prefix = self._prefix(read_only=False)  # 回滚路径不注入只读钉

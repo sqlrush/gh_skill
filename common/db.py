@@ -16,18 +16,18 @@ from .credential import load_secret, secret_for
 #
 # 原先失败时会自动改用另一个驱动。那让同一份配置在不同机器上跑出不同后端，
 # 而两者能力不同 —— gsql 每条语句起独立子进程（provides_session=False），
-# pg8000 是单条持久连接（True）。于是 hypopg 虚拟索引验证这类依赖会话的功能，
-# 在「配了 gsql、实际兜底到 pg8000」的机器上能跑，在真用 gsql 的客户环境
+# psycopg2 是单条持久连接（True）。于是 hypopg 虚拟索引验证这类依赖会话的功能，
+# 在「配了 gsql、实际兜底到 psycopg2」的机器上能跑，在真用 gsql 的客户环境
 # 跑不了，而且不报错。
 #
-# 本机没有 gsql 时，在 config.yaml 里另配一条 driver: pg8000 的连接。
+# 本机没有 gsql 时，在 config.yaml 里另配一条 driver: psycopg2 的连接。
 
 
 def _load_backend(driver: str):
-    """惰性导入指定后端类（gsql-only 环境无需装 pg8000，反之亦然）。"""
-    if driver == "pg8000":
-        from .backends.pg8000_backend import Pg8000Backend
-        return Pg8000Backend
+    """惰性导入指定后端类（gsql-only 环境无需装 psycopg2，反之亦然）。"""
+    if driver == "psycopg2":
+        from .backends.psycopg2_backend import Psycopg2Backend
+        return Psycopg2Backend
     if driver == "gsql":
         from .backends.gsql_backend import GsqlBackend
         return GsqlBackend

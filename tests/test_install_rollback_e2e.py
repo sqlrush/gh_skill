@@ -39,7 +39,7 @@ def _make_src(root: pathlib.Path, marker: str) -> pathlib.Path:
     (src / "scripts" / "registry").mkdir(parents=True)
     (src / "scripts" / "registry" / "t.yaml").write_text("m: %s\n" % marker,
                                                          encoding="utf-8")
-    (src / "requirements.txt").write_text("pg8000\n", encoding="utf-8")
+    (src / "requirements.txt").write_text("psycopg2\n", encoding="utf-8")
     shutil.copy2(_INSTALLER, src / "install-opencode.sh")
     return src
 

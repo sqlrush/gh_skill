@@ -1,5 +1,9 @@
 # gsql + pg8000 双后端 Implementation Plan
 
+> **2026-09-07 更新：文中的 pg8000 已整体换成 psycopg2 2.9.10（`common/backends/psycopg2_backend.py`），驱动名也从 `pg8000` 改为 `psycopg2`，不保留别名。**
+> 本文保留当时的写法作为历史记录，不再反映当前实现；现状见 `docs/connection-drivers.md` 与 `docs/delivery/02-architecture.md`。
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 让 `common/` 连接层同时支持 gsql 与 pg8000 两个后端、默认 gsql、按 `config.yaml` 每连接 `driver` 字段选择并自动兜底，且各 skill 代码零改动。

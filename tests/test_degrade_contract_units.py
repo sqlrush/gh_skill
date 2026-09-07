@@ -63,9 +63,9 @@ def test_no_hypopg_note_exists_and_says_unverified(skill):
 def test_no_hypopg_note_is_worded_per_access_path(skill):
     """「下一步该做什么」两条路不一样，标注不能只有一份措辞。
 
-    这条原先断言 note 里必须出现 pg8000（"得给出拿到验证背书的具体办法"）。
+    这条原先断言 note 里必须出现直连驱动名（"得给出拿到验证背书的具体办法"）。
     在本机直连时那确实是可执行的下一步；可客户的白名单部署里**压根没有直连
-    通道** —— 那正是白名单模型的前提。对着那边的 DBA 说「改用 driver: pg8000
+    通道** —— 那正是白名单模型的前提。对着那边的 DBA 说「改用 driver: psycopg2
     重跑」，不是建议，是噪音，还会把人往「绕过白名单」的方向引。
 
     所以拆成两句：直连给具体办法，白名单说清这套部署里没有可切换的选项、
@@ -75,9 +75,9 @@ def test_no_hypopg_note_is_worded_per_access_path(skill):
     direct = m.no_hypopg_note(_DirectRunner())
     whitelist = m.no_hypopg_note(_WhitelistRunner())
 
-    assert "pg8000" in direct, "直连路径要给出拿到验证背书的具体办法"
-    assert "pg8000" not in whitelist, (
-        "白名单路径不该提 pg8000 —— 客户环境没有直连通道，这句话不可执行")
+    assert "psycopg2" in direct, "直连路径要给出拿到验证背书的具体办法"
+    assert "psycopg2" not in whitelist, (
+        "白名单路径不该提 psycopg2 —— 客户环境没有直连通道，这句话不可执行")
     for note in (direct, whitelist):
         assert "未经验证" in note and "人工验证" in note
 
@@ -170,7 +170,7 @@ def test_explain_never_opens_a_raw_writable_session():
     而那条回落一旦真被触到，拿到的是 read_only=not analyze 的原始会话：
     `--analyze` 时就是**可写**会话，用户 SQL 不经 EXPLAIN 包裹直接下发。
     实测 `/* c */ UPDATE ...` 与 `/* c */ DELETE FROM ...` 由此真写了库
-    （gsql 与 pg8000 各复现一次，退出码 0，报告显示一份正常的执行计划）。
+    （gsql 与直连驱动各复现一次，退出码 0，报告显示一份正常的执行计划）。
     所以旁路删掉了，形态校验改走 common.grmp.statement 的归一化判定。
 
     **遗留的产品决策**：不带 --analyze 的 DML 该不该出计划？EXPLAIN 不带

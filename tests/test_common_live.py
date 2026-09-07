@@ -72,7 +72,7 @@ def test_connect_and_read():
         db.close()
 
 
-@pytest.mark.parametrize("driver", ["gsql", "pg8000"])
+@pytest.mark.parametrize("driver", ["gsql", "psycopg2"])
 def test_connect_and_read_each_driver(driver):
     if not _available():
         pytest.skip(f"connection {CONN!r} not configured")

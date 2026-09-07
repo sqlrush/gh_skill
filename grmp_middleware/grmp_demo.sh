@@ -212,7 +212,7 @@ note "业务错误一律 HTTP 200 + code!=\"0\"；HTTP 状态码只用于传输�
 
 run 10 && {
 hdr 10 "双路径一致性：同一条 skill 命令，直连 vs 中间件"
-note "需要 ~/.gdaa/config.yaml 里有 og(driver:pg8000) 与 og-grmp(driver:grmp, port:$PORT)"
+note "需要 ~/.gdaa/config.yaml 里有 og(driver:psycopg2) 与 og-grmp(driver:grmp, port:$PORT)"
 if python3 -c "
 import sys; sys.path.insert(0,'.')
 from common.config import find

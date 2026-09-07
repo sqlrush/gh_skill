@@ -35,7 +35,7 @@ def test_mixed_string_and_numeric():
     assert vars_ == {"p0": "proc", "p1": "", "p2": "public", "p3": "1"}
 
 def test_percent_literal_escaped_when_params_present():
-    """有参数时 %% 才是转义 —— 与 pg8000 的 format 参数风格一致。"""
+    """有参数时 %% 才是转义 —— 与 psycopg2 的 format 参数风格一致。"""
     sql, vars_ = gp.rewrite_params("x LIKE 'a%%b' AND n = %s", ["v"])
     assert sql == "x LIKE 'a%b' AND n = :'p0'"
     assert vars_ == {"p0": "v"}
@@ -50,7 +50,7 @@ def test_percent_literal_escaped_when_params_present():
 def test_no_params_means_sql_is_untouched(sql):
     """**没参数就没有占位符要填，此时一个字符都不该动。**
 
-    原先无条件扫一遍。实测（og5）三种走样，pg8000 与中间件都没有：
+    原先无条件扫一遍。实测（og5）三种走样，直连驱动与中间件都没有：
 
         LIKE 'x%%y'  → 静默改写成 'x%y'，计划是改写后那条的，无人告知
         LIKE 'x%sy'  → error: more %s placeholders than params

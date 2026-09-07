@@ -175,7 +175,7 @@ def explain_json_via_script(runner, sql_text: str):
 def explain_json(db, sql_text: str):
     """JSON 计划，走原始会话 —— 直连路径。
 
-    返回值可能是字符串，也可能是 pg8000 已经解码好的 list/dict；两种都直接
+    返回值可能是字符串，也可能是 psycopg2 已经解码好的 list/dict；两种都直接
     交给 plantree.parse()，由它统一处理。这里**不做归一化**：把已解码的对象
     再 str() 回去会得到 Python 的单引号写法，json.loads 解不动。
     """

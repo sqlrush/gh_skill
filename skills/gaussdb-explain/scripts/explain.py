@@ -82,7 +82,7 @@ def shape_reject(sql_text: str) -> Optional[str]:
     if len(statements) > 1:
         # 原先数的是分号个数 `> 1`，于是**恰好一个分号**的两条语句漏了过去：
         # `SELECT 1; SELECT pg_backend_pid()`。实测后果三种，没有一种是对的 ——
-        # gsql 把第二条真跑了并把结果拼进「执行计划」（退出 0），pg8000 抛
+        # gsql 把第二条真跑了并把结果拼进「执行计划」（退出 0），psycopg2 抛
         # Traceback，中间件才是正确拒绝。数语句，不数分号。
         return ("Multiple SQL statements detected (%d). "
                 "Submit one statement at a time." % len(statements))

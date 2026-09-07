@@ -4,13 +4,13 @@
 跑出不同的后端，而两个后端的能力并不相同：
 
     gsql    provides_session = False   每条语句独立子进程
-    pg8000  provides_session = True    单条持久连接
+    psycopg2  provides_session = True    单条持久连接
 
 于是 hypopg 虚拟索引验证这类依赖会话的功能，在「配了 gsql、实际兜底到
-pg8000」的机器上能跑，在真用 gsql 的客户环境跑不了 —— 而且不报错。
+psycopg2」的机器上能跑，在真用 gsql 的客户环境跑不了 —— 而且不报错。
 
 改成严格生效后，配了什么就是什么。本机没有 gsql，就在 config.yaml 里
-配一条 driver: pg8000 的连接，而不是靠兜底蒙混过去。
+配一条 driver: psycopg2 的连接，而不是靠兜底蒙混过去。
 """
 import sys
 import pathlib
@@ -51,7 +51,7 @@ def _loader(seen, failing=()):
     return fake_load
 
 
-@pytest.mark.parametrize("driver", ["gsql", "pg8000"])
+@pytest.mark.parametrize("driver", ["gsql", "psycopg2"])
 def test_uses_the_configured_driver(monkeypatch, driver):
     seen = []
     monkeypatch.setattr(dbmod, "_load_backend", _loader(seen))
@@ -66,7 +66,7 @@ def test_does_not_fall_back_to_another_driver(monkeypatch):
     monkeypatch.setattr(dbmod, "_load_backend", _loader(seen, failing=("gsql",)))
     with pytest.raises(DBError):
         dbmod.Database.open(_conn(driver="gsql"), "pw")
-    assert seen == ["gsql"], "不应再尝试 pg8000"
+    assert seen == ["gsql"], "不应再尝试 psycopg2"
 
 
 def test_failure_message_names_the_configured_driver_and_how_to_change_it(monkeypatch):

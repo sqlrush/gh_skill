@@ -13,14 +13,14 @@
 from __future__ import annotations
 
 import json
-import ssl
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from . import text as kbtext
 
 CONNECT_TIMEOUT = 15
-_SSL_MODES = frozenset({"allow", "prefer", "require", "verify-ca", "verify-full"})
+# libpq 的取值全集;不配时用 disable,与换驱动之前的行为一致(不加密)。
+_SSL_MODES = frozenset({"disable", "allow", "prefer", "require", "verify-ca", "verify-full"})
 
 DOC_KINDS = ("rule", "guide", "errata", "case", "raw")
 
@@ -114,29 +114,28 @@ def _shift_positions(literal: str, offset: int) -> str:
     return re.sub(r"(?<=[:,])(\d+)([A-D]?)", bump, literal)
 
 
-def _ssl_context(sslmode: str) -> Optional[ssl.SSLContext]:
-    if sslmode not in _SSL_MODES:
-        return None
-    ctx = ssl.create_default_context()
-    if sslmode in ("allow", "prefer", "require"):
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-    return ctx
+def _sslmode(raw: str) -> str:
+    """交给 libpq 原生处理;写错的值当场报错,不静默降级成不加密。"""
+    mode = (raw or "disable").strip()
+    if mode not in _SSL_MODES:
+        raise PgStoreError(
+            f"kb.yaml store.pg.sslmode {mode!r} 不是 libpq 认识的取值,"
+            f"只能是 {'/'.join(sorted(_SSL_MODES))}")
+    return mode
 
 
 def _pg_error(exc: Exception) -> str:
-    args = getattr(exc, "args", None)
-    if args and isinstance(args[0], dict):
-        fields = args[0]
-        code = fields.get("C", "")
-        return f"{fields.get('M', exc)}" + (f" (SQLSTATE {code})" if code else "")
-    return str(exc)
+    """psycopg2 的错误:优先取 diag.message_primary 与 SQLSTATE。"""
+    diag = getattr(exc, "diag", None)
+    msg = getattr(diag, "message_primary", None) or str(exc)
+    code = getattr(exc, "pgcode", None)
+    return f"{msg}" + (f" (SQLSTATE {code})" if code else "")
 
 
 # ---------------------------------------------------------------- store
 
 class PgStore:
-    """一条 pg8000 连接上的知识库表操作。不是线程安全的;每个进程开一个。"""
+    """一条 psycopg2 连接上的知识库表操作。不是线程安全的;每个进程开一个。"""
 
     def __init__(self, raw: Any, dims: int, force_no_vector: bool = False):
         self._raw = raw
@@ -150,19 +149,16 @@ class PgStore:
     def connect(cls, host: str, port: int, database: str, user: str, password: str,
                 dims: int = 1024, sslmode: str = "", force_no_vector: bool = False) -> "PgStore":
         try:
-            import pg8000.dbapi
+            import psycopg2
         except ImportError as exc:  # pragma: no cover
-            raise PgStoreError("缺少依赖 pg8000(requirements.txt 里有,离线环境用 wheel 装)") from exc
+            raise PgStoreError("缺少依赖 psycopg2(requirements.txt 里有,离线环境用 wheel 装)") from exc
         try:
-            raw = pg8000.dbapi.connect(host=host, port=int(port), database=database, user=user,
-                                       password=password, timeout=CONNECT_TIMEOUT,
-                                       ssl_context=_ssl_context(sslmode or "disable"))
+            raw = psycopg2.connect(host=host, port=int(port), dbname=database, user=user,
+                                   password=password, connect_timeout=CONNECT_TIMEOUT,
+                                   sslmode=_sslmode(sslmode))
         except Exception as exc:
             raise PgStoreError(f"连不上知识库存储 {user}@{host}:{port}/{database}:{_pg_error(exc)}") from exc
         raw.autocommit = True
-        sock = getattr(raw, "_usock", None)
-        if sock is not None and hasattr(sock, "settimeout"):
-            sock.settimeout(None)
         return cls(raw, dims, force_no_vector=force_no_vector)
 
     def close(self) -> None:
@@ -182,7 +178,7 @@ class PgStore:
     def _query(self, sql: str, params: Sequence[Any] = ()) -> List[Tuple]:
         cur = self._raw.cursor()
         try:
-            cur.execute(sql, tuple(params))
+            cur.execute(sql, tuple(params) if params else None)
             return [tuple(r) for r in cur.fetchall()] if cur.description else []
         except Exception as exc:
             raise PgStoreError(f"{_pg_error(exc)}\nSQL: {sql.strip()[:200]}") from exc
@@ -198,7 +194,7 @@ class PgStore:
         cur = self._raw.cursor()
         try:
             for sql, params in statements:
-                cur.execute(sql, tuple(params))
+                cur.execute(sql, tuple(params) if params else None)
             self._raw.commit()
         except Exception as exc:
             try:

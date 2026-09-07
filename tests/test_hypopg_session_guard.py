@@ -12,7 +12,7 @@ sys.path.insert(0, str(_ROOT))
 
 import pytest  # noqa: E402
 from common.backends.base import DBError  # noqa: E402
-from common.backends.pg8000_backend import Pg8000Backend  # noqa: E402
+from common.backends.psycopg2_backend import Psycopg2Backend  # noqa: E402
 from common.backends.gsql_backend import GsqlBackend  # noqa: E402
 import common.db as dbmod  # noqa: E402
 
@@ -33,7 +33,7 @@ class _SessionlessDB:
 
 
 def test_backend_provides_session_flags():
-    assert Pg8000Backend.provides_session is True
+    assert Psycopg2Backend.provides_session is True
     assert GsqlBackend.provides_session is False
 
 
@@ -50,4 +50,4 @@ def test_verify_indexes_rejects_sessionless_backend(skill):
     hypo = _load_hypoindex(skill)
     with pytest.raises(DBError) as ei:
         hypo.verify_indexes(_SessionlessDB(), "SELECT 1 FROM t WHERE x = 1")
-    assert "pg8000" in str(ei.value)  # actionable guidance
+    assert "psycopg2" in str(ei.value)  # actionable guidance

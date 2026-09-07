@@ -123,7 +123,7 @@ skills/gaussdb-sqlreview/
 
 ### 2.5 lexer：为什么要自研
 
-项目 `requirements.txt` 只允许 pg8000 / cryptography / PyYAML **三个运行时依赖**，
+项目 `requirements.txt` 只允许 psycopg2 / cryptography / PyYAML **三个运行时依赖**，
 不能引入 `sqlparse` / `sqlglot`。所以 `lexer.py` 是纯 stdlib 的轻量扫描器：
 
 1. **span 扫描**：一遍扫出 `code / line_comment / block_comment / string / dollar_string /

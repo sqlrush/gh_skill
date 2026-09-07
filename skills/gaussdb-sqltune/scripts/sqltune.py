@@ -82,7 +82,7 @@ _SESSION_REQUIRED = (
     "**该能力在白名单模型下不可用。**\n"
     "已迁到白名单的部分（按 id 取 SQL 原文、表/索引/列统计/GUC）本身能走中间件，"
     "但缺了执行计划的证据包不足以支撑调优结论，所以整条命令在此停止，不做半份输出。\n"
-    "可选做法：为这类诊断保留一条直连通道（driver: pg8000），"
+    "可选做法：为这类诊断保留一条直连通道（driver: psycopg2），"
     "或在客户环境不提供本 skill；只看 SQL 原文/慢 SQL 清单可改用 "
     "gaussdb-sqlfetch / gaussdb-topsql / gaussdb-slowsql / gaussdb-health。"
 )
@@ -114,10 +114,10 @@ _NO_HYPOPG_BODY = (
 )
 
 # 收尾那句按访问路径分叉。同一件事，两边的下一步不一样：
-#   本机直连  下一步是换一条 driver: pg8000 的连接重跑，确实能拿到背书
+#   本机直连  下一步是换一条 driver: psycopg2 的连接重跑，确实能拿到背书
 #   白名单    压根没有直连通道 —— 那句话在客户环境不是建议，是噪音，
 #             还会把人往「绕过白名单」的方向引。这边只能是人工验证。
-_HYPOPG_HINT_DIRECT = "需要 hypopg 背书请改用 driver: pg8000 的连接重跑。"
+_HYPOPG_HINT_DIRECT = "需要 hypopg 背书请改用 driver: psycopg2 的连接重跑。"
 _HYPOPG_HINT_WHITELIST = (
     "本次走的是白名单访问路径（只执行预注册脚本、每次调用独立连接），"
     "该能力在这套部署里不提供 —— 没有可切换的选项，索引建议以人工验证为准。"

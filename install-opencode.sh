@@ -141,7 +141,7 @@ fi
 echo "• checking prerequisites"
 command -v python3 >/dev/null || { echo "✗ python3 not found" >&2; exit 1; }
 missing=""
-for m in pg8000 cryptography yaml; do
+for m in psycopg2 cryptography yaml; do
   python3 -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('$m') else 1)" \
     || missing="$missing $m"
 done

@@ -230,15 +230,15 @@ def test_grmp_driver_requires_data_ip():
 
 
 def test_data_ip_is_ignored_for_direct_drivers():
-    validate(_conn(driver="pg8000"))
+    validate(_conn(driver="psycopg2"))
 
 
 def test_existing_drivers_still_validate():
-    validate(_conn(driver="pg8000"))
+    validate(_conn(driver="psycopg2"))
     validate(_conn(driver="gsql"))
 
 
-@pytest.mark.parametrize("driver", ["pg8000", "gsql"])
+@pytest.mark.parametrize("driver", ["psycopg2", "gsql"])
 def test_direct_drivers_select_the_direct_runner(driver, tmp_path, monkeypatch):
     monkeypatch.setenv("GRMP_REGISTRY", str(_registry(tmp_path)))
     runner = access.runner_for(_conn(driver=driver))
@@ -265,7 +265,7 @@ def test_middleware_runner_requires_the_token_at_construction(tmp_path, monkeypa
 # 语句超时 —— 迁移曾把它整个丢掉
 # ===========================================================================
 
-def _timeout_conn(name="c", driver="pg8000"):
+def _timeout_conn(name="c", driver="psycopg2"):
     return Connection(name=name, type="opengauss", host="127.0.0.1", port=5433,
                       database="d", user="u", driver=driver,
                       data_ip="127.0.0.1")

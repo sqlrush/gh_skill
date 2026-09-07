@@ -49,7 +49,7 @@ sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 # GSDB_HOME 决定 common.config.resolve() 去哪个目录找 config.yaml/凭据——
-# 链条编排（probe_lock_chain_e2e.build_three_level_chain）用 pg8000 连接
+# 链条编排（probe_lock_chain_e2e.build_three_level_chain）用 psycopg2 连接
 # "og"，这条连接定义在 ~/.gdaa/config.yaml 里。必须在 import
 # probe_lock_chain_e2e 之前（更准确地说，在它第一次真正发起连接之前）
 # 定下来；不像各子进程用例，那些用各自独立的 env dict，不受这一行影响。
@@ -69,7 +69,7 @@ PY = sys.executable or "python3"
 
 API_CONN = "og-grmp"
 GSQL_CONN = "og-gsql"
-ORCH_CONN = "og"          # 三层链编排用：pg8000，持久会话
+ORCH_CONN = "og"          # 三层链编排用：psycopg2，持久会话
 BOGUS_CONN = "zz-lockwait-matrix-nope"   # 明确不存在，两种模式下都该被拒
 
 GSQL_HOME = "/tmp/gsql-probe"

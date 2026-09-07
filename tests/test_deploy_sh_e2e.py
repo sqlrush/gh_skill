@@ -19,7 +19,7 @@ _ROOT = pathlib.Path(__file__).resolve().parents[1]
 _DEPLOY = _ROOT / "deploy.sh"
 
 # 测试要把 HOME 指到临时目录（否则会往真实的 ~/.zshrc 里写东西），但 Python
-# 的用户级 site-packages 路径是从 HOME 推出来的 —— 一改 HOME，pg8000/yaml
+# 的用户级 site-packages 路径是从 HOME 推出来的 —— 一改 HOME，psycopg2/yaml
 # 就找不到了，脚本第一步就判「缺少依赖」。把真实路径显式注回去。
 _USER_SITE = site.getusersitepackages()
 
@@ -50,7 +50,7 @@ def _run(tmp, answers, *args, env_extra=None):
 def _gsql_answers(dest, ghome, rc, *, app="app1", conn="og-prod"):
     return [str(dest), str(ghome), "y", str(rc), "1",
             app, conn, "opengauss", "127.0.0.1", "5432", "postgres",
-            "gaussdb", "pg8000", ""]
+            "gaussdb", "psycopg2", ""]
 
 
 def _api_answers(dest, ghome, rc, *, host="127.0.0.1", port="8769",
@@ -256,7 +256,7 @@ def test_overwriting_an_existing_config_backs_it_up(box):
                                    conn="first-conn"))
     answers = [str(box["dest"]), str(box["ghome"]), "y", str(box["rc"]), "y",
                "1", "app1", "second-conn", "opengauss", "127.0.0.1", "5432",
-               "postgres", "gaussdb", "pg8000", ""]
+               "postgres", "gaussdb", "psycopg2", ""]
     _run(box["tmp"], answers)
     cfg = (box["ghome"] / "config.yaml").read_text(encoding="utf-8")
     assert "second-conn" in cfg

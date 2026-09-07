@@ -53,7 +53,7 @@ def verify_indexes(db, sql_text: str, min_speedup: float = MIN_SPEEDUP) -> list[
         raise DBError(
             "hypopg 索引验证需要持久会话:gsql 每条语句起独立子进程,"
             "会话级 GUC / hypopg 虚拟索引不跨语句留存,验证会失效。"
-            "请对该连接改用 driver: pg8000（gsql 后端不支持索引验证）。"
+            "请对该连接改用 driver: psycopg2（gsql 后端不支持索引验证）。"
         )
     if min_speedup < 1.0:
         min_speedup = 1.0

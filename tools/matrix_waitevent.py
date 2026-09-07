@@ -40,7 +40,7 @@ GDAA_SKILLS_DIR 环境变量即可，不改这份代码。
 **真实快照 id 一律运行时取，不硬编码**：`wdr.snapshots` 会随时间推进，
 写死的 id 迟早指向一个已经不在窗口里的快照，而这类失败不报错、只是
 "begin/end 相同"或"查不到行"，很容易被误读成脚本本身的问题。取快照 id
-用的是编排连接 `og`（`driver: pg8000`，直连），与 `matrix_lockwait.py`
+用的是编排连接 `og`（`driver: psycopg2`，直连），与 `matrix_lockwait.py`
 搭三层锁链用的是同一条连接、同一个 GSDB_HOME 选取逻辑。
 
 **判定的两条底线（对每一行都成立，不分哪条用例）：**
@@ -65,7 +65,7 @@ sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 # GSDB_HOME 决定 common.config.resolve() 去哪个目录找 config.yaml/凭据——
-# 编排连接 "og"（pg8000，直连）用来在主进程里现取真实快照 id、扫重启窗口。
+# 编排连接 "og"（psycopg2，直连）用来在主进程里现取真实快照 id、扫重启窗口。
 # 必须在 import common.access 之前定下来。子进程用例各自用独立的 env dict，
 # 不受这一行影响。
 _GDAA_HOME = os.path.expanduser(os.environ.get("GDAA_HOME_FOR_MATRIX", "~/.gdaa"))
@@ -83,7 +83,7 @@ PY = sys.executable or "python3"
 
 API_CONN = "og-grmp"
 GSQL_CONN = "og-gsql"
-ORCH_CONN = "og"          # 编排用：pg8000，直接查 wdr.snapshots / instance_time
+ORCH_CONN = "og"          # 编排用：psycopg2，直接查 wdr.snapshots / instance_time
 BOGUS_CONN = "no_such_conn_zzz"   # 明确不存在，两种模式下都该被拒
 
 GSQL_HOME = "/tmp/gsql-probe"

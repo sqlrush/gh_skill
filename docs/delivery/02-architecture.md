@@ -28,9 +28,9 @@
        ┌────────┴────────┐
        ▼                 ▼
 ┌─────────────┐  ┌──────────────────────────────────────────┐
-│ Pg8000Backend│  │ GsqlBackend                              │
+│ Psycopg2Backend│  │ GsqlBackend                              │
 │ 持久 TCP 连接│  │ 每查询一个 gsql -c 子进程（无状态）       │
-│ pg8000 驱动  │  │ gsql_protocol.py 纯函数层                │
+│ psycopg2 驱动  │  │ gsql_protocol.py 纯函数层                │
 │ provides_    │  │ provides_session = False                 │
 │ session=True │  │                                          │
 └─────────────┘  └──────────────────────────────────────────┘
@@ -63,7 +63,7 @@ opencode_skill/
 │   ├── db.py                 # Database 门面
 │   └── backends/
 │       ├── base.py           # Backend ABC + DBError
-│       ├── pg8000_backend.py # pg8000 驱动后端
+│       ├── psycopg2_backend.py # psycopg2 驱动后端
 │       ├── gsql_protocol.py  # gsql 协议纯函数层
 │       └── gsql_backend.py   # gsql 子进程后端
 │
@@ -212,7 +212,7 @@ raise DBError("all drivers failed [...]")  # 两个都失败才报错
 
 **`read_only=True`** 为默认值，绝大多数 skill 只读（`connect` 的默认值）；`gaussdb-sqltune --analyze` 模式传 `read_only=False`。
 
-**惰性导入**：`_load_backend(driver)` 按需 import backend 模块，gsql-only 环境无需安装 pg8000，反之亦然。
+**惰性导入**：`_load_backend(driver)` 按需 import backend 模块，gsql-only 环境无需安装 psycopg2，反之亦然。
 
 **与其它模块关系**：公开 `DBError`（从 `backends.base` 再导出）保证调用方 `from common.db import DBError` 的向后兼容；所有 skill 入口脚本只依赖 `common.Database` + `common.DBError`，不直接引用 backends。
 
@@ -255,19 +255,19 @@ class Backend(abc.ABC):
 
 ---
 
-### 3.6 `common/backends/pg8000_backend.py` — pg8000 后端
+### 3.6 `common/backends/psycopg2_backend.py` — psycopg2 后端
 
-**职责**：通过 pg8000 库建立持久 TCP 连接，直接走 PostgreSQL wire 协议，无需 gsql 二进制。
+**职责**：通过 psycopg2 库建立持久 TCP 连接，直接走 PostgreSQL wire 协议，无需 gsql 二进制。
 
 **关键类型**：
 
 ```python
-class Pg8000Backend(Backend):
-    name = "pg8000"
+class Psycopg2Backend(Backend):
+    name = "psycopg2"
     provides_session = True
 
     @classmethod
-    def open(cls, conn, password, read_only=True) -> "Pg8000Backend": ...
+    def open(cls, conn, password, read_only=True) -> "Psycopg2Backend": ...
     def query(self, sql, params=None): ...
     def query_in_rollback(self, sql, params=None): ...
     def execute(self, sql, params=None): ...
@@ -276,13 +276,16 @@ class Pg8000Backend(Backend):
 ```
 
 **实现技术方案**：
-- 建连：`pg8000.dbapi.connect(host, port, database, user, password, timeout=15, ssl_context=...)`，超时 15 秒（对齐 gsql）。
+- 建连：`psycopg2.connect(host, port, dbname, user, password, connect_timeout=15, sslmode=...)`，握手超时 15 秒（对齐 gsql）；`sslmode` 直接交给 libpq，写错的值当场报错而不是静默降级成不加密。
 - `raw.autocommit = True`（打开后立即设置），之后每条语句自动提交。
 - **只读钉**：`open` 时若 `read_only=True`，先尝试 `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY`，失败则退回 `SET default_transaction_read_only = on`。
 - **`query_in_rollback`**：临时关闭 `autocommit`，执行后调 `raw.rollback()`，在 `finally` 里恢复 `autocommit`（用于 EXPLAIN ANALYZE 不提交实际写入）。
-- **`set_statement_timeout`**：执行 `SET statement_timeout = {ms}`（pg8000 端接受毫秒）。
-- **SSL**：`sslmode` 为 `allow/prefer/require/verify-ca/verify-full` 时构建 `ssl.SSLContext`；`disable` 时传 `None`。
-- **错误格式化**：`_format_pg_error` 从 `exc.args[0]`（pg8000 返回的 dict）里提取 `M`（消息）和 `C`（SQLSTATE code），格式化为 `"ERROR: {msg} (SQLSTATE {code})"`，与 gsql 的错误输出格式保持一致。
+- **`set_statement_timeout`**：执行 `SET statement_timeout = {ms}`（psycopg2 端接受毫秒）。
+- **SSL**：`sslmode` 原样传给 libpq（`disable/allow/prefer/require/verify-ca/verify-full`）；不配时按 `disable`。
+- **无参数时传 `None`**：psycopg2 只要收到参数容器（哪怕空元组）就会做 %-插值，registry SQL 里
+  `LIKE '/* missing SQL statement%'` 这类字面百分号会当场报错。所以 `query/execute` 在 `params` 为空时传 `None`。
+- **错误格式化**：`_format_pg_error` 从 `exc.diag.message_primary` 与 `exc.pgcode` 取值，格式化为
+  `"ERROR: {msg} (SQLSTATE {code})"`，与 gsql 的错误输出格式保持一致。
 - `provides_session = True`：单条持久连接，会话级 GUC（如 `enable_hypo_index`）和 hypopg 虚拟索引在多次 `db.*` 调用间留存。
 
 ---
@@ -415,9 +418,9 @@ SELECT json_agg(row_to_json(_t)) FROM (<原始SQL>) _t
 | `NULL` | `null` | `None` |
 | `text` / `varchar` | JSON string | `str` |
 
-> **待验证**：`numeric` 无小数位时（如 `count(*)::numeric` 返回 `42`），JSON 中为整数，gsql 解析为 `int`，而 pg8000 返回 `Decimal('42')`。各 skill 探针均设计为对此不敏感，但新增探针须注意。
+> **待验证**：`numeric` 无小数位时（如 `count(*)::numeric` 返回 `42`），JSON 中为整数，gsql 解析为 `int`，而 psycopg2 返回 `Decimal('42')`。各 skill 探针均设计为对此不敏感，但新增探针须注意。
 
-非 JSON 原生类型（时间戳、日期、时间间隔、数组、bytea）在 `row_to_json` 里被渲染为文本字符串，gsql 得到 `str`，pg8000 返回 `datetime.datetime` 等带类型对象。各 skill 已设计为不依赖这些类型的具体形态。新探针建议对这类列显式 `CAST(... AS text)`。
+非 JSON 原生类型（时间戳、日期、时间间隔、数组、bytea）在 `row_to_json` 里被渲染为文本字符串，gsql 得到 `str`，psycopg2 返回 `datetime.datetime` 等带类型对象。各 skill 已设计为不依赖这些类型的具体形态。新探针建议对这类列显式 `CAST(... AS text)`。
 
 ### 4.2 按类型参数注入
 
@@ -428,14 +431,14 @@ SELECT json_agg(row_to_json(_t)) FROM (<原始SQL>) _t
 
 ### 4.3 只读与回滚模式
 
-| 模式 | pg8000 | gsql |
+| 模式 | psycopg2 | gsql |
 |---|---|---|
 | 只读钉 | `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY` | 每条命令前拼 `SET default_transaction_read_only=on;` |
 | 回滚执行 | 临时 `autocommit=False` + `raw.rollback()` | 单条命令 `BEGIN; ...; ROLLBACK;` |
 
 ### 4.4 连接级兜底
 
-`Database.open()` 按 `[preferred] + [其余]` 顺序尝试，首选驱动连接失败时静默切换，两个都失败才抛错。典型场景：macOS 无 gsql 二进制，`driver: gsql` 自动降为 pg8000。
+`Database.open()` 按 `[preferred] + [其余]` 顺序尝试，首选驱动连接失败时静默切换，两个都失败才抛错。典型场景：macOS 无 gsql 二进制，`driver: gsql` 自动降为 psycopg2。
 
 ### 4.5 hypopg 守卫（gsql 后端限制）
 
@@ -454,24 +457,24 @@ gsql 后端每条语句独立子进程，会话级状态无法跨调用留存，
 
 ```python
 if not getattr(db, "provides_session", True):
-    raise DBError("hypopg 索引验证需要持久会话 … 请改用 driver: pg8000")
+    raise DBError("hypopg 索引验证需要持久会话 … 请改用 driver: psycopg2")
 ```
 
 skill 入口（`sqltune.py`、`proctune.py`）捕获该 `DBError`，将其转化为「索引验证不可用」的 note 提示用户，不终止整体流程（best-effort 降级）。
 
-**影响范围**：`driver: gsql` 且 Linux 主机有 gsql 二进制时触发；macOS 自动兜底到 pg8000，不受影响。
+**影响范围**：`driver: gsql` 且 Linux 主机有 gsql 二进制时触发；macOS 自动兜底到 psycopg2，不受影响。
 
-### 4.6 gsql vs pg8000 差异汇总
+### 4.6 gsql vs psycopg2 差异汇总
 
-| 特性 | gsql 后端 | pg8000 后端 |
+| 特性 | gsql 后端 | psycopg2 后端 |
 |---|---|---|
 | 连接方式 | 每查询一个子进程 | 持久 TCP 连接 |
 | `provides_session` | `False` | `True` |
 | hypopg 验证 | 不支持（守卫报错） | 支持 |
 | 类型保真 | json_agg 路径 | 原生 wire protocol |
-| `EXPLAIN(FORMAT JSON)` 返回形式 | 逐行 `(line,)` tuple（需调用方重组） | 单个已解码 Python 对象（pg8000 自动解析 JSON 列）— *待验证* |
+| `EXPLAIN(FORMAT JSON)` 返回形式 | 逐行 `(line,)` tuple（需调用方重组） | 单个已解码 Python 对象（psycopg2 自动解析 JSON 列）— *待验证* |
 | 时间戳/日期类型 | `str`（ISO 格式） | `datetime.datetime` / `datetime.date` 对象 |
-| 安装依赖 | 需要 gsql 二进制（Linux 原生） | 需要 `pg8000` Python 包 |
+| 安装依赖 | 需要 gsql 二进制（Linux 原生） | 需要 `psycopg2` Python 包 |
 
 > **"待验证"标注**：gsql 二进制仅存在于 Linux 主机，macOS 开发环境下的 parity diff 尚未完成。`docs/connection-drivers.md` 详细记录了理论分析与验证方法。
 
@@ -590,7 +593,7 @@ def truncate(s: str, max_len: int) -> str: ...
   4. hypopg 虚拟索引验证（`hypoindex.verify_indexes`，best-effort）
 - `evidence.py` 收集内容：DB 版本 → EXPLAIN 计划 → 确定性 findings（Seq Scan/Hash Join/行估算偏差等规则）→ 表统计信息（`pg_stat_user_tables`）→ 索引统计（`pg_stat_user_indexes`）→ 列统计（`pg_stats`）→ GUC 参数。
 - `placeholder.py`：纯文本启发式，识别 `?`、`$N`、`:N` 占位符，根据左侧上下文（`LIMIT`、`DATE`、`LIKE` 等关键字）选择合理的代入值，支持 `--bind` 用户覆盖。
-- `cost.py`：`explain_cost(db, sql)` 执行 `EXPLAIN (FORMAT JSON, COSTS TRUE)` 并提取根节点 `Total Cost`；兼容 gsql 文本旁路（多行拼接后 `json.loads`）和 pg8000 自动解码两种形态。
+- `cost.py`：`explain_cost(db, sql)` 执行 `EXPLAIN (FORMAT JSON, COSTS TRUE)` 并提取根节点 `Total Cost`；兼容 gsql 文本旁路（多行拼接后 `json.loads`）和 psycopg2 自动解码两种形态。
 - `hypoindex.py`：`verify_indexes(db, sql, min_speedup=1.3)` — 首先检查 `db.provides_session`（守卫），然后 `gs_index_advise` 获取候选，逐个 `hypopg_create_index` → re-EXPLAIN → 计算 speedup，只返回 speedup ≥ 1.3× 的候选。
 - `verify.py`：`verify_rewrite` — cost 对比 + md5 行哈希等价性采样（1000 行）；`verify_combined` — 同时加载 hypopg 虚拟索引后验证 rewrite + index 组合收益。
 
@@ -663,7 +666,7 @@ def truncate(s: str, max_len: int) -> str: ...
 
 ### 7.1 为何用门面 + 后端分层？
 
-`Database` 门面对所有 skill 暴露稳定 API（query/scalar/execute 等），不论底层使用 gsql 还是 pg8000。skill 代码不感知后端选择，后端可以独立演进或增加新实现而不影响 skill 代码。连接级兜底也集中在门面层，skill 无需实现重试逻辑。
+`Database` 门面对所有 skill 暴露稳定 API（query/scalar/execute 等），不论底层使用 gsql 还是 psycopg2。skill 代码不感知后端选择，后端可以独立演进或增加新实现而不影响 skill 代码。连接级兜底也集中在门面层，skill 无需实现重试逻辑。
 
 ### 7.2 为何用 json_agg 包裹？
 
@@ -675,7 +678,7 @@ gsql 是无持久连接语义的 CLI 工具，每次 `-c` 执行一条命令后�
 
 ### 7.4 为何用 provides_session 守卫而非自动切换后端？
 
-当用户配置了 `driver: gsql` 时，若需要 hypopg 验证，**显式报错比静默切换后端更透明**：用户知道为什么索引验证不可用，以及如何修复（改 `driver: pg8000`）。自动切换会在用户不知情的情况下更改实际使用的后端，破坏可预期性。
+当用户配置了 `driver: gsql` 时，若需要 hypopg 验证，**显式报错比静默切换后端更透明**：用户知道为什么索引验证不可用，以及如何修复（改 `driver: psycopg2`）。自动切换会在用户不知情的情况下更改实际使用的后端，破坏可预期性。
 
 ### 7.5 为何 render.py 在每个 skill 中 vendored 而非共享？
 
@@ -683,4 +686,4 @@ skill 安装后的路径结构由 `{baseDir}` 决定，每个 skill 的 `scripts
 
 ---
 
-*文档生成时间：2026-07-01。源码基于 opencode_skill 仓库 main 分支。存疑处（gsql vs pg8000 parity diff）详见 `docs/connection-drivers.md`。*
+*文档生成时间：2026-07-01。源码基于 opencode_skill 仓库 main 分支。存疑处（gsql vs psycopg2 parity diff）详见 `docs/connection-drivers.md`。*

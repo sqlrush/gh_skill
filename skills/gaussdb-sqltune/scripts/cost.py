@@ -15,7 +15,7 @@ def explain_cost(db, sql_text: str) -> float:
         raise ValueError("explain cost: no rows returned")
     first = rows[0][0]
     if isinstance(first, (list, dict)):
-        # pg8000 auto-decodes the json column into a Python object.
+        # psycopg2 auto-decodes the json column into a Python object.
         plans = first
     else:
         # Fallback: JSON document returned as text (possibly split across rows).

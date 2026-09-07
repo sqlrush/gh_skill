@@ -14,7 +14,7 @@ class Backend(abc.ABC):
 
     name: str
     # 是否提供跨语句持久的会话(会话级 GUC / hypopg 虚拟索引在多次调用间留存)。
-    # 持久连接(pg8000)为 True;无状态子进程后端(gsql)覆盖为 False。
+    # 持久连接(psycopg2)为 True;无状态子进程后端(gsql)覆盖为 False。
     provides_session: bool = True
 
     @classmethod

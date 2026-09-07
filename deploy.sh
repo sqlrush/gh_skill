@@ -51,7 +51,7 @@ command -v python3 >/dev/null || { bad "python3 未安装，装完再来"; exit 
 ok "python3 $(python3 -V 2>&1 | awk '{print $2}')"
 
 # MISSING=""
-# for m in pg8000 cryptography yaml; do
+# for m in psycopg2 cryptography yaml; do
 #   python3 -c "import $m" 2>/dev/null || MISSING="$MISSING $m"
 # done
 # if [ -n "$MISSING" ]; then
@@ -59,7 +59,7 @@ ok "python3 $(python3 -V 2>&1 | awk '{print $2}')"
 #   say "      python3 -m pip install -r \"$SRC/requirements.txt\""
 #   confirm "现在装吗？" && run "python3 -m pip install -r \"$SRC/requirements.txt\"" || exit 1
 # else
-#   ok "Python 依赖齐全（pg8000 / cryptography / yaml）"
+#   ok "Python 依赖齐全（psycopg2 / cryptography / yaml）"
 # fi
 # 
 # if command -v opencode >/dev/null; then
@@ -162,7 +162,7 @@ YAML"
     ask "port" "5432"; CPORT="$REPLY_VAL"
     ask "database" "postgres"; CDB="$REPLY_VAL"
     ask "user" "gaussdb"; CUSER="$REPLY_VAL"
-    ask "driver (pg8000/gsql)" "pg8000"; CDRV="$REPLY_VAL"
+    ask "driver (psycopg2/gsql)" "psycopg2"; CDRV="$REPLY_VAL"
 
     run "cat > \"$CFG\" <<YAML
 # 由 deploy.sh 生成。首行决定所有 skill 怎么连库。

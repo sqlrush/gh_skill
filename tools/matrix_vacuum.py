@@ -33,7 +33,7 @@
      `connection_info = {"driver_name":"libpq",...}`，于是这条 SELECT
      在 gsql 模式下**永远会把执行查询的这个会话自己**当成一条"活跃事务"
      命中——`pid` 精确等于 `pg_backend_pid()`，`xmin_age_s` 恒为 0；
-     pg8000（`-c og` 用的驱动）对自己这一行的 `connection_info` 是空串，
+     psycopg2（`-c og` 用的驱动）对自己这一行的 `connection_info` 是空串，
      不会自证。已用 `common.access.connection_for()` 直接查证过两条路径的
      `pg_stat_activity` 自身行，见 task-17-report.md「Fix round 1」一节。
      `oldest_xmin.yaml` 的 `long_xact` 分支现已补上
