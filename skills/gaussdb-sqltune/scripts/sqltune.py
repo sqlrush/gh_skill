@@ -36,6 +36,7 @@ from common import cli  # noqa: E402
 from common.grmp.hints import ensure_hint  # noqa: E402
 from common import kernel_funcs as kf  # noqa: E402
 from common import search_path as sp  # noqa: E402
+from common.grmp import statement as stmt_mod  # noqa: E402
 from common.grmp.statement import (  # noqa: E402
     ExplainNotAllowed,
     ensure_explainable,
@@ -194,13 +195,17 @@ def _derivation_report(runner, db, sql_text: str, ev) -> str:
     except Exception as exc:            # 取计划失败的形态太多，统一兜住
         return header + "未进行：拿不到 JSON 格式的执行计划 —— %s\n" % exc
 
-    cal = calibrate.calibrate_best_variant(
-        root, lambda v: resolve.make_resolver(cat, cost, v))
-    verdicts = cat.freshness_report([t.name for t in ev.tables])
-
-    proposals = _index_proposals(root, cat, cost, cal, verdicts)
-    return "\n" + derivation.render_report(cal, cost, verdicts,
-                                           proposals=proposals)
+    try:
+        cal = calibrate.calibrate_best_variant(
+            root, lambda v: resolve.make_resolver(cat, cost, v))
+        verdicts = cat.freshness_report([t.name for t in ev.tables])
+        proposals = _index_proposals(root, cat, cost, cal, verdicts)
+        return "\n" + derivation.render_report(cal, cost, verdicts,
+                                               proposals=proposals)
+    except Exception as exc:            # noqa: BLE001 —— 推演是附加证据,任何一步失败都只落到报告
+        # og5 实测:没 ANALYZE 过的表,计划里一个 Index Scan 就让 catalog.column 抛 CatalogError
+        # (pg_stats 里没那一列),原先这里没兜住,整条 sqltune 命令 Traceback。
+        return header + "未进行：推演中途失败 —— %s\n" % exc
 
 
 def _index_proposals(root, cat, cost, cal, verdicts) -> list:
@@ -243,8 +248,17 @@ def _guard_sql(sql_text: str, analyze: bool) -> None:
 
     DML + --analyze 在这条路上**不可用**，必须报错而不是悄悄不 analyze：
     静默降级会让用户以为拿到的是实际执行的计划，实测两者能差 2.3 倍。
+
+    白名单路径(中间件)连不带 ANALYZE 的写语句也拦:客户中间件只受理 SELECT 的执行计划,
+    UPDATE / INSERT / DELETE 递过去一律 400(客户 09-08 清单第 2 项第 3 点,要求 skill 层拦截)。
+    直连原始会话那条路不经这里,EXPLAIN UPDATE 不执行语句,直连照常出计划。
     """
     ensure_explainable(sql_text, analyze=analyze)
+    if not stmt_mod.is_read_only(sql_text):
+        raise ExplainNotAllowed(
+            "中间件路径只受理只读语句的执行计划,本次是 %s。写语句的计划中间件不受理(递过去就是 400),"
+            "本 skill 不再发出。可把它的 WHERE 部分改写成 SELECT 后再调优,或改用直连(driver: psycopg2)。"
+            % (stmt_mod.leading_keyword(sql_text).upper() or "非查询语句"))
 
 
 def _tune(runner, db, *, original_sql: str, binds: list[str], do_analyze: bool,

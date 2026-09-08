@@ -432,3 +432,38 @@ def test_explain_json_via_script_uses_the_schema_template_too():
     r = _SchemaRunner()
     evidence.explain_json_via_script(r, "select 1", schema="app_trade")
     assert r.calls[-1] == ("sqltune.plan_json_schema", {"sql": "select 1", "schema": "app_trade"})
+
+
+def test_derivation_report_degrades_to_a_note_when_calibration_hits_missing_stats(monkeypatch):
+    """og5 实测:没 ANALYZE 过的表,计划里一个 Index Scan 就让 catalog.column 抛 CatalogError,
+    整条 sqltune 命令 Traceback。推演是附加证据,docstring 承诺「任何一步失败都返回一段说明」——要兜到底。"""
+    import sqltune
+    import catalog as cat_mod
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(sqltune.costconst, "from_gucs", lambda gucs: object())
+    monkeypatch.setattr(sqltune.catalog, "from_evidence", lambda ev: object())
+    monkeypatch.setattr(sqltune, "explain_json_via_script", lambda runner, sql, schema="": "[]")
+    monkeypatch.setattr(sqltune.plantree, "parse", lambda raw: object())
+
+    def _boom(root, factory):
+        raise cat_mod.CatalogError("列 kf_orders.id 没有统计信息（pg_stats 里没有这一行）")
+    monkeypatch.setattr(sqltune.calibrate, "calibrate_best_variant", _boom)
+
+    ev = SimpleNamespace(gucs=[], tables=[], search_path="")
+    out = sqltune._derivation_report(object(), None, "select 1", ev)
+    assert out.startswith("\n## 代价推演") and "未进行" in out and "kf_orders.id" in out
+
+
+def test_whitelist_path_refuses_dml_before_calling_the_middleware():
+    """客户清单第 2 项第 3 点:中间件只受理 SELECT 的执行计划,写语句要在 skill 层拦,不能靠中间件报 400。
+    直连原始会话那条路不受影响(EXPLAIN UPDATE 不执行,直连能出计划)。"""
+    import pytest
+    import sqltune
+    from common.grmp.statement import ExplainNotAllowed
+
+    sqltune._guard_sql("select 1 from t", False)                    # 只读照常放行
+    with pytest.raises(ExplainNotAllowed) as ei:
+        sqltune._guard_sql("update t set a = 1 where id = 1", False)
+    msg = str(ei.value)
+    assert "UPDATE" in msg and "只读" in msg and "中间件" in msg
