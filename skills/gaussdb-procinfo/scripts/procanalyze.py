@@ -35,6 +35,7 @@ class ProcDef:
     body: str
     vars: dict
     rollback_safe: bool
+    package: str = ""      # 所属包(gs_package.pkgname);独立过程为空串
 
 
 @dataclass

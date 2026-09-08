@@ -30,6 +30,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import pathlib
 import sys
@@ -46,6 +47,7 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
 import common  # noqa: E402
 from common import access  # noqa: E402
 from common import cli  # noqa: E402
+from common import procname  # noqa: E402
 from common.grmp.hints import ensure_hint  # noqa: E402
 import procanalyze as pa  # noqa: E402
 import render  # noqa: E402
@@ -122,24 +124,13 @@ class CursorTuneResult:
     skipped: list = field(default_factory=list)
 
 
-def _split_qualified(q: str) -> tuple[str, str]:
-    if "." in q:
-        i = q.rindex(".")
-        return q[:i], q[i + 1:]
-    return "", q
-
-
 def fetch_proc_def(runner, qualified: str) -> pa.ProcDef:
-    """经统一入口取数。走中间件还是直连由连接的 driver 决定，这里不感知。"""
-    schema, name = _split_qualified(qualified)
-    rows = runner.run(PROC_DEF_SCRIPT, {"name": name, "schema": schema})
-    if not rows:
-        raise ValueError(f"proc {qualified!r} not found")
-    r = rows[0]
-    # 协议把 NULL 渲染成空串，原来那句 `x if x is not None else ""` 的效果
-    # 由入口保证，这里不必再兜。
-    return pa.analyze(r["nspname"], r["proname"], r["lanname"],
-                      r["prosrc"], r["args"])
+    """经统一入口取数。名字支持 schema.package.proc(包内过程);同名过程不止一个时拒绝,不猜
+    (common/procname.py)。走中间件还是直连由连接的 driver 决定，这里不感知。"""
+    r = procname.lookup(runner, PROC_DEF_SCRIPT, qualified)
+    # 协议把 NULL 渲染成空串，原来那句 `x if x is not None else ""` 的效果由入口保证，这里不必再兜。
+    d = pa.analyze(r["nspname"], r["proname"], r["lanname"], r["prosrc"], r["args"])
+    return dataclasses.replace(d, package=str(r.get("package", "") or ""))
 
 
 def proc_collect(runner, qualified: str) -> ProcEvidence:
@@ -252,7 +243,8 @@ def _arg_string(args: list) -> str:
 def proc_collect_report(pe: ProcEvidence) -> str:
     d = pe.proc
     b = ["# Proc Collect\n\n## Procedure Source\n",
-         f"- Name: `{d.schema}.{d.name}`",
+         f"- Name: `{procname.qualified(d.schema, getattr(d, 'package', ''), d.name)}`"
+         + ("（包内过程）" if getattr(d, "package", "") else ""),
          f"- Language: `{d.lang}`",
          "- Args: `" + _arg_string(d.args) + "`",
          f"- Rollback-safe: {str(d.rollback_safe).lower()}\n"]
@@ -300,7 +292,7 @@ def _verified_index_block(indexes: list, note: str) -> str:
 
 def cursor_tune_report(tr: CursorTuneResult) -> str:
     p = tr.proc
-    out = f"# Cursor Tune  (proc: `{p.schema}.{p.name}`, lang: {p.lang})\n"
+    out = f"# Cursor Tune  (proc: `{procname.qualified(p.schema, getattr(p, 'package', ''), p.name)}`, lang: {p.lang})\n"
     if not tr.cursors:
         out += "\n没有可处理的只读游标 SELECT。见 `## Skipped Cursors`。\n"
     for ce in tr.cursors:
@@ -336,7 +328,7 @@ def _evidence_dict(ev: Evidence) -> dict:
 
 
 def _proc_dict(p: pa.ProcDef) -> dict:
-    return {"schema": p.schema, "name": p.name, "lang": p.lang,
+    return {"schema": p.schema, "package": getattr(p, "package", ""), "name": p.name, "lang": p.lang,
             "args": [a.__dict__ for a in p.args], "vars": p.vars,
             "rollback_safe": p.rollback_safe}
 

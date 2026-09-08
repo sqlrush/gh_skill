@@ -210,3 +210,32 @@ def test_cursor_evidence_switches_search_path_to_the_procedure_schema():
     ev = evidence.collect(r, None, "select 1 from t", False, schema="billing")
     assert ("proctune.plan_text_schema", {"sql": "select 1 from t", "schema": "billing"}) in r.calls
     assert ev.search_path == "billing"
+
+
+def test_proctune_fetch_proc_def_handles_package_names():
+    """proctune 与 procinfo 同一套定位逻辑:三段名定位包内过程,同名多个时拒绝。"""
+    import pytest
+    import importlib.util
+    scripts = _ROOT / "skills" / "gaussdb-proctune" / "scripts"
+    sys.modules.pop("render", None)
+    sys.path.insert(0, str(scripts))
+    spec = importlib.util.spec_from_file_location("proctune_main_under_test", scripts / "proctune.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+
+    class _R:
+        def run(self, script, values=None):
+            v = dict(values or {})
+            rows = [{"nspname": "gmag", "proname": "proc_x", "lanname": "plpgsql",
+                     "prosrc": "DECLARE CURSOR c1 IS SELECT 1 FROM t; BEGIN OPEN c1; CLOSE c1; END",
+                     "args": "", "package": p} for p in ("pkg_a", "pkg_b")]
+            return [r for r in rows if r["proname"] == v["name"]
+                    and (not v["schema"] or r["nspname"] == v["schema"])
+                    and (not v["package"] or r["package"] == v["package"])]
+
+    d = mod.fetch_proc_def(_R(), "gmag.pkg_b.proc_x")
+    assert d.package == "pkg_b" and d.schema == "gmag"
+    with pytest.raises(ValueError) as ei:
+        mod.fetch_proc_def(_R(), "gmag.proc_x")
+    assert "pkg_a" in str(ei.value) and "pkg_b" in str(ei.value)

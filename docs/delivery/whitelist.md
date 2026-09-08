@@ -802,16 +802,21 @@ ORDER BY name;
 |---|---|
 | `name` | STRING |
 | `schema` | STRING |
+| `package` | STRING |
 
 ```sql
 SELECT n.nspname, p.proname, l.lanname, p.prosrc,
-       pg_catalog.pg_get_function_arguments(p.oid) AS args
+       pg_catalog.pg_get_function_arguments(p.oid) AS args,
+       COALESCE(k.pkgname, '') AS package
 FROM pg_proc p
 JOIN pg_namespace n ON n.oid = p.pronamespace
 JOIN pg_language l ON l.oid = p.prolang
-WHERE p.proname = '{{name}}' AND ('{{schema}}' = '' OR n.nspname = '{{schema}}')
-ORDER BY (n.nspname = 'public') DESC, n.nspname
-LIMIT 1;
+LEFT JOIN gs_package k ON k.oid = p.propackageid
+WHERE p.proname = '{{name}}'
+  AND ('{{schema}}' IS NULL OR '{{schema}}' = '' OR n.nspname = '{{schema}}')
+  AND ('{{package}}' IS NULL OR '{{package}}' = '' OR k.pkgname = '{{package}}')
+ORDER BY (n.nspname = 'public') DESC, n.nspname, k.pkgname
+LIMIT 5;
 ```
 
 ### `proctune.column_stats`
@@ -936,16 +941,21 @@ SET search_path TO "{{schema}}", public; EXPLAIN (ANALYZE false, BUFFERS false, 
 |---|---|
 | `name` | STRING |
 | `schema` | STRING |
+| `package` | STRING |
 
 ```sql
 SELECT n.nspname, p.proname, l.lanname, p.prosrc,
-       pg_catalog.pg_get_function_arguments(p.oid) AS args
+       pg_catalog.pg_get_function_arguments(p.oid) AS args,
+       COALESCE(k.pkgname, '') AS package
 FROM pg_proc p
 JOIN pg_namespace n ON n.oid = p.pronamespace
 JOIN pg_language l ON l.oid = p.prolang
-WHERE p.proname = '{{name}}' AND ('{{schema}}' = '' OR n.nspname = '{{schema}}')
-ORDER BY (n.nspname = 'public') DESC, n.nspname
-LIMIT 1;
+LEFT JOIN gs_package k ON k.oid = p.propackageid
+WHERE p.proname = '{{name}}'
+  AND ('{{schema}}' IS NULL OR '{{schema}}' = '' OR n.nspname = '{{schema}}')
+  AND ('{{package}}' IS NULL OR '{{package}}' = '' OR k.pkgname = '{{package}}')
+ORDER BY (n.nspname = 'public') DESC, n.nspname, k.pkgname
+LIMIT 5;
 ```
 
 ### `proctune.sql_from_history`
