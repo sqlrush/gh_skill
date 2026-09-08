@@ -1,6 +1,6 @@
 ---
 name: gaussdb-explain
-version: 2.1.0
+version: 2.1.1
 description: "通过内置脚本查看、运行、对比 OpenGauss/GaussDB SQL 的执行计划。用户只是想看 explain、执行计划、plan、cost、节点路径，包括“给我这条 SQL 的执行计划”“给我几个 SQL 的执行计划”“跑 explain”“看 plan”等请求。触发后运行 scripts/explain.py，返回真实 plan 和通俗易懂的节点解读；如果用户要继续做慢 SQL 根因分析、索引/改写建议、收益验证或完整调优，不要停在本 skill，应优先转给 gaussdb-sqltune。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -56,6 +56,8 @@ metadata:
 6. 如果用户没有提供连接名，且存在多个连接：
    再询问要使用哪个连接。
 7. 除非用户明确要求 `EXPLAIN ANALYZE`，或明确同意执行 analyze，否则默认只跑普通 `EXPLAIN`。
+   现场注册脚本按客户只读要求把 ANALYZE 固定关闭：`--analyze` 拿到的仍是估算计划，报告来源行会写「ANALYZE 未生效,这是估算计划」并附说明。
+   这时如实告诉用户「现场策略不执行 SQL，这是估算计划」，行数与耗时都是规划器估算，**不要说成实测**。
 8. 输出时优先返回真实 plan 结果，不要仅返回“这条 SQL 大概会怎样执行”的推测。
 9. SQL语句要求只读、不允许用户`EXPLAIN`或`EXPLAIN ANALYZE`执行时加DML、DDL等操作
 

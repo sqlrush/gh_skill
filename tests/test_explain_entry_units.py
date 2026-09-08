@@ -271,3 +271,43 @@ def test_sql_execution_failure_is_reported_not_thrown(monkeypatch, capsys,
     err = capsys.readouterr().err
     assert "Traceback" not in err
     assert "SQLSTATE" in err, "要把数据库的原话带给用户，而不是包装成通用失败"
+
+
+class _PlanRunner:
+    """只回一段固定计划文本的 runner:用来看 --analyze 拿到估算计划时报告怎么写。"""
+
+    def __init__(self, plan):
+        self.plan = plan
+
+    def run(self, script, values=None):
+        return [{"QUERY PLAN": self.plan}]
+
+
+def test_analyze_requested_but_plan_is_an_estimate_is_said_out_loud(monkeypatch, capsys):
+    """现场脚本按客户只读要求把 ANALYZE 固定关闭:用户要了 --analyze,拿到的仍是估算计划。
+    报告不能沉默——来源行与说明都要写明「这是估算」,JSON 里 analyzed 必须是 false。"""
+    monkeypatch.setattr(explain_mod.access, "for_conn",
+                        lambda *a, **k: _PlanRunner("Seq Scan on t  (cost=0.00..1.00 rows=1 width=4)"))
+    import io
+    monkeypatch.setattr(sys, "stdin", io.StringIO("SELECT 1"))
+    assert explain_mod.main(["--sql-stdin", "--analyze"]) == 0
+    out = capsys.readouterr().out
+    assert "估算计划" in out and "ANALYZE" in out and "只读" in out
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO("SELECT 1"))
+    assert explain_mod.main(["--sql-stdin", "--analyze", "--format", "json"]) == 0
+    import json
+    data = json.loads(capsys.readouterr().out)
+    assert data["analyzed"] is False and "估算" in data["source"]
+
+
+def test_analyze_that_really_ran_is_not_second_guessed(monkeypatch, capsys):
+    monkeypatch.setattr(explain_mod.access, "for_conn",
+                        lambda *a, **k: _PlanRunner(
+                            "Seq Scan on t  (cost=0.00..1.00 rows=1 width=4) (actual time=0.01..0.02 rows=1 loops=1)"))
+    import io
+    monkeypatch.setattr(sys, "stdin", io.StringIO("SELECT 1"))
+    assert explain_mod.main(["--sql-stdin", "--analyze", "--format", "json"]) == 0
+    import json
+    data = json.loads(capsys.readouterr().out)
+    assert data["analyzed"] is True and "估算" not in data["source"] and not data["notes"]

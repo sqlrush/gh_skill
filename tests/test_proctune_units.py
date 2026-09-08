@@ -152,3 +152,35 @@ if __name__ == "__main__":
             traceback.print_exc()
     print(f"\n{len(fns) - failed}/{len(fns)} passed")
     sys.exit(1 if failed else 0)
+
+
+def _load_proctune_evidence():
+    """sqltune 也有同名 evidence / render 模块,按路径单独加载 proctune 这份,不碰 sys.modules 里的名字。"""
+    import importlib.util
+    scripts = _ROOT / "skills" / "gaussdb-proctune" / "scripts"
+    sys.modules.pop("render", None)
+    sys.path.insert(0, str(scripts))
+    spec = importlib.util.spec_from_file_location("proctune_evidence_under_test", scripts / "evidence.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod   # dataclass 解析字符串注解时要按 __module__ 找到模块,否则 NoneType.__dict__
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_evidence_says_when_analyze_was_requested_but_the_plan_is_an_estimate():
+    """现场 proctune.plan_text_analyze 按客户只读要求把 ANALYZE 固定关闭:要了 analyze,
+    模板回来的仍是估算计划。analyzed 按计划文本判(false),报告里要说明。"""
+    evidence = _load_proctune_evidence()
+
+    class _R:
+        def run(self, script, values=None):
+            if script == evidence.DB_VERSION_SCRIPT:
+                return [{"version": "openGauss 5.0.3"}]
+            if script.endswith("plan_text_analyze"):
+                return [{"QUERY PLAN": "Seq Scan on t  (cost=0.00..1.00 rows=1 width=4)"}]
+            return []
+
+    ev = evidence.collect(_R(), None, "SELECT 1", True)
+    assert ev.analyzed is False and ev.analyze_requested is True
+    rep = evidence.evidence_report(ev)
+    assert "Analyzed: false" in rep and "估算" in rep and "ANALYZE" in rep
