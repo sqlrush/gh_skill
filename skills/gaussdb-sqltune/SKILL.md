@@ -1,6 +1,6 @@
 ﻿---
 name: gaussdb-sqltune
-version: 2.3.2
+version: 2.4.0
 description: "通过内置脚本对 OpenGauss/GaussDB 的慢 SQL 做深度调优和证据化验证。仅在用户要定位慢 SQL 根因、给出索引/改写/GUC 调优建议、验证某个优化方案是否真的带来收益，或基于 sql_id、Top SQL、slow SQL、WDR 结果继续调优时使用，包括“优化这条 SQL”“这条 SQL 为什么慢并怎么改”“看看建什么索引”“这个改写有没有收益”“给我一套能落地的优化建议”等请求。触发后运行 scripts/sqltune.py 和 scripts/verify.py，输出带证据链、可解释原因和已验证收益的调优结论；如果用户只是想看 explain、执行计划、plan 对比，不要优先使用本 skill。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -58,6 +58,12 @@ metadata:
    **不要单独取 SQL/采集，也不要向用户索要占位符的值。**
    选项：`--bind <value>`（可重复，按占位符顺序）传真实值；日期和字符串可直接传原始值，脚本会按已识别类型或 `TIMESTAMP ?` 等上下文自动转义并添加 SQL 单引号。`--analyze` 仅用于只读 SQL 或用户明确同意时。中间件路径上现场脚本按客户只读要求固定关闭 ANALYZE：报告 `Analyzed: false` 且计划下方附「估算计划」说明时，行数与耗时都是规划器估算，**不要当实测引用**。
    **没有真实值时不要编。** `--bind` 只用于转达用户给出的值：臆造的值会改变选择性，索引/改写的 cost 倍数会跟着失真，等于给出一个看着有据、实则不成立的结论。默认那一跑（不带 `--bind`）本来就会按 catalog 列类型合成安全值，正常路径不需要 `--bind`。
+
+2a. **表名不带 schema 的业务 SQL —— 让脚本先切 search_path。** 应用 SQL 的表名多半不带 schema，靠应用账号的 search_path 解析；
+   中间件执行账号解析不到就报 `relation "xxx" does not exist`（中间件路径表现为 HTTP 400）。按 sql_id 调优时脚本会自动取
+   statement_history 记录的 schema（备机退回 dbe_perf.statement 时按执行账号 user_name 推测，报告里标「推测」），EXPLAIN 前先
+   `SET search_path`；`--sql-stdin` 时你要把用户说的 schema 传进 `--schema <schema>`。报告头部的 `Search path` 行写「已切到」才算生效；
+   写「未切换」说明中间件不支持一条脚本跑两条语句，把那句原因转给用户，由 DBA 给执行账号设 search_path，不要自己改写 SQL 里的表名。
 
 2b. **系统对象 SQL —— 直接结束。** 若输出是「# SQL Tune — 系统对象 SQL,按策略跳过」（脚本正常退出，不是报错），说明这条 SQL 只访问系统表/系统视图。**到此为止**：把跳过的原因和涉及的对象如实转达给用户，不要重跑、不要换 `--sql-stdin` 再试、不要绕开脚本自己分析，也不要给出任何索引/改写/参数建议。可以提示排查方向在监控采集频率与系统整体负载，但那不属于本技能的调优输出。
 

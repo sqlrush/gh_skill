@@ -227,12 +227,6 @@ WHERE unique_query_id = {{sid}}
 ORDER BY start_time DESC
 LIMIT 1;
 ', '[{"key":"sid","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
-INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'proctune.sql_from_statement', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT query FROM dbe_perf.statement
-WHERE unique_sql_id = {{sid}}
-  AND query IS NOT NULL
-  AND LENGTH(TRIM(query)) > 0
-LIMIT 1;
-', '[{"key":"sid","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'proctune.tables', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT n.nspname, c.relname, c.relpages,
        c.reltuples::bigint AS reltuples,
        pg_relation_size(c.oid) / current_setting(''block_size'')::bigint AS curpages,
@@ -264,23 +258,11 @@ WHERE unique_query_id = {{sid}}
 ORDER BY start_time DESC
 LIMIT 1;
 ', '[{"key":"sid","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
-INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'sqlfetch.from_statement', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT query FROM dbe_perf.statement
-WHERE unique_sql_id = {{sid}}
-  AND query IS NOT NULL
-  AND LENGTH(TRIM(query)) > 0
-LIMIT 1;
-', '[{"key":"sid","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'sqlreview.from_history', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT schema_name, query
 FROM dbe_perf.statement_history
 WHERE unique_query_id = {{sid}}
   AND query NOT LIKE ''/* missing SQL statement%''
 ORDER BY start_time DESC
-LIMIT 1;
-', '[{"key":"sid","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
-INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'sqlreview.from_statement', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT query FROM dbe_perf.statement
-WHERE unique_sql_id = {{sid}}
-  AND query IS NOT NULL
-  AND LENGTH(TRIM(query)) > 0
 LIMIT 1;
 ', '[{"key":"sid","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'sqlreview.indexes', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT
@@ -356,12 +338,6 @@ FROM dbe_perf.statement_history
 WHERE unique_query_id = {{sid}}
   AND query NOT LIKE ''/* missing SQL statement%''
 ORDER BY start_time DESC
-LIMIT 1;
-', '[{"key":"sid","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
-INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'sqltune.from_statement', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT query FROM dbe_perf.statement
-WHERE unique_sql_id = {{sid}}
-  AND query IS NOT NULL
-  AND LENGTH(TRIM(query)) > 0
 LIMIT 1;
 ', '[{"key":"sid","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'sqltune.indexes', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT t.relname AS table_name,
@@ -692,3 +668,43 @@ INSERT INTO grmp.script_config (id, script_type, script_name, database_type, ref
 ', '[{"key":"pid","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'explain.runtime_plan_int4', 'appbusiness', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT gs_get_explain({{pid}}::integer) AS plan;
 ', '[{"key":"pid","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'explain.multi_stmt_probe', 'appbusiness', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SET search_path TO public; SELECT 1 AS ok;
+', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'explain.plan_text_schema', 'appbusiness', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SET search_path TO "{{schema}}", public; EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
+', '[{"key":"schema","value":"","type":"STRING","autoAcquire":false},{"key":"sql","value":"","type":"STRING","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'explain.plan_text_analyze_schema', 'appbusiness', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SET search_path TO "{{schema}}", public; EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
+', '[{"key":"schema","value":"","type":"STRING","autoAcquire":false},{"key":"sql","value":"","type":"STRING","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'sqltune.plan_text_schema', 'appbusiness', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SET search_path TO "{{schema}}", public; EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
+', '[{"key":"schema","value":"","type":"STRING","autoAcquire":false},{"key":"sql","value":"","type":"STRING","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'sqltune.plan_text_analyze_schema', 'appbusiness', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SET search_path TO "{{schema}}", public; EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
+', '[{"key":"schema","value":"","type":"STRING","autoAcquire":false},{"key":"sql","value":"","type":"STRING","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'sqltune.plan_json_schema', 'appbusiness', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SET search_path TO "{{schema}}", public; EXPLAIN (ANALYZE false, BUFFERS false, FORMAT JSON) {{sql}}
+', '[{"key":"schema","value":"","type":"STRING","autoAcquire":false},{"key":"sql","value":"","type":"STRING","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'proctune.plan_text_schema', 'appbusiness', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SET search_path TO "{{schema}}", public; EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
+', '[{"key":"schema","value":"","type":"STRING","autoAcquire":false},{"key":"sql","value":"","type":"STRING","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'proctune.plan_text_analyze_schema', 'appbusiness', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SET search_path TO "{{schema}}", public; EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
+', '[{"key":"schema","value":"","type":"STRING","autoAcquire":false},{"key":"sql","value":"","type":"STRING","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'sqltune.from_statement', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT query, user_name FROM dbe_perf.statement
+WHERE unique_sql_id = {{sid}}
+  AND query IS NOT NULL
+  AND LENGTH(TRIM(query)) > 0
+LIMIT 1;
+', '[{"key":"sid","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'sqlfetch.from_statement', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT query, user_name FROM dbe_perf.statement
+WHERE unique_sql_id = {{sid}}
+  AND query IS NOT NULL
+  AND LENGTH(TRIM(query)) > 0
+LIMIT 1;
+', '[{"key":"sid","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'sqlreview.from_statement', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT query, user_name FROM dbe_perf.statement
+WHERE unique_sql_id = {{sid}}
+  AND query IS NOT NULL
+  AND LENGTH(TRIM(query)) > 0
+LIMIT 1;
+', '[{"key":"sid","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'proctune.sql_from_statement', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT query, user_name FROM dbe_perf.statement
+WHERE unique_sql_id = {{sid}}
+  AND query IS NOT NULL
+  AND LENGTH(TRIM(query)) > 0
+LIMIT 1;
+', '[{"key":"sid","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());

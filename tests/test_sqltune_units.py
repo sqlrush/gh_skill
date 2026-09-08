@@ -366,3 +366,69 @@ def test_tune_by_id_adds_the_recorded_schema_when_a_relation_is_missing(monkeypa
         sqltune.tune_by_id(object(), None, "123", [], False)
     msg = str(ei.value)
     assert "app_trade" in msg and "search_path" in msg and 'relation "orders" does not exist' in msg
+
+
+class _SchemaRunner:
+    """回答探测脚本与 *_schema 模板的 runner:看 collect 有没有把 schema 递到模板里。"""
+
+    def __init__(self, probe_ok=True):
+        self.probe_ok, self.calls = probe_ok, []
+
+    def run(self, script, values=None):
+        self.calls.append((script, dict(values or {})))
+        if script == evidence.VERSION_SCRIPT:
+            return [{"version": "openGauss 5.0.3"}]
+        if script == "explain.multi_stmt_probe":
+            return [{"ok": "1"}] if self.probe_ok else []
+        if script.startswith("sqltune.plan_"):
+            return [{"QUERY PLAN": "Seq Scan on orders  (cost=0.00..1.00 rows=1 width=4)"}]
+        return []
+
+
+def test_collect_switches_search_path_through_the_schema_template():
+    """现场 400 的修法:知道 schema 就走「SET search_path; EXPLAIN」两语句模板,证据包记下切到了哪个 schema。"""
+    from common import search_path as sp
+    sp.reset_probe_cache()
+    r = _SchemaRunner()
+    ev = evidence.collect(r, None, "select * from orders", False, schema="app_trade")
+    assert ("sqltune.plan_text_schema", {"sql": "select * from orders", "schema": "app_trade"}) in r.calls
+    assert ev.search_path == "app_trade" and ev.search_path_note == ""
+    assert "app_trade" in evidence.evidence_report(ev)
+
+
+def test_collect_falls_back_to_the_plain_template_when_two_statements_are_refused():
+    from common import search_path as sp
+    sp.reset_probe_cache()
+    r = _SchemaRunner(probe_ok=False)
+    ev = evidence.collect(r, None, "select * from orders", False, schema="app_trade")
+    assert ("sqltune.plan_text", {"sql": "select * from orders"}) in r.calls
+    assert ev.search_path == "" and "app_trade" in ev.search_path_note
+    assert ev.search_path_note in evidence.evidence_report(ev)
+
+
+def test_collect_sets_search_path_on_a_raw_session_before_explain():
+    """直连有原始会话时不走模板:在同一会话上先 SET search_path,后面的 EXPLAIN 与 hypopg 都受益。"""
+    class _Db:
+        def __init__(self):
+            self.executed, self.queried = [], []
+
+        def execute(self, sql, params=None):
+            self.executed.append(sql)
+
+        def query(self, sql, params=None):
+            self.queried.append(sql)
+            return ["QUERY PLAN"], [["Seq Scan on orders  (cost=0.00..1.00 rows=1 width=4)"]]
+
+    db = _Db()
+    ev = evidence.collect(_SchemaRunner(), db, "select * from orders", False, schema="app_trade")
+    assert db.executed == ['SET search_path TO "app_trade", public']
+    assert db.queried and db.queried[0].startswith("EXPLAIN")
+    assert ev.search_path == "app_trade"
+
+
+def test_explain_json_via_script_uses_the_schema_template_too():
+    from common import search_path as sp
+    sp.reset_probe_cache()
+    r = _SchemaRunner()
+    evidence.explain_json_via_script(r, "select 1", schema="app_trade")
+    assert r.calls[-1] == ("sqltune.plan_json_schema", {"sql": "select 1", "schema": "app_trade"})

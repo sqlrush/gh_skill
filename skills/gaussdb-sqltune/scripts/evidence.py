@@ -35,6 +35,7 @@ for parent in _HERE.parents:
 # 错误结论，不该有各 skill 自己的一份实现
 from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
 from common import explain_actual as ea  # noqa: E402
+from common import search_path as sp  # noqa: E402
 
 # SQL 已迁到 scripts/registry/sqltune/ —— 两条路径共用同一份定义
 VERSION_SCRIPT = "sqltune.version"
@@ -44,6 +45,9 @@ COLUMN_STATS_SCRIPT = "sqltune.column_stats"
 KEY_GUCS_SCRIPT = "sqltune.key_gucs"
 STATS_FRESHNESS_SCRIPT = "sqltune.stats_freshness"
 PLAN_JSON_SCRIPT = "sqltune.plan_json"
+# 带 search_path 的两语句模板(common/search_path.py 按 base + "_schema" 拼名;交付闸按全串检索,故写全):
+#   sqltune.plan_text_schema / sqltune.plan_text_analyze_schema / sqltune.plan_json_schema
+#   探测脚本 explain.multi_stmt_probe(与 explain skill 共用)
 
 
 # --- 协议取值：所有列值都是字符串，NULL 是空串 ------------------------------
@@ -152,25 +156,30 @@ def extract_tables(sql_text: str) -> list[str]:
 from common.grmp.statement import is_dml  # noqa: E402,F401  (verify.py 从本模块导入)
 
 
-def explain_via_script(runner, sql_text: str, analyze: bool) -> str:
-    """走已注册的 EXPLAIN 模板 —— 没有原始会话时用这条。
+def explain_plan_via_script(runner, sql_text: str, analyze: bool, schema: str = "") -> tuple:
+    """走已注册的 EXPLAIN 模板 —— 没有原始会话时用这条。返回 (计划, 实际切到的 schema, 说明)。
 
+    有 schema 就走「SET search_path; EXPLAIN」两语句模板(现场 400 的修法),中间件不支持两条语句时
+    退回单语句模板并说明,见 common/search_path.py。
     调用前必须先过 ensure_explainable()：模板是文本替换，参数位就是注入面。
     """
     script = "sqltune.plan_text_analyze" if analyze else "sqltune.plan_text"
-    rows = runner.run(script, {"sql": sql_text})
-    return "\n".join(str(next(iter(r.values()), "")) for r in rows)
+    return sp.explain_plan(runner, script, sql_text, schema)
 
 
-def explain_json_via_script(runner, sql_text: str):
+def explain_via_script(runner, sql_text: str, analyze: bool) -> str:
+    """旧签名:只要计划文本、不切 search_path。"""
+    return explain_plan_via_script(runner, sql_text, analyze)[0]
+
+
+def explain_json_via_script(runner, sql_text: str, schema: str = ""):
     """JSON 计划，走已注册模板 —— 中间件路径。给代价推演的校准闸用。
 
     **只有 ANALYZE false 一种。** 推演比对的是*估算*代价（规划器算出来的那个
     数），ANALYZE 会真执行用户 SQL 拿实际耗时，与要比对的东西不是一回事。
     调用前同样要过 ensure_explainable()：参数位是注入面。
     """
-    rows = runner.run(PLAN_JSON_SCRIPT, {"sql": sql_text})
-    return "\n".join(str(next(iter(r.values()), "")) for r in rows)
+    return sp.explain_plan(runner, PLAN_JSON_SCRIPT, sql_text, schema)[0]
 
 
 def explain_json(db, sql_text: str):
@@ -406,20 +415,29 @@ class Evidence:
     findings: list = field(default_factory=list)
     freshness: list = field(default_factory=list)
     analyze_requested: bool = False   # 要没要 analyze;analyzed 是「真跑了没」,两者可以不一致
+    search_path: str = ""             # EXPLAIN 前实际切到的 schema(空 = 没切)
+    search_path_note: str = ""        # 想切没切成的原因(中间件不支持两条语句 / schema 名不合法)
 
 
-def collect(runner, db, sql_text: str, do_analyze: bool) -> Evidence:
+def collect(runner, db, sql_text: str, do_analyze: bool, schema: str = "") -> Evidence:
     """runner 取固定查询；EXPLAIN 用户 SQL 视有无原始会话走两条路。
 
     db 为 None 表示这条连接给不了持久会话（中间件、或每语句起子进程的 gsql）。
     这时 EXPLAIN 走已注册模板 —— 单条 EXPLAIN 本来就零状态，不需要会话。
     真正需要会话的只有 hypopg 索引验证，由调用方跳过并标注。
+    schema 是这条 SQL 原本执行时的 schema(statement_history.schema_name 等):有原始会话就在会话上
+    SET search_path,没有就走两语句模板——业务 SQL 的表名不带 schema,不切的话中间件执行账号解析不到。
     """
     rows = runner.run(VERSION_SCRIPT)
     version = rows[0]["version"] if rows else ""
+    applied, sp_note = "", ""
     if db is None:
-        plan = explain_via_script(runner, sql_text, do_analyze)
+        plan, applied, sp_note = explain_plan_via_script(runner, sql_text, do_analyze, schema)
     else:
+        try:
+            applied = sp.set_search_path(db, schema)
+        except ValueError as exc:
+            sp_note = str(exc)
         plan = explain(db, sql_text, do_analyze)
     names = extract_tables(sql_text)
     return Evidence(
@@ -428,6 +446,8 @@ def collect(runner, db, sql_text: str, do_analyze: bool) -> Evidence:
         plan=plan,
         analyzed=ea.analyzed_for_real(plan, do_analyze),   # 看计划有没有 actual 行,不看请求标志
         analyze_requested=do_analyze,
+        search_path=applied,
+        search_path_note=sp_note,
         findings=scan_plan(plan),
         tables=collect_tables(runner, names),
         indexes=collect_indexes(runner, names),
@@ -448,6 +468,10 @@ def evidence_report(ev: Evidence) -> str:
     )
     if getattr(ev, "analyze_requested", False) and not ev.analyzed:
         out += "\n> " + ea.FIELD_ANALYZE_OFF_NOTE + "\n"
+    if getattr(ev, "search_path", ""):
+        out += f"\n> search_path 已切到 `{ev.search_path}`:EXPLAIN 按该 schema 解析不带前缀的表名。\n"
+    elif getattr(ev, "search_path_note", ""):
+        out += f"\n> search_path 未切换:{ev.search_path_note}\n"
     out += "\n## Deterministic Findings\n\n"
     if not ev.findings:
         out += "None.\n"

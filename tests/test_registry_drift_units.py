@@ -56,6 +56,16 @@ _GROUPS = {
         "procinfo/proc_def.yaml",
         "proctune/proc_def.yaml",
     ],
+    # 先切 search_path 再 EXPLAIN 的两语句模板(现场 400 的修法);analyze 名下的那份 SQL 相同,
+    # 因为现场按客户只读要求 ANALYZE 固定关闭
+    "带 search_path 的 EXPLAIN TEXT 模板": [
+        "explain/plan_text_schema.yaml",
+        "explain/plan_text_analyze_schema.yaml",
+        "sqltune/plan_text_schema.yaml",
+        "sqltune/plan_text_analyze_schema.yaml",
+        "proctune/plan_text_schema.yaml",
+        "proctune/plan_text_analyze_schema.yaml",
+    ],
     "表基本信息": [
         "proctune/tables.yaml",
         "sqltune/tables.yaml",

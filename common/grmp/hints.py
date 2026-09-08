@@ -122,3 +122,9 @@ def with_hint(message: str) -> str:
     """原文 + 换行 + 「提示:…」;认不出来就原样返回。"""
     hint = explain(message)
     return f"{message}\n提示:{hint}" if hint else message
+
+
+def ensure_hint(message: str) -> str:
+    """已经带过「提示:」的原样返回,否则追加——直连原始会话那条路的 DBError 没经过 runner,
+    skill 的收尾处用它补一次提示,而中间件路径的 QueryError 早就带了,不会叠两次。"""
+    return message if "\n提示:" in (message or "") else with_hint(message)
