@@ -60,12 +60,16 @@ def test_schema_uses_the_schema_template_when_the_middleware_runs_two_statements
 
 
 def test_probe_failure_falls_back_to_the_plain_template_with_a_note():
-    """探测脚本没注册 / 中间件拒绝两条语句:退回单语句模板,把原因写进 note,不让它变成新的 400。"""
+    """探测脚本没注册(白名单没灌)/ 中间件拒绝两条语句:退回单语句模板,把原因和**可照做的配置命令**写进 note——
+    用户看到就知道该让 DBA 做什么,不用再来问。"""
     r = FakeRunner(probe_exc="脚本 explain.multi_stmt_probe 不存在")
     plan, applied, note = sp.explain_plan(r, "sqltune.plan_text", "select 1", "app_trade")
     assert plan == "Seq Scan on orders" and applied == ""
     assert r.calls[1] == ("sqltune.plan_text", {"sql": "select 1"})
     assert "search_path" in note and "app_trade" in note and "不存在" in note
+    assert "白名单" in note and "explain.multi_stmt_probe" in note          # 原因一:探测脚本没灌进白名单
+    assert "ALTER ROLE" in note and "SET search_path = app_trade, public" in note   # 可照做的 DBA 命令
+    assert "app_trade.<表>" in note                                         # 备选:表名写全
 
 
 def test_probe_returning_nothing_counts_as_unsupported():
@@ -103,3 +107,11 @@ def test_set_search_path_on_a_raw_session_quotes_the_identifier():
     assert sp.set_search_path(db, "") == "" and len(db.executed) == 1
     with pytest.raises(ValueError):
         sp.set_search_path(db, 'app"; drop schema x')
+
+
+def test_executor_refusing_two_statements_gets_the_same_dba_command():
+    """原因二:探测脚本在、但中间件不支持一条脚本跑两条语句——说明要写明这是执行器的限制,并给同一条 DBA 命令。"""
+    r = FakeRunner(probe_ok=False)
+    _, applied, note = sp.explain_plan(r, "explain.plan_text", "select 1", "gbatch")
+    assert applied == "" and "两条语句" in note and "白名单" not in note
+    assert "ALTER ROLE" in note and "SET search_path = gbatch, public" in note
