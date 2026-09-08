@@ -518,3 +518,19 @@ def test_operator_layer_explains_itself_when_the_view_is_present_but_empty():
     assert d.available is True
     assert d.rows == []
     assert "单机" in d.note                  # names the real openGauss limitation
+
+
+def test_summarize_err_keeps_the_chinese_hint_whole():
+    """只取报错第一行会把第二行的「提示:…」整段丢掉——那段才是客户能照做的内容。
+    第一行照旧截 200 字,提示原样跟在后面。"""
+    for _m in ("model", "util"):
+        sys.modules.pop(_m, None)
+    sys.path.insert(0, str(_SCRIPTS))
+    import util as mem_util  # noqa: E402  —— 此刻 sys.path[0] 是 memanalyze 的 scripts
+
+    hint = "执行账号没有 schema dbe_perf 的访问权限:请 DBA 给执行账号授予该 schema 的 USAGE 权限"
+    raw = "ERROR: permission denied for schema dbe_perf (SQLSTATE 42501)\nLINE 1: SELECT ..."
+    s = mem_util.summarize_err(Exception(raw + "\n提示:" + hint))
+    assert s.startswith("ERROR: permission denied for schema dbe_perf")
+    assert "LINE 1" not in s                      # 第一行以外的原文照旧丢
+    assert s.endswith("\n提示:" + hint)            # 提示整段保留
