@@ -11,15 +11,16 @@
     (catalog 未升级 / 逐库不一致 / 实参类型),openGauss 缺失是常态,不报;
   · **签名按探测结果二选一,不按文档**:2026-09-08 客户在 505.2.1.SPC0600 的 pg_catalog 里查到的是
     gs_get_explain(bigint),文档写的 (integer) 已过时(pg_stat_activity.pid 本来就是 64 位线程号)。
-    探到 bigint 走 explain.runtime_plan('{{pid}}'::bigint);探到 integer 走 explain.runtime_plan_int4
+    探到 bigint 走 explain.runtime_plan({{pid}}::bigint);探到 integer 走 explain.runtime_plan_int4
     且 pid 必须在 integer 范围内;两者都不是则不调、说明后退回 EXPLAIN。
+    pid 参数位保持 INTEGER(中间件有数字校验,String 位是注入面),SQL 里再显式转型。
 
 五条白名单脚本(走中间件必须先注册,见 docs/delivery/08-初始化白名单.md):
   explain.kernel_funcs       探测:version() + 两个函数在 pg_proc 里的签名
-  explain.runtime_plan       SELECT gs_get_explain('{{pid}}'::bigint)   —— 505.2.1 实测签名
-  explain.runtime_plan_int4  SELECT gs_get_explain('{{pid}}'::integer)  —— 文档签名的老内核
+  explain.runtime_plan       SELECT gs_get_explain({{pid}}::bigint)   —— 505.2.1 实测签名
+  explain.runtime_plan_int4  SELECT gs_get_explain({{pid}}::integer)  —— 文档签名的老内核
   explain.active_pid         按 unique_sql_id 找正在执行的会话(pid / query / query_start)
-  explain.session_by_pid     按 pid 取该会话正在执行的 SQL(pid 同样走 '{{pid}}'::bigint)
+  explain.session_by_pid     按 pid 取该会话正在执行的 SQL
   vacuum.kernel_info         SELECT node_name, module, name, value FROM gs_get_kernel_info()
 """
 from __future__ import annotations
@@ -172,7 +173,8 @@ def runtime_plan(runner, pid: Any, explain_args: str = "bigint") -> str:
       · (integer) —— 官方文档写法:走 explain.runtime_plan_int4,但 pg_stat_activity.pid 是 64 位线程号
         (实测 281440978523808),超出 integer 范围时 ::integer 会报 integer out of range,超范围直接说明不调;
       · 其他签名 —— 两条脚本都对不上,不调。
-    pid 一律以字符串传给 String 参数位,SQL 里显式转型——中间件是文本替换,不赌它的 INTEGER 能装 15 位数。
+    pid 以整数传给 INTEGER 参数位(中间件侧有数字校验;现场一直以 INTEGER 传超过 2^31 的 unique_sql_id 且正常),
+    SQL 里再显式转型。
     """
     pid_int = _to_int(pid, "pid")
     sig = _arg_types(explain_args or "")
@@ -191,7 +193,7 @@ def runtime_plan(runner, pid: Any, explain_args: str = "bigint") -> str:
         raise NoRuntimePlan(
             f"本内核的 gs_get_explain 签名是 ({explain_args}),已注册脚本只覆盖 (bigint)(505.2.1 实测)与 (integer)(文档),"
             f"未调用;请按实际签名补一条脚本。")
-    rows = runner.run(script, {"pid": str(pid_int)})
+    rows = runner.run(script, {"pid": pid_int})
     lines = [str(next(iter(r.values()), "")) for r in (rows or []) if isinstance(r, dict)]
     text = "\n".join(ln for ln in lines if ln is not None).strip()
     if not text:
@@ -224,7 +226,7 @@ def active_session_for_sql(runner, sql_id: Any) -> Optional[Session]:
 
 
 def session_by_pid(runner, pid: Any) -> Optional[Session]:
-    rows = runner.run(SESSION_BY_PID_SCRIPT, {"pid": str(_to_int(pid, "pid"))})   # String 参数位,SQL 里 ::bigint
+    rows = runner.run(SESSION_BY_PID_SCRIPT, {"pid": _to_int(pid, "pid")})
     return _session_from(rows)
 
 

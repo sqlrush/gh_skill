@@ -9,9 +9,9 @@ readonly: true
 sql: |
   SELECT pid, unique_sql_id, query, query_start, state
     FROM pg_stat_activity
-   WHERE pid = '{{pid}}'::bigint
+   WHERE pid = {{pid}}
    LIMIT 1;
 params:
   - key: pid
-    type: String
-    description: 后台线程 pid(pg_stat_activity.pid,64 位线程号);脚本内显式转为 bigint
+    type: INTEGER
+    description: 后台线程 pid(pg_stat_activity.pid)

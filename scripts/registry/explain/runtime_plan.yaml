@@ -9,8 +9,9 @@
 # 放不进 integer,bigint 才对得上。文档签名是 (integer) 的老内核用同族的 explain.runtime_plan_int4,
 # 调用侧(common/kernel_funcs.py)按探测到的签名二选一,签名两者都不是则不调、说明后退回 EXPLAIN。
 #
-# pid 走 String 参数位并在 SQL 里显式 ::bigint:中间件是文本替换,INTEGER 类型能不能承载 15 位数字
-# 各家实现不一,字符串 + 显式转型两边都没有歧义。
+# pid 保持 INTEGER 参数位(中间件侧有数字格式校验,String 位没有——注册器会按注入面告警),SQL 里再显式
+# ::bigint。15 位线程号能不能过 INTEGER 校验:现场 sqltune / topsql 一直以 INTEGER 传超过 2^31 的
+# unique_sql_id 且正常,说明它按长整型处理;真被拒也是一条看得见的 400,不是静默失效。
 #
 # 文档前提(任一不满足则返回空,调用方要把空当「没拿到」而不是「计划为空」):
 #   track_activities = on;plan_collect_thresh ≠ -1;语句可 EXPLAIN 且计划不含 STREAM 算子;
@@ -20,8 +21,8 @@ name: explain.runtime_plan
 description: 按后台线程 pid 取运行态执行计划(gs_get_explain(bigint),GaussDB 私有,505.2.1 实测签名;不执行 SQL)
 readonly: true
 sql: |
-  SELECT gs_get_explain('{{pid}}'::bigint) AS plan;
+  SELECT gs_get_explain({{pid}}::bigint) AS plan;
 params:
   - key: pid
-    type: String
+    type: INTEGER
     description: 后台线程 pid(pg_stat_activity.pid,64 位线程号);脚本内显式转为 bigint

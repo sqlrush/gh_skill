@@ -90,18 +90,18 @@ def test_probe_tolerates_odd_rows():
 
 def test_runtime_plan_bigint_signature_takes_any_pid_and_joins_rows():
     """505.2.1.SPC0600 实测签名 gs_get_explain(bigint):64 位线程号直接传,走 explain.runtime_plan。
-    pid 以字符串进 String 参数位(SQL 里显式 ::bigint),不赌中间件的 INTEGER 能装 15 位数。"""
+    pid 以 int 进 INTEGER 参数位(中间件有数字校验,String 位是注入面),SQL 里显式 ::bigint。"""
     r = FakeRunner(plan_rows=[{"plan": "Seq Scan on t"}, {"plan": "  Filter: a = 1"}])
-    text = kf.runtime_plan(r, 281440978523808, "bigint")
+    text = kf.runtime_plan(r, "281440978523808", "bigint")
     assert text == "Seq Scan on t\n  Filter: a = 1"
-    assert r.calls == [(kf.RUNTIME_PLAN_SCRIPT, {"pid": "281440978523808"})]
+    assert r.calls == [(kf.RUNTIME_PLAN_SCRIPT, {"pid": 281440978523808})]      # 传的是 int,不是字符串
     assert kf.runtime_plan(FakeRunner(plan_rows=[{"plan": "ok"}]), "12345") == "ok"   # 默认按 bigint
 
 
 def test_runtime_plan_integer_signature_uses_the_int4_script_when_pid_fits():
     r = FakeRunner(plan_rows=[{"plan": "ok"}])
     assert kf.runtime_plan(r, 4321, "integer") == "ok"
-    assert r.calls == [(kf.RUNTIME_PLAN_INT4_SCRIPT, {"pid": "4321"})]
+    assert r.calls == [(kf.RUNTIME_PLAN_INT4_SCRIPT, {"pid": 4321})]
 
 
 def test_runtime_plan_refuses_pid_beyond_int4_range_only_for_the_integer_signature():
@@ -169,7 +169,7 @@ def test_active_session_for_sql_returns_none_when_idle():
 def test_session_by_pid_returns_query_text():
     r = FakeRunner(session_rows=[{"pid": "77", "query": "select count(*) from t", "query_start": ""}])
     s = kf.session_by_pid(r, 77)
-    assert s is not None and s.query.startswith("select count") and r.calls[0][1] == {"pid": "77"}   # String 参数位
+    assert s is not None and s.query.startswith("select count") and r.calls[0][1] == {"pid": 77}
 
 
 # ---------------------------------------------------------------- kernel info

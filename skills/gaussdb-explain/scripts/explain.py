@@ -37,8 +37,8 @@ import render  # noqa: E402
 
 # --pid 路径依赖的白名单脚本(走中间件必须先注册;交付闸按脚本名全串在 skills/ 里检索,故写全):
 #   explain.kernel_funcs   探测 version() 与 gs_get_explain / gs_get_kernel_info 是否存在
-#   explain.runtime_plan   gs_get_explain('{{pid}}'::bigint) —— GaussDB 私有的运行态计划(505.2.1 实测签名)
-#   explain.runtime_plan_int4  gs_get_explain('{{pid}}'::integer) —— 文档签名 (integer) 的老内核用
+#   explain.runtime_plan   gs_get_explain({{pid}}::bigint) —— GaussDB 私有的运行态计划(505.2.1 实测签名)
+#   explain.runtime_plan_int4  gs_get_explain({{pid}}::integer) —— 文档签名 (integer) 的老内核用
 #   explain.session_by_pid 按 pid 取该会话当前语句,内核没有 gs_get_explain 时退回 EXPLAIN 用
 #
 # 2026-09 现场四类报错之一就是脚本直接调 gs_get_explain 报 does not exist:openGauss 从来没有它,

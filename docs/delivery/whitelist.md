@@ -106,10 +106,10 @@ EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
 
 | 参数 | 类型 |
 |---|---|
-| `pid` | STRING |
+| `pid` | INTEGER |
 
 ```sql
-SELECT gs_get_explain('{{pid}}'::bigint) AS plan;
+SELECT gs_get_explain({{pid}}::bigint) AS plan;
 ```
 
 ### `explain.runtime_plan_int4`
@@ -118,10 +118,10 @@ SELECT gs_get_explain('{{pid}}'::bigint) AS plan;
 
 | 参数 | 类型 |
 |---|---|
-| `pid` | STRING |
+| `pid` | INTEGER |
 
 ```sql
-SELECT gs_get_explain('{{pid}}'::integer) AS plan;
+SELECT gs_get_explain({{pid}}::integer) AS plan;
 ```
 
 ### `explain.session_by_pid`
@@ -130,12 +130,12 @@ SELECT gs_get_explain('{{pid}}'::integer) AS plan;
 
 | 参数 | 类型 |
 |---|---|
-| `pid` | STRING |
+| `pid` | INTEGER |
 
 ```sql
 SELECT pid, unique_sql_id, query, query_start, state
   FROM pg_stat_activity
- WHERE pid = '{{pid}}'::bigint
+ WHERE pid = {{pid}}
  LIMIT 1;
 ```
 

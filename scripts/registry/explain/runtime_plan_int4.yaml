@@ -9,8 +9,8 @@ name: explain.runtime_plan_int4
 description: 按后台线程 pid 取运行态执行计划(gs_get_explain(integer),文档签名的内核用;不执行 SQL)
 readonly: true
 sql: |
-  SELECT gs_get_explain('{{pid}}'::integer) AS plan;
+  SELECT gs_get_explain({{pid}}::integer) AS plan;
 params:
   - key: pid
-    type: String
+    type: INTEGER
     description: 后台线程 pid(pg_stat_activity.pid),须在 integer 范围内;脚本内显式转为 integer
