@@ -322,3 +322,39 @@ def test_pid_bigint_signature_uses_runtime_plan_for_a_64bit_thread_id(monkeypatc
     assert "Runtime: Index Scan on t" in out and "运行态" in out and "281440978523808" in out
     assert kf.RUNTIME_PLAN_SCRIPT in r.calls and kf.RUNTIME_PLAN_INT4_SCRIPT not in r.calls
     assert "integer 范围" not in out and "来源:EXPLAIN 估算计划" not in out
+
+
+class _SchemaPlanRunner(_PlanRunner):
+    def __init__(self, plan):
+        super().__init__(plan)
+        self.calls = []
+
+    def run(self, script, values=None):
+        self.calls.append((script, dict(values or {})))
+        if script == "explain.multi_stmt_probe":
+            return [{"ok": "1"}]
+        return super().run(script, values)
+
+
+def test_schema_option_switches_search_path_and_says_so(monkeypatch, capsys):
+    """用户给了 --schema:走两语句模板,来源行写明 search_path 切到了哪里。"""
+    from common import search_path as sp
+    sp.reset_probe_cache()
+    r = _SchemaPlanRunner("Seq Scan on orders  (cost=0.00..1.00 rows=1 width=4)")
+    monkeypatch.setattr(explain_mod.access, "for_conn", lambda *a, **k: r)
+    import io
+    monkeypatch.setattr(sys, "stdin", io.StringIO("select * from orders"))
+    assert explain_mod.main(["--sql-stdin", "--schema", "app_trade"]) == 0
+    out = capsys.readouterr().out
+    assert ("explain.plan_text_schema", {"sql": "select * from orders", "schema": "app_trade"}) in r.calls
+    assert "search_path" in out and "app_trade" in out
+
+
+def test_schema_option_rejects_a_non_identifier_cleanly(monkeypatch, capsys):
+    r = _SchemaPlanRunner("Seq Scan on orders  (cost=0.00..1.00 rows=1 width=4)")
+    monkeypatch.setattr(explain_mod.access, "for_conn", lambda *a, **k: r)
+    import io
+    monkeypatch.setattr(sys, "stdin", io.StringIO("select 1"))
+    assert explain_mod.main(["--sql-stdin", "--schema", "app;drop"]) == 2
+    err = capsys.readouterr().err
+    assert "schema" in err and "Traceback" not in err

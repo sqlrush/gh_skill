@@ -184,3 +184,29 @@ def test_evidence_says_when_analyze_was_requested_but_the_plan_is_an_estimate():
     assert ev.analyzed is False and ev.analyze_requested is True
     rep = evidence.evidence_report(ev)
     assert "Analyzed: false" in rep and "估算" in rep and "ANALYZE" in rep
+
+
+def test_cursor_evidence_switches_search_path_to_the_procedure_schema():
+    """存储过程里的游标 SELECT 表名多半不带 schema——它们本来就在过程所在的 schema 下解析。"""
+    from common import search_path as sp
+    sp.reset_probe_cache()
+    evidence = _load_proctune_evidence()
+
+    class _R:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, script, values=None):
+            self.calls.append((script, dict(values or {})))
+            if script == evidence.DB_VERSION_SCRIPT:
+                return [{"version": "openGauss 5.0.3"}]
+            if script == "explain.multi_stmt_probe":
+                return [{"ok": "1"}]
+            if script.startswith("proctune.plan_"):
+                return [{"QUERY PLAN": "Seq Scan on t  (cost=0.00..1.00 rows=1 width=4)"}]
+            return []
+
+    r = _R()
+    ev = evidence.collect(r, None, "select 1 from t", False, schema="billing")
+    assert ("proctune.plan_text_schema", {"sql": "select 1 from t", "schema": "billing"}) in r.calls
+    assert ev.search_path == "billing"

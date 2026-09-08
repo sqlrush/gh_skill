@@ -36,9 +36,12 @@ for parent in _HERE.parents:
 # 错误结论，不该有各 skill 自己的一份实现
 from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
 from common import explain_actual as ea  # noqa: E402
+from common import search_path as sp  # noqa: E402
 
 # SQL 已迁到 scripts/registry/proctune/ —— 两条路径共用同一份定义
 DB_VERSION_SCRIPT = "proctune.db_version"
+# 带 search_path 的两语句模板(common/search_path.py 按 base + "_schema" 拼名;交付闸按全串检索,故写全):
+#   proctune.plan_text_schema / proctune.plan_text_analyze_schema;探测脚本 explain.multi_stmt_probe
 TABLES_SCRIPT = "proctune.tables"
 INDEXES_SCRIPT = "proctune.indexes"
 COLUMN_STATS_SCRIPT = "proctune.column_stats"
@@ -124,14 +127,20 @@ def extract_tables(sql_text: str) -> list[str]:
 from common.grmp.statement import is_dml  # noqa: E402,F401  (verify.py 从本模块导入)
 
 
-def explain_via_script(runner, sql_text: str, analyze: bool) -> str:
-    """走已注册的 EXPLAIN 模板 —— 没有原始会话时用这条。
+def explain_plan_via_script(runner, sql_text: str, analyze: bool, schema: str = "") -> tuple:
+    """走已注册的 EXPLAIN 模板 —— 没有原始会话时用这条。返回 (计划, 实际切到的 schema, 说明)。
 
+    游标 SELECT 的表名多半不带 schema——它们本来就在过程所在的 schema 下解析。有 schema 就走
+    「SET search_path; EXPLAIN」两语句模板,中间件不支持时退回单语句模板并说明(common/search_path.py)。
     调用前必须先过 ensure_explainable()：模板是文本替换，参数位就是注入面。
     """
     script = "proctune.plan_text_analyze" if analyze else "proctune.plan_text"
-    rows = runner.run(script, {"sql": sql_text})
-    return "\n".join(str(next(iter(r.values()), "")) for r in rows)
+    return sp.explain_plan(runner, script, sql_text, schema)
+
+
+def explain_via_script(runner, sql_text: str, analyze: bool) -> str:
+    """旧签名:只要计划文本、不切 search_path。"""
+    return explain_plan_via_script(runner, sql_text, analyze)[0]
 
 
 def explain(db, sql_text: str, analyze: bool) -> str:
@@ -297,9 +306,11 @@ class Evidence:
     gucs: list = field(default_factory=list)
     findings: list = field(default_factory=list)
     analyze_requested: bool = False   # 要没要 analyze;analyzed 是「真跑了没」,两者可以不一致
+    search_path: str = ""             # EXPLAIN 前实际切到的 schema(空 = 没切)
+    search_path_note: str = ""        # 想切没切成的原因
 
 
-def collect(runner, db, sql_text: str, do_analyze: bool) -> Evidence:
+def collect(runner, db, sql_text: str, do_analyze: bool, schema: str = "") -> Evidence:
     """runner 取固定查询；EXPLAIN 游标 SELECT 视有无原始会话走两条路。
 
     db 为 None 表示这条连接给不了持久会话。EXPLAIN 单条零状态，走注册模板；
@@ -307,9 +318,14 @@ def collect(runner, db, sql_text: str, do_analyze: bool) -> Evidence:
     """
     rows = runner.run(DB_VERSION_SCRIPT)
     version = rows[0]["version"] if rows else ""
+    applied, sp_note = "", ""
     if db is None:
-        plan = explain_via_script(runner, sql_text, do_analyze)
+        plan, applied, sp_note = explain_plan_via_script(runner, sql_text, do_analyze, schema)
     else:
+        try:
+            applied = sp.set_search_path(db, schema)
+        except ValueError as exc:
+            sp_note = str(exc)
         plan = explain(db, sql_text, do_analyze)
     names = extract_tables(sql_text)
     return Evidence(
@@ -318,6 +334,8 @@ def collect(runner, db, sql_text: str, do_analyze: bool) -> Evidence:
         plan=plan,
         analyzed=ea.analyzed_for_real(plan, do_analyze),   # 看计划有没有 actual 行,不看请求标志
         analyze_requested=do_analyze,
+        search_path=applied,
+        search_path_note=sp_note,
         findings=scan_plan(plan),
         tables=collect_tables(runner, names),
         indexes=collect_indexes(runner, names),
@@ -337,6 +355,10 @@ def evidence_report(ev: Evidence) -> str:
     )
     if getattr(ev, "analyze_requested", False) and not ev.analyzed:
         out += "\n> " + ea.FIELD_ANALYZE_OFF_NOTE + "\n"
+    if getattr(ev, "search_path", ""):
+        out += f"\n> search_path 已切到 `{ev.search_path}`:EXPLAIN 按该 schema 解析不带前缀的表名。\n"
+    elif getattr(ev, "search_path_note", ""):
+        out += f"\n> search_path 未切换:{ev.search_path_note}\n"
     out += "\n## Deterministic Findings\n\n"
     if not ev.findings:
         out += "None.\n"

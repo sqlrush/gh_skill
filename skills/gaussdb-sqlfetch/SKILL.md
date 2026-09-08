@@ -1,6 +1,6 @@
 ﻿---
 name: gaussdb-sqlfetch
-version: 2.0.2
+version: 2.0.3
 description: "通过内置脚本把 OpenGauss/GaussDB 的 unique_sql_id 解析成完整 SQL 文本。用户要查看 SQL_ID 背后的原始 SQL、从 Top SQL/慢 SQL/WDR/SQL 审查/调优结果里取出语句、查看某条 sql_id 对应的完整文本，或展开归一化 SQL 时使用，包括“根据 sql_id 查 SQL”“把这条 SQL_ID 对应的原文取出来”“看完整 SQL”等请求。触发后运行 scripts/sqlfetch.py，输出真实 SQL，不要猜测或编造语句。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode

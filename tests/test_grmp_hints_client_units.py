@@ -142,3 +142,11 @@ def test_relation_missing_hint_points_at_search_path_for_unqualified_names():
     assert "版本差异" not in hint                       # 不带 schema 的业务表:先怀疑 search_path
     qualified = hints.explain('ERROR: relation "dbe_perf.statement_history" does not exist')
     assert "dbe_perf.statement_history" in qualified and "版本" in qualified   # 带 schema 的系统视图:版本差异
+
+
+def test_ensure_hint_appends_once_and_never_twice():
+    """直连原始会话的 DBError 没经过 runner:skill 收尾处补一次提示;中间件路径的 QueryError 早带了,不叠加。"""
+    once = hints.ensure_hint('ERROR: relation "orders" does not exist')
+    assert once.count("\n提示:") == 1 and "search_path" in once
+    assert hints.ensure_hint(once) == once
+    assert hints.ensure_hint("nothing to hint") == "nothing to hint"

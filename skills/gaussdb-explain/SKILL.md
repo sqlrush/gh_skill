@@ -1,6 +1,6 @@
 ---
 name: gaussdb-explain
-version: 2.1.2
+version: 2.2.0
 description: "通过内置脚本查看、运行、对比 OpenGauss/GaussDB SQL 的执行计划。用户只是想看 explain、执行计划、plan、cost、节点路径，包括“给我这条 SQL 的执行计划”“给我几个 SQL 的执行计划”“跑 explain”“看 plan”等请求。触发后运行 scripts/explain.py，返回真实 plan 和通俗易懂的节点解读；如果用户要继续做慢 SQL 根因分析、索引/改写建议、收益验证或完整调优，不要停在本 skill，应优先转给 gaussdb-sqltune。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -92,6 +92,18 @@ metadata:
    估算计划只能说「规划器现在会这么跑」（受绑定值 / 统计信息 / 计划跳变影响）。
    输出里若有「> 目标实例是 GaussDB…应包含 gs_get_explain…但查不到」这段说明，原样转达给用户——那是 catalog 未升级 /
    逐库不一致 / 实参类型不符三种可能，脚本已给出核对 SQL，不要自己下结论是哪一种。
+
+2c. 如果 SQL 里的表名不带 schema（业务 SQL 通常如此），或脚本报 `relation "xxx" does not exist` 并提示 search_path：
+   问用户这条 SQL 平时在哪个 schema 下跑，然后加 `--schema <schema>` 重跑：
+
+   ```bash
+   python3 {baseDir}/scripts/explain.py -c <conn> --schema <schema> --sql-stdin <<'SQL'
+   <the SQL>
+   SQL
+   ```
+
+   脚本会先 `SET search_path` 再 EXPLAIN，「来源:」行带 `search_path=<schema>` 才算生效；报告里若有「search_path 未切换」说明，
+   原样转给用户（多半是中间件不支持一条脚本跑两条语句，要由 DBA 给执行账号设 search_path），**不要自己把表名改写成 schema.表**。
 
 3. 如果一次要看多条 SQL：
    - 每条 SQL 分别跑一次, 不允许多条SQL合成一段直接执行。

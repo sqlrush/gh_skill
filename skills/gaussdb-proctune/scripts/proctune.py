@@ -46,6 +46,7 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
 import common  # noqa: E402
 from common import access  # noqa: E402
 from common import cli  # noqa: E402
+from common.grmp.hints import ensure_hint  # noqa: E402
 import procanalyze as pa  # noqa: E402
 import render  # noqa: E402
 from evidence import Evidence, collect, collect_gucs, evidence_report  # noqa: E402
@@ -215,7 +216,7 @@ def tune_cursors(runner, db, qualified: str,
             continue
         sub = pa.substitute_vars(cur.select_sql, proc.vars, binds)
         try:
-            ev = collect(runner, db, sub.sql, False)
+            ev = collect(runner, db, sub.sql, False, schema=proc.schema)
         except _EVIDENCE_ERRORS as exc:
             cur.eligible = False
             cur.skip_reason = "证据采集失败：" + str(exc)
@@ -442,7 +443,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     # 会话那条口子不经过 runner，报的还是原始的 DBError。
     # ColumnError / ParamError 刻意不接：那是脚本定义缺陷，必须响亮失败。
     except (ValueError, KeyError, common.DBError, access.QueryError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"error: {ensure_hint(str(exc))}", file=sys.stderr)   # 直连路径的 DBError 没经过 runner,这里补中文提示
         return 1
     finally:
         if db is not None:

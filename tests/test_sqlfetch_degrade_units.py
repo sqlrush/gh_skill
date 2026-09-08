@@ -84,3 +84,15 @@ def test_sqlfetch_report_shows_degradation():
     r = mod.sql_fetch(FakeRunner(), "300316117")
     out = mod.fetch_report(r)
     assert "已降级到 `dbe_perf.statement`" in out and "主库 IP" in out and "Source: `dbe_perf.statement`" in out
+
+
+def test_sqltune_statement_fallback_guesses_the_schema_from_user_name():
+    """dbe_perf.statement 没有 schema_name,但有 user_name;GaussDB 默认 search_path 是 "$user", public,
+    应用的表多半就在同名 schema 下。退到 statement 时拿它当推测值,来源标明是推测,别当成记录值。"""
+    mod = _load("sqltune")
+    r = mod.sql_fetch(FakeRunner(statement_rows=[{"query": "select 1 from t", "user_name": "app_trade"}]), "7")
+    assert r.source == "statement" and r.schema == "app_trade" and r.schema_source == "user_name"
+    r2 = mod.sql_fetch(FakeRunner(history=[{"schema_name": "app", "query": "select 1"}]), "7")
+    assert r2.schema == "app" and r2.schema_source == "statement_history"
+    r3 = mod.sql_fetch(FakeRunner(), "7")                       # 老白名单行没有 user_name 列:不崩,schema 为空
+    assert r3.schema == "" and r3.schema_source == ""

@@ -28,6 +28,7 @@ import common  # noqa: E402
 from common import access  # noqa: E402
 from common import cli  # noqa: E402
 from common import kernel_funcs as kf  # noqa: E402
+from common import search_path as sp  # noqa: E402
 from common import explain_actual as ea  # noqa: E402
 from common.grmp import statement as stmt  # noqa: E402
 from common.grmp.statement import (  # noqa: E402
@@ -41,6 +42,10 @@ import render  # noqa: E402
 #   explain.runtime_plan   gs_get_explain({{pid}}::bigint) —— GaussDB 私有的运行态计划(505.2.1 实测签名)
 #   explain.runtime_plan_int4  gs_get_explain({{pid}}::integer) —— 文档签名 (integer) 的老内核用
 #   explain.session_by_pid 按 pid 取该会话当前语句,内核没有 gs_get_explain 时退回 EXPLAIN 用
+# --schema 路径依赖的白名单脚本(common/search_path.py 按 base + "_schema" 拼名,交付闸按全串检索,故写全):
+#   explain.multi_stmt_probe          探测中间件能否一条脚本跑两条语句
+#   explain.plan_text_schema          SET search_path TO "{{schema}}", public; EXPLAIN … {{sql}}
+#   explain.plan_text_analyze_schema  同上,analyze 名下的那份(现场 ANALYZE 固定关闭)
 #
 # 2026-09 现场四类报错之一就是脚本直接调 gs_get_explain 报 does not exist:openGauss 从来没有它,
 # GaussDB 缺失时也可能是 catalog 未升级 / 逐库不一致 / 实参类型不符。所以先探测再用,
@@ -124,15 +129,20 @@ def shape_reject(sql_text: str) -> Optional[str]:
     return None
 
 
-def explain_via_script(runner, sql_text: str, analyze: bool) -> str:
-    """走已注册的 EXPLAIN 模板。中间件与直连共用这条路。
+def explain_plan_via_script(runner, sql_text: str, analyze: bool, schema: str = "") -> tuple:
+    """走已注册的 EXPLAIN 模板。中间件与直连共用这条路。返回 (计划, 实际切到的 schema, 说明)。
 
+    有 schema 就走「SET search_path; EXPLAIN」两语句模板(表名不带 schema 时执行账号解析不到——
+    现场 400 的成因),中间件不支持两条语句时退回单语句模板并说明,见 common/search_path.py。
     调用前必须先过 ensure_explainable() —— 模板是文本替换，参数位就是注入面。
     """
     script = "explain.plan_text_analyze" if analyze else "explain.plan_text"
-    rows = runner.run(script, {"sql": sql_text})
-    # 结果行是列名到值的字典；EXPLAIN 只有一列，取那一列的值
-    return "\n".join(str(next(iter(r.values()), "")) for r in rows)
+    return sp.explain_plan(runner, script, sql_text, schema)
+
+
+def explain_via_script(runner, sql_text: str, analyze: bool) -> str:
+    """旧签名:只要计划文本、不切 search_path。"""
+    return explain_plan_via_script(runner, sql_text, analyze)[0]
 
 
 def scan_plan(plan_text: str) -> list[Finding]:
@@ -181,7 +191,7 @@ def explain_report(sql_text: str, plan: str, findings: list[Finding],
     return out
 
 
-def explain_by_pid(runner, pid: int, analyze: bool):
+def explain_by_pid(runner, pid: int, analyze: bool, schema: str = ""):
     """--pid 路径。返回 (sql_text, plan, source, notes)。
 
     内核有 gs_get_explain → 运行态计划(不执行任何 SQL);没有、或函数在但返回为空、或调用失败
@@ -216,9 +226,12 @@ def explain_by_pid(runner, pid: int, analyze: bool):
     if reject:
         raise ShapeRejected(reject)
     ensure_explainable(sql_text, analyze=analyze)
-    plan = explain_via_script(runner, sql_text, analyze)
+    plan, applied, sp_note = explain_plan_via_script(runner, sql_text, analyze, schema)
+    if sp_note:
+        notes.append(sp_note)
     return (sql_text, plan,
-            f"EXPLAIN 估算计划(会话 pid={pid} 的当前语句;内核无 gs_get_explain 或其未返回计划)",
+            f"EXPLAIN 估算计划(会话 pid={pid} 的当前语句;内核无 gs_get_explain 或其未返回计划)"
+            + (f";search_path={applied}" if applied else ""),
             tuple(notes))
 
 
@@ -236,8 +249,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                     help="EXPLAIN ANALYZE（真执行该 SQL；只受理只读语句）")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
     ap.add_argument("--timeout", type=int, default=None)
+    ap.add_argument("--schema", default="",
+                    help="SQL 原本执行时的 schema:EXPLAIN 前先切 search_path(表名不带 schema 时必需)")
     args = ap.parse_args(argv)
     cli.apply_session_arg(args)
+    if args.schema and not sp.valid_schema(args.schema):
+        print(f"error: --schema {args.schema!r} 不是合法的 schema 标识符(字母或下划线开头,只含字母数字下划线$)",
+              file=sys.stderr)
+        return 2
     if args.pid is None and not args.sql_stdin:
         ap.error("需要 --sql-stdin 或 --pid 二选一")
     if args.pid is not None and args.sql_stdin:
@@ -246,7 +265,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.pid is not None:
         try:
             runner = access.for_conn(args.conn, timeout=args.timeout)
-            sql_text, plan, source, notes = explain_by_pid(runner, args.pid, args.analyze)
+            sql_text, plan, source, notes = explain_by_pid(runner, args.pid, args.analyze, args.schema)
         except ShapeRejected as exc:
             print(str(exc))
             return 1
@@ -284,7 +303,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     try:
         runner = access.for_conn(args.conn, timeout=args.timeout)
-        plan = explain_via_script(runner, sql_text, args.analyze)
+        plan, applied, sp_note = explain_plan_via_script(runner, sql_text, args.analyze, args.schema)
     # access.QueryError 必须在列 —— 它是本项目归一化的「取数失败」类型，
     # runner.run() 在 SQL 本身执行失败时抛的就是它（打错字、表不存在、
     # 类型不匹配）。漏掉它的后果不是少一条错误信息，而是**直接吐 Traceback**：
@@ -295,7 +314,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     script = "explain.plan_text_analyze" if args.analyze else "explain.plan_text"
-    return _emit(args, sql_text, plan, f"EXPLAIN 模板({script})", ())
+    source = f"EXPLAIN 模板({script})" + (f";search_path={applied}" if applied else "")
+    return _emit(args, sql_text, plan, source, (sp_note,) if sp_note else ())
 
 
 def _emit(args, sql_text: str, plan: str, source: str, notes: tuple) -> int:

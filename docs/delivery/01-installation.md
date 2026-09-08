@@ -550,6 +550,7 @@ python3 $SKILLS/gaussdb-sqlfetch/scripts/sqlfetch.py -c og-prod -- -9876543210
 | `-c` / `--conn` | str（必填） | — | 连接名 |
 | `--sql-stdin` | flag（必填） | — | 从 stdin 读取 SQL 文本（必须指定此参数） |
 | `--analyze` | flag | 关闭 | 使用 `EXPLAIN ANALYZE`（直连原始会话时会真实执行 SQL，DML 自动包在回滚事务中；中间件路径的现场脚本按客户只读要求固定关闭 ANALYZE，此时拿到的是估算计划，报告会写明）|
+| `--schema` | string | 空 | SQL 原本执行时的 schema：EXPLAIN 前先切 search_path（表名不带 schema 时必需；按 sql_id 时默认取 statement_history 记录值） |
 | `--format` | `markdown`\|`json` | `markdown` | 输出格式 |
 | `--timeout` | int | `30` | 语句超时（秒） |
 
@@ -588,6 +589,7 @@ SQL
 | `--sql-stdin` | flag | 关闭 | 从 stdin 读取 SQL 文本，与 `sql_id` 二选一 |
 | `--bind` | str（可重复） | `[]` | 按占位符顺序提供真实绑定值，例如 `--bind 42 --bind foo` |
 | `--analyze` | flag | 关闭 | 使用 `EXPLAIN ANALYZE`（直连原始会话时会真实执行 SQL，DML 自动包在回滚事务中；中间件路径的现场脚本按客户只读要求固定关闭 ANALYZE，此时拿到的是估算计划，报告会写明） |
+| `--schema` | string | 空 | SQL 原本执行时的 schema：EXPLAIN 前先切 search_path（表名不带 schema 时必需；按 sql_id 时默认取 statement_history 记录值） |
 | `--format` | `markdown`\|`json` | `markdown` | 输出格式 |
 | `--timeout` | int | `30` | 语句超时（秒） |
 
@@ -893,6 +895,7 @@ python3 $SKILLS/wdr/scripts/wdr.py render \
 | 报错 `function <名>(<类型>) does not exist` | 按「名字 + 实参类型」在**当前 database** 的 `pg_proc` 里找不到匹配。报错里的类型是**调用时传的**，不代表已存在的重载：函数不存在、函数在但类型不符（如文档要 `integer` 却传 `bigint`）、catalog 未升级，三种都报这一句。skill 输出会附三种原因的核对办法 | 在脚本连接的**同一个 database** 里执行 `SELECT proname, pg_get_function_arguments(oid) FROM pg_proc WHERE proname='<名>'`：有行看 args 改类型（GaussDB 的 `pg_stat_activity.pid` 是 64 位线程号，放不进 `integer`），零行再与 `postgres` 库比对 / 核对升级是否提交 |
 | explain `--pid` / sqltune 报告说「目标实例是 GaussDB…应包含 gs_get_explain / gs_get_kernel_info 但查不到」 | 内核探测（`explain.kernel_funcs`）发现 `version()` 是 GaussDB，但两个私有函数不在当前库的 `pg_proc` 里。openGauss 上不会出这句（它本来就没有） | 同上一行的核对办法；确认前 skill 已自动退回标准 EXPLAIN / 标准视图，功能不中断 |
 | 命令被拒绝，输出「沙箱里有 N 个会话，不知道该用哪个」 | 多个用户共用同一个沙箱（同一个 `$GSDB_HOME`），各自登录过，而这条命令没带 `--session <句柄>`。skill 不猜用哪一条——猜错会在别人的库上跑诊断而输出看起来完全正常 | 带上 gaussdb-login 登录时输出的句柄（或环境变量 `GSDB_SESSION`）；本次对话没登录过就重新登录拿新句柄；`login.py --status` 可列出全部会话 |
+| sqltune / explain 报 `relation "<表>" does not exist`（中间件路径为 HTTP 400），表名不带 schema | 业务 SQL 的表名靠应用账号的 search_path 解析，中间件执行账号的 search_path 是 `"$user", public`，解析不到 | sqltune 按 sql_id 时自动取 statement_history 的 schema_name（备机退回 dbe_perf.statement 时按 user_name 推测），EXPLAIN 前先 `SET search_path`；`--sql-stdin` 时传 `--schema <schema>`。报告 `Search path` 行写「未切换」说明中间件不支持一条脚本两条语句，此时由 DBA 给执行账号设 search_path |
 
 ---
 

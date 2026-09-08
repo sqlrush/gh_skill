@@ -50,6 +50,7 @@ class FetchResult:
     truncated: bool = False
     truncated_reason: str = ""
     degraded_reason: str = ""   # statement_history 不可用时退到 statement 的原因（备机 / 权限 …）
+    schema_source: str = ""     # schema 从哪来:statement_history(记录值)/ user_name(按 GaussDB 默认 "$user" 推测)
 
 
 def count_placeholders(sql_text: str) -> int:
@@ -109,7 +110,7 @@ def sql_fetch(runner, raw_id: str) -> FetchResult:
     rows, degraded = _history_rows(runner, HISTORY_SCRIPT, sid)
     if rows:
         schema, query = rows[0]["schema_name"], rows[0]["query"]
-        source = "statement_history"
+        source, schema_source = "statement_history", "statement_history"
     else:
         srows = runner.run(STATEMENT_SCRIPT, {"sid": sid})
         if not srows:
@@ -117,15 +118,18 @@ def sql_fetch(runner, raw_id: str) -> FetchResult:
                 f"sql id {raw_id} not found in dbe_perf.statement_history or "
                 f"dbe_perf.statement (check enable_stmt_track / track_stmt_parameter)"
                 + (f"; statement_history 本身不可用：{degraded}" if degraded else ""))
-        schema, query = "", srows[0]["query"]
-        source = "statement"
+        # dbe_perf.statement 没有 schema_name 列;GaussDB 默认 search_path 是 "$user", public,
+        # 应用的表多半就在与账号同名的 schema 下——拿 user_name 当推测值,来源标明是推测。
+        schema = str(srows[0].get("user_name") or "").strip()
+        query = srows[0]["query"]
+        source, schema_source = "statement", ("user_name" if schema else "")
 
     n = count_placeholders(query)
     truncated, reason = looks_truncated(query)
     return FetchResult(sql_id=raw_id, sql=query, schema=schema or "",
                        source=source, normalized=n > 0, placeholders=n,
                        truncated=truncated, truncated_reason=reason,
-                       degraded_reason=degraded)
+                       degraded_reason=degraded, schema_source=schema_source if schema else "")
 
 
 def _history_rows(runner, script: str, sid: int):

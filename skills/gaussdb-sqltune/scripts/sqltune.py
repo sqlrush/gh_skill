@@ -33,7 +33,9 @@ import coltypes  # noqa: E402
 import common  # noqa: E402
 from common import access  # noqa: E402
 from common import cli  # noqa: E402
+from common.grmp.hints import ensure_hint  # noqa: E402
 from common import kernel_funcs as kf  # noqa: E402
+from common import search_path as sp  # noqa: E402
 from common.grmp.statement import (  # noqa: E402
     ExplainNotAllowed,
     ensure_explainable,
@@ -98,6 +100,7 @@ class TuneResult:
     sql_id: str = ""
     source: str = ""
     schema: str = ""
+    schema_source: str = ""   # statement_history(记录值)/ user_name(推测)/ --schema(用户指定)
     verified_indexes: list = field(default_factory=list)
     index_verify_note: str = ""
     derivation_report: str = ""
@@ -186,7 +189,7 @@ def _derivation_report(runner, db, sql_text: str, ev) -> str:
         return header + "未进行：%s\n" % exc
     try:
         raw = (explain_json(db, sql_text) if db is not None
-               else explain_json_via_script(runner, sql_text))
+               else explain_json_via_script(runner, sql_text, schema=getattr(ev, "search_path", "")))
         root = plantree.parse(raw)
     except Exception as exc:            # 取计划失败的形态太多，统一兜住
         return header + "未进行：拿不到 JSON 格式的执行计划 —— %s\n" % exc
@@ -257,7 +260,7 @@ def _tune(runner, db, *, original_sql: str, binds: list[str], do_analyze: bool,
         # 按 sql_id 取的 SQL 走的是另一条入口，早先漏了这一道。
         _guard_sql(sub.sql, do_analyze)
     try:
-        ev = collect(runner, db, sub.sql, do_analyze)
+        ev = collect(runner, db, sub.sql, do_analyze, schema=schema)
     except Exception as exc:
         # 类型转换错时点名坏值出自哪个占位符;非类型错原样抛。
         enriched = coltypes.enrich_type_error(str(exc), sub.substitutions)
@@ -293,8 +296,12 @@ def _tune(runner, db, *, original_sql: str, binds: list[str], do_analyze: bool,
                       derivation_report=deriv)
 
 
-def tune_by_id(runner, db, raw_id: str, binds: list[str], do_analyze: bool) -> TuneResult:
+def tune_by_id(runner, db, raw_id: str, binds: list[str], do_analyze: bool,
+               schema_override: str = "") -> TuneResult:
     fr = sql_fetch(runner, raw_id)
+    # schema 优先级:用户显式给的 > statement_history 记录值 > 按执行账号 user_name 推测
+    schema = schema_override or fr.schema
+    schema_source = "--schema" if schema_override else getattr(fr, "schema_source", "")
     if fr.truncated:
         raise ValueError(
             f"sql id {raw_id} 的文本被 openGauss 截断（{fr.truncated_reason}）——"
@@ -303,24 +310,33 @@ def tune_by_id(runner, db, raw_id: str, binds: list[str], do_analyze: bool) -> T
             f"（或调大 track_activity_query_size 并让该 SQL 重新执行后再按 id 取）。")
     try:
         tr = _tune(runner, db, original_sql=fr.sql, binds=binds, do_analyze=do_analyze,
-                   sql_id=fr.sql_id, source=fr.source, schema=fr.schema)
-    except access.QueryError as exc:
-        # statement_history 记着这条 SQL 当初执行的 schema_name。EXPLAIN 报表不存在时把它说出来:
-        # 业务 SQL 的表名不带 schema,靠应用账号的 search_path 解析;中间件执行账号解析不到——
-        # DBA 要知道该给执行账号设哪个 search_path,这个名字就是答案。
-        if "does not exist" in str(exc) and fr.schema:
-            raise access.QueryError(
-                f"{exc}\n补充:这条 SQL 在 statement_history 里记录的执行 schema 是 {fr.schema},"
-                f"执行账号当前的 search_path 里多半没有它。可让 DBA 给执行账号在该库上设置 search_path 包含 {fr.schema}"
-                f"(ALTER ROLE <执行账号> IN DATABASE <库> SET search_path = {fr.schema}, public),"
-                f"或把 SQL 里的表名写成 {fr.schema}.<表> 后用 --sql-stdin 重跑。") from exc
+                   sql_id=fr.sql_id, source=fr.source, schema=schema)
+    except (access.QueryError, common.DBError) as exc:
+        # 切了 search_path 仍报表不存在(或中间件不支持两条语句没切成):把 schema 说出来——
+        # DBA 要知道该给执行账号设哪个 search_path,这个名字就是答案。直连原始会话报的是 DBError,同样接。
+        if "does not exist" in str(exc) and schema:
+            raise type(exc)(
+                f"{exc}\n补充:这条 SQL 的执行 schema 是 {schema}({_SCHEMA_SOURCE_LABEL.get(schema_source, schema_source)}),"
+                f"执行账号当前的 search_path 里多半没有它。可让 DBA 给执行账号在该库上设置 search_path 包含 {schema}"
+                f"(ALTER ROLE <执行账号> IN DATABASE <库> SET search_path = {schema}, public),"
+                f"或把 SQL 里的表名写成 {schema}.<表> 后用 --sql-stdin 重跑。") from exc
         raise
     plan, pid, note = _runtime_plan_for(runner, fr.sql_id)
-    return replace(tr, runtime_plan=plan, runtime_plan_pid=pid, runtime_note=note)
+    return replace(tr, runtime_plan=plan, runtime_plan_pid=pid, runtime_note=note,
+                   schema_source=schema_source if schema else "")
 
 
-def tune_by_sql(runner, db, sql_text: str, binds: list[str], do_analyze: bool) -> TuneResult:
-    return _tune(runner, db, original_sql=sql_text, binds=binds, do_analyze=do_analyze)
+def tune_by_sql(runner, db, sql_text: str, binds: list[str], do_analyze: bool,
+                schema: str = "") -> TuneResult:
+    tr = _tune(runner, db, original_sql=sql_text, binds=binds, do_analyze=do_analyze, schema=schema)
+    return replace(tr, schema_source="--schema") if schema else tr
+
+
+_SCHEMA_SOURCE_LABEL = {
+    "statement_history": "statement_history 记录值",
+    "user_name": "按执行账号 user_name 推测",
+    "--schema": "用户指定",
+}
 
 
 def kb_items(tr: TuneResult) -> list:
@@ -354,8 +370,15 @@ def sqltune_report(tr: TuneResult) -> str:
         sb.append(f"- SQL_ID: `{tr.sql_id}`")
         if tr.source:
             sb.append(f"- Source: `dbe_perf.{tr.source}`")
-        if tr.schema:
-            sb.append(f"- Schema: `{tr.schema}`")
+    if tr.schema:
+        label = _SCHEMA_SOURCE_LABEL.get(getattr(tr, "schema_source", ""), "")
+        sb.append(f"- Schema: `{tr.schema}`" + (f"（{label}）" if label else ""))
+    ev = tr.evidence
+    if getattr(ev, "search_path", ""):
+        sb.append(f"- Search path: 已切到 `{ev.search_path}`,EXPLAIN 按该 schema 解析不带前缀的表名")
+    elif getattr(ev, "search_path_note", ""):
+        sb.append(f"- Search path: 未切换 —— {ev.search_path_note}")
+    if len(sb) > 1:
         sb.append("")
     out = "\n".join(sb) + "\n"
 
@@ -461,10 +484,17 @@ def main(argv: Optional[list[str]] = None) -> int:
                     help="bind value for placeholder (repeatable, positional order)")
     ap.add_argument("--analyze", action="store_true",
                     help="EXPLAIN ANALYZE (executes the SQL; DML wrapped in rollback)")
+    ap.add_argument("--schema", default="",
+                    help="SQL 原本执行时的 schema:EXPLAIN 前先切 search_path(表名不带 schema 时必需);"
+                         "按 sql_id 时默认取 statement_history 记录值,这里可以覆盖")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
     ap.add_argument("--timeout", type=int, default=None, help="statement timeout (s)")
     args = ap.parse_args(argv)
     cli.apply_session_arg(args)
+    if args.schema and not sp.valid_schema(args.schema):
+        print(f"error: --schema {args.schema!r} 不是合法的 schema 标识符(字母或下划线开头,只含字母数字下划线$)",
+              file=sys.stderr)
+        return 2
 
     has_id = args.sql_id is not None
     if not has_id and not args.sql_stdin:
@@ -510,9 +540,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                 args.timeout if args.timeout is not None
                 else access.DEFAULT_SKILL_TIMEOUT_SECONDS)
         if has_id:
-            tr = tune_by_id(runner, db, args.sql_id, args.bind, args.analyze)
+            tr = tune_by_id(runner, db, args.sql_id, args.bind, args.analyze, schema_override=args.schema)
         else:
-            tr = tune_by_sql(runner, db, sql_text, args.bind, args.analyze)
+            tr = tune_by_sql(runner, db, sql_text, args.bind, args.analyze, schema=args.schema)
 
         if len(args.bind) > tr.substitution.placeholders:
             print(f"warning: {len(args.bind)} --bind value(s) given but only "
@@ -536,7 +566,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     # 不经过 runner，报的还是原始的 DBError。
     # ColumnError / ParamError 刻意不接：那是脚本定义缺陷，必须响亮失败。
     except (ValueError, KeyError, common.DBError, access.QueryError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"error: {ensure_hint(str(exc))}", file=sys.stderr)   # 直连路径的 DBError 没经过 runner,这里补中文提示
         return 1
     finally:
         if db is not None:
