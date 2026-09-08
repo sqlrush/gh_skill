@@ -83,3 +83,14 @@ def test_failure_message_names_the_configured_driver_and_how_to_change_it(monkey
 def test_unknown_driver_is_rejected(monkeypatch):
     with pytest.raises(DBError):
         dbmod.Database.open(_conn(driver="mysqlcli"), "pw")
+
+
+def test_missing_driver_module_is_a_clean_dberror_not_a_traceback(monkeypatch):
+    """客户机器的 python3 没装 psycopg2 时,不能把 ModuleNotFoundError 的整条栈甩给用户
+    (模型级验收里 kimi 看到栈后自己去 pip install 了)。要的是一句中文:装哪个包、或改走 grmp。"""
+    monkeypatch.setitem(sys.modules, "common.backends.psycopg2_backend", None)  # None ⇒ import 立刻 ImportError
+    with pytest.raises(DBError) as ei:
+        dbmod._load_backend("psycopg2")
+    msg = str(ei.value)
+    assert "psycopg2" in msg and "pip install psycopg2-binary" in msg and "grmp" in msg
+    assert "Traceback" not in msg

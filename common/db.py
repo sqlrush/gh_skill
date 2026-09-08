@@ -23,14 +23,31 @@ from .credential import load_secret, secret_for
 # 本机没有 gsql 时，在 config.yaml 里另配一条 driver: psycopg2 的连接。
 
 
+_DRIVER_INSTALL = {
+    "psycopg2": "pip install psycopg2-binary==2.9.10(离线包与 x86_64 / 鲲鹏 轮子见 docs/delivery/01-installation.md)",
+}
+
+
 def _load_backend(driver: str):
-    """惰性导入指定后端类（gsql-only 环境无需装 psycopg2，反之亦然）。"""
-    if driver == "psycopg2":
-        from .backends.psycopg2_backend import Psycopg2Backend
-        return Psycopg2Backend
-    if driver == "gsql":
-        from .backends.gsql_backend import GsqlBackend
-        return GsqlBackend
+    """惰性导入指定后端类（gsql-only 环境无需装 psycopg2，反之亦然）。
+
+    驱动模块装不上时给一句中文(装哪个包 / 或改走 grmp),不把 ModuleNotFoundError 的整条栈甩给用户——
+    模型级验收里模型看到栈后会自己去 pip install,客户机器上这不是它该做的事。
+    """
+    try:
+        if driver == "psycopg2":
+            from .backends.psycopg2_backend import Psycopg2Backend
+            return Psycopg2Backend
+        if driver == "gsql":
+            from .backends.gsql_backend import GsqlBackend
+            return GsqlBackend
+    except ImportError as exc:
+        import sys as _sys
+        raise DBError(
+            f"直连驱动 {driver} 不可用:运行 skill 的 python3({_sys.executable})里 import 失败({exc})。"
+            f"请在这个 python3 上安装:{_DRIVER_INSTALL.get(driver, '对应驱动')};"
+            f"或把该连接改成 driver: grmp 走中间件(不需要本机驱动)。"
+        ) from exc
     raise DBError(f"unknown driver {driver!r}")
 
 
