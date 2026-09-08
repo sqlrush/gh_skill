@@ -72,10 +72,32 @@ def explain_plan(runner, base_script: str, sql: str, schema: str) -> Tuple[str, 
     if ok:
         rows = runner.run(base_script + SCHEMA_SUFFIX, {"sql": sql, "schema": schema})
         return _join(rows), schema, ""
-    note = ("中间件不支持一条脚本跑两条语句(%s),未能把 search_path 切到 %s;"
-            "表名不带 schema 时 EXPLAIN 可能报对象不存在——可让 DBA 给执行账号设置 search_path,"
-            "或把 SQL 里的表名写全 schema.表" % (reason or "探测脚本 %s 未通过" % PROBE_SCRIPT, schema))
-    return _join(runner.run(base_script, {"sql": sql})), "", note
+    return _join(runner.run(base_script, {"sql": sql})), "", fallback_note(schema, reason)
+
+
+_MISSING_SCRIPT_MARKS = ("不存在", "未注册", "not found", "no such", "unknown", "不在白名单", "does not exist")
+
+
+def fallback_note(schema: str, reason: str) -> str:
+    """没切成 search_path 时给用户看的话:先说清是哪种原因,再给可照做的处理办法。
+
+    两种原因的处理不同,所以要分开说:
+      · 探测脚本没灌进白名单 —— 发布问题,按交付文档补灌本次新增的脚本即可,不需要 DBA;
+      · 中间件确实跑不了两条语句 —— 执行器的限制,只能由 DBA 给执行账号设 search_path。
+    两种情况下 DBA 那条命令都能用,所以都给;备选是把 SQL 里的表名写全。
+    """
+    low = (reason or "").lower()
+    if any(m.lower() in low for m in _MISSING_SCRIPT_MARKS):
+        cause = ("探测脚本 %s 未注册到白名单或调用失败(%s)——请先按交付文档 08 把本次新增的白名单脚本"
+                 "(含 *_schema 模板与探测脚本)灌入 script_config" % (PROBE_SCRIPT, reason))
+    else:
+        cause = "中间件不支持一条脚本跑两条语句(%s)" % (reason or "探测脚本 %s 未通过" % PROBE_SCRIPT)
+    return (
+        "未能把 search_path 切到 %s:%s。表名不带 schema 时 EXPLAIN 会报对象不存在。处理办法二选一:"
+        "① 由 DBA 给中间件执行账号在该库上设置 search_path,执行 "
+        "ALTER ROLE <中间件执行账号> IN DATABASE <业务库名> SET search_path = %s, public; (新连接生效,不用重启);"
+        "② 把 SQL 里的表名写全为 %s.<表> 后重跑。" % (schema, cause, schema, schema)
+    )
 
 
 def set_search_path(db, schema: str) -> str:
@@ -89,4 +111,4 @@ def set_search_path(db, schema: str) -> str:
 
 
 __all__ = ["IDENT_RE", "PROBE_SCRIPT", "SCHEMA_SUFFIX", "valid_schema", "reset_probe_cache",
-           "multi_statement_ok", "explain_plan", "set_search_path"]
+           "multi_statement_ok", "explain_plan", "set_search_path", "fallback_note"]
