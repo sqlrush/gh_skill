@@ -121,3 +121,13 @@ def test_invoke_failure_message_gets_hint(monkeypatch):
     with pytest.raises(GrmpError) as ei:
         c.invoke("sqlfetch.from_history", {"sid": 300316117})
     assert "status='failed'" in str(ei.value) and "提示:" in str(ei.value) and "备机" in str(ei.value)
+
+
+def test_permission_denied_on_a_schema_asks_for_usage_not_select():
+    """schema 级的 permission denied(dbe_perf / snapshot)不是 GRANT SELECT 能解决的:
+    要的是 schema 的 USAGE,而监控 schema 实际要 MONADMIN——照搬「授 SELECT」会让 DBA 白授一次。"""
+    hint = hints.explain("ERROR: permission denied for schema dbe_perf (SQLSTATE 42501)")
+    assert "schema dbe_perf" in hint and "USAGE" in hint and "MONADMIN" in hint
+    assert "SELECT 权限" not in hint
+    fn = hints.explain("ERROR: permission denied for function gs_get_kernel_info")
+    assert "gs_get_kernel_info" in fn and "EXECUTE" in fn

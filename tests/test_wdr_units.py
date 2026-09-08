@@ -199,3 +199,19 @@ if __name__ == "__main__":
             traceback.print_exc()
     print(f"\n{len(fns) - failed}/{len(fns)} passed")
     sys.exit(1 if failed else 0)
+
+
+def test_summarize_err_keeps_the_chinese_hint_whole():
+    """降级说明可以截原始报错,但 with_hint 追加的「提示:」整段要保留——GRMP 路径的报错前缀
+    (status / task_id)本来就长,160 字一刀正好切在提示中间。"""
+    for _m in ("model", "util"):
+        sys.modules.pop(_m, None)
+    sys.path.insert(0, str(_SCRIPTS))
+    import util as wdr_util  # noqa: E402  —— 此刻 sys.path[0] 是 wdr 的 scripts
+
+    hint = "当前连接的是备机(实例处于恢复态):用主库 IP 重新 gaussdb-login"
+    raw = ("执行 wdr.snapshots 失败（status='failed'，task_id=grmp-67d0d417-fd23-4ad7-a689-300690a4abf2）："
+           "ERROR: recovery is in progress (SQLSTATE 55000) " + "x" * 80)
+    s = wdr_util.summarize_err(Exception(raw + "\n提示:" + hint))
+    assert s.endswith("\n提示:" + hint)
+    assert len(s) < len(raw) + len(hint)

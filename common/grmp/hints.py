@@ -34,15 +34,25 @@ _HINTS: Sequence[Tuple[Tuple[str, ...], str]] = (
      "对象不存在:多半是版本差异(视图 / 列名不同)或脚本注册到了别的库——对照 whitelist.md 里的 SQL 与目标实例版本"),
 )
 
-_RELATION_RE = re.compile(r"permission denied for (?:relation|table|view|function|schema|sequence)\s+([\w.\"]+)", re.I)
+_RELATION_RE = re.compile(r"permission denied for (relation|table|view|function|schema|sequence)\s+([\w.\"]+)", re.I)
 _FUNCTION_RE = re.compile(r"function\s+([\w.\"]+)\s*\(([^)]*)\)\s+does not exist", re.I)
 
 
 def _permission_hint(text: str) -> str:
+    """按报错点名的对象种类给动作:schema 要 USAGE(监控 schema 实为 MONADMIN),函数要 EXECUTE,表/视图要 SELECT。
+    一律说「授 SELECT」会让 DBA 对 dbe_perf 白授一次——现场实测 kf_lowpriv 读 dbe_perf 报的正是 schema 级。"""
     m = _RELATION_RE.search(text or "")
-    obj = m.group(1).strip('"') if m else ""
-    target = f"对象 {obj}" if obj else "该对象"
-    return (f"执行账号没有{target}的访问权限:请 DBA 给执行账号授予 {obj or '该对象'} 的 SELECT 权限"
+    if not m:
+        return ("执行账号没有该对象的访问权限:请 DBA 按报错点名的对象授权"
+                "(系统表如 pg_user_status 默认只对高权限角色开放;也可改用有权限的视图)")
+    kind, obj = m.group(1).lower(), m.group(2).strip('"')
+    if kind == "schema":
+        return (f"执行账号没有 schema {obj} 的访问权限:请 DBA 给执行账号授予该 schema 的 USAGE 权限;"
+                f"dbe_perf / snapshot 这类监控 schema 实际要 MONADMIN(监控管理员)角色,GRANT 单个对象不够")
+    if kind == "function":
+        return (f"执行账号没有函数 {obj} 的执行权限:请 DBA 给执行账号授予 EXECUTE 权限"
+                f"(内核私有函数通常只对 sysadmin / monadmin 开放)")
+    return (f"执行账号没有对象 {obj} 的访问权限:请 DBA 给执行账号授予 {obj} 的 SELECT 权限"
             f"(系统表如 pg_user_status 默认只对高权限角色开放;也可改用有权限的视图)")
 
 

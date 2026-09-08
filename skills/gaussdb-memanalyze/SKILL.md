@@ -1,6 +1,6 @@
 ﻿---
 name: gaussdb-memanalyze
-version: 1.0.0
+version: 1.0.1
 description: "通过内置脚本分析 OpenGauss/GaussDB 动态内存冲高问题。用户询问内存为什么满、为什么突然飙高、是谁在吃内存、哪条 SQL 或哪个算子在占内存、是否存在内存泄漏、为什么算子落盘、work_mem 和并发是否过高时使用，包括“内存怎么满了”“内存被谁吃了”“哪条 SQL 吃内存”“哪个算子吃内存”“是不是内存泄漏”等请求。触发后运行 scripts/memanalyze.py，采集真实的六层内存证据，不要只给泛化调优猜测。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode

@@ -136,3 +136,20 @@ if __name__ == "__main__":
             traceback.print_exc()
     print(f"\n{len(fns) - failed}/{len(fns)} passed")
     sys.exit(1 if failed else 0)
+
+
+def test_summarize_err_keeps_the_chinese_hint_whole():
+    """降级说明可以截原始报错,但不能把「提示:」那段切掉——GRMP 路径的报错前缀
+    (status / task_id)本来就长,一刀 160 字正好切在提示中间,客户看到的是半句话。"""
+    # 不写 `from util import`:wdr / memanalyze 也有同名 util 模块,收集顺序不同会拿到别家的副本。
+    # collectors 是本文件顶部锁定的 health 副本,它引用的 summarize_err 就是 health 的。
+    summarize_err = collectors.summarize_err
+
+    raw = ("执行 health.slow_sql 失败（status='failed'，task_id=grmp-67d0d417-fd23-4ad7-a689-300690a4abf2）："
+           "ERROR: permission denied for schema dbe_perf (SQLSTATE 42501) " + "x" * 80)
+    hint = "执行账号没有 schema dbe_perf 的访问权限:请 DBA 给执行账号授予该 schema 的 USAGE 权限"
+    s = summarize_err(Exception(raw + "\n提示:" + hint))
+    assert s.endswith("\n提示:" + hint)            # 提示整段保留
+    head = s[: -len("\n提示:" + hint)]
+    assert head.endswith("…") and len(head) <= 161  # 原文部分照旧截断
+    assert summarize_err(Exception("短报错")) == "短报错"
