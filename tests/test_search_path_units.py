@@ -115,3 +115,20 @@ def test_executor_refusing_two_statements_gets_the_same_dba_command():
     _, applied, note = sp.explain_plan(r, "explain.plan_text", "select 1", "gbatch")
     assert applied == "" and "两条语句" in note and "白名单" not in note
     assert "ALTER ROLE" in note and "SET search_path = gbatch, public" in note
+
+
+def test_fallback_explain_failure_carries_the_note_in_the_error():
+    """探测没通过、退回单语句模板后 EXPLAIN 又因为表不在 search_path 里失败:这时没有报告可以放说明,
+    说明必须跟在报错后面——用户看到的那一段就得写清是白名单没灌还是执行器不支持,以及 DBA 该跑的命令。"""
+    class _R(FakeRunner):
+        def run(self, script, values=None):
+            if script == "sqltune.plan_text":
+                raise QueryError('执行脚本 sqltune.plan_text 失败：ERROR: relation "orders" does not exist')
+            return super().run(script, values)
+
+    r = _R(probe_exc="脚本 explain.multi_stmt_probe 不存在")
+    with pytest.raises(QueryError) as ei:
+        sp.explain_plan(r, "sqltune.plan_text", "select 1", "app_trade")
+    msg = str(ei.value)
+    assert 'relation "orders" does not exist' in msg and "补充" in msg
+    assert "白名单" in msg and "ALTER ROLE" in msg and "SET search_path = app_trade, public" in msg

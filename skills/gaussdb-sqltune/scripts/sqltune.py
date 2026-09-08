@@ -328,7 +328,7 @@ def tune_by_id(runner, db, raw_id: str, binds: list[str], do_analyze: bool,
     except (access.QueryError, common.DBError) as exc:
         # 切了 search_path 仍报表不存在(或中间件不支持两条语句没切成):把 schema 说出来——
         # DBA 要知道该给执行账号设哪个 search_path,这个名字就是答案。直连原始会话报的是 DBError,同样接。
-        if "does not exist" in str(exc) and schema:
+        if "does not exist" in str(exc) and schema and "ALTER ROLE" not in str(exc):   # search_path 层已附过说明就不叠
             raise type(exc)(
                 f"{exc}\n补充:这条 SQL 的执行 schema 是 {schema}({_SCHEMA_SOURCE_LABEL.get(schema_source, schema_source)}),"
                 f"执行账号当前的 search_path 里多半没有它。可让 DBA 给执行账号在该库上设置 search_path 包含 {schema}"

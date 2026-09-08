@@ -72,7 +72,18 @@ def explain_plan(runner, base_script: str, sql: str, schema: str) -> Tuple[str, 
     if ok:
         rows = runner.run(base_script + SCHEMA_SUFFIX, {"sql": sql, "schema": schema})
         return _join(rows), schema, ""
-    return _join(runner.run(base_script, {"sql": sql})), "", fallback_note(schema, reason)
+    note = fallback_note(schema, reason)
+    try:
+        rows = runner.run(base_script, {"sql": sql})
+    except Exception as exc:               # noqa: BLE001
+        # 退回单语句模板后 EXPLAIN 又失败(多半就是表不在 search_path 里):这时没有报告可以放说明,
+        # 把原因和 DBA 命令直接跟在报错后面——用户看到的就是这一段。
+        try:
+            wrapped = type(exc)("%s\n补充:%s" % (exc, note))
+        except Exception:                  # noqa: BLE001 —— 异常类构造签名特殊时保留原报错
+            raise exc
+        raise wrapped from exc
+    return _join(rows), "", note
 
 
 _MISSING_SCRIPT_MARKS = ("不存在", "未注册", "not found", "no such", "unknown", "不在白名单", "does not exist")
