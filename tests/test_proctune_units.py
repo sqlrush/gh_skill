@@ -239,3 +239,34 @@ def test_proctune_fetch_proc_def_handles_package_names():
     with pytest.raises(ValueError) as ei:
         mod.fetch_proc_def(_R(), "gmag.proc_x")
     assert "pkg_a" in str(ei.value) and "pkg_b" in str(ei.value)
+
+
+def test_proctune_collect_filters_catalog_rows_by_procedure_schema():
+    """游标 SELECT 的表按过程所在 schema 解析——目录证据也只留那个 schema 的行。"""
+    from common import search_path as sp
+    sp.reset_probe_cache()
+    evidence = _load_proctune_evidence()
+
+    class _R:
+        def run(self, script, values=None):
+            if script == evidence.DB_VERSION_SCRIPT:
+                return [{"version": "openGauss 5.0.3"}]
+            if script == "explain.multi_stmt_probe":
+                return [{"ok": "1"}]
+            if script.startswith("proctune.plan_"):
+                return [{"QUERY PLAN": "Seq Scan on t  (cost=0.00..1.00 rows=1 width=4)"}]
+            if script == evidence.TABLES_SCRIPT:
+                return [{"nspname": s, "relname": "t", "relpages": "1", "reltuples": "1", "curpages": "1",
+                         "relkind": "r", "size_mb": "0.1"} for s in ("billing", "other")]
+            if script == evidence.INDEXES_SCRIPT:
+                return [{"schema_name": s, "table_name": "t", "index_name": f"i_{s}", "indisunique": "f",
+                         "indisprimary": "f", "index_def": f"CREATE INDEX i_{s} ON {s}.t(id)"} for s in ("billing", "other")]
+            if script == evidence.COLUMN_STATS_SCRIPT:
+                return [{"schemaname": s, "tablename": "t", "attname": "id", "n_distinct": "1", "null_frac": "0",
+                         "avg_width": "4", "correlation": "1", "most_common_vals": "", "most_common_freqs": "",
+                         "histogram_bounds": ""} for s in ("billing", "other")]
+            return []
+
+    ev = evidence.collect(_R(), None, "select 1 from t", False, schema="billing")
+    assert [t.schema for t in ev.tables] == ["billing"] and [i.name for i in ev.indexes] == ["i_billing"]
+    assert len(ev.columns) == 1

@@ -37,6 +37,7 @@ for parent in _HERE.parents:
 from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
 from common import explain_actual as ea  # noqa: E402
 from common import search_path as sp  # noqa: E402
+from common import catalog_scope as cs  # noqa: E402
 
 # SQL 已迁到 scripts/registry/proctune/ —— 两条路径共用同一份定义
 DB_VERSION_SCRIPT = "proctune.db_version"
@@ -63,16 +64,15 @@ _SQL_KEYWORDS = frozenset({
 _WS = " \t\r\n"
 
 
-def extract_tables(sql_text: str) -> list[str]:
-    """Lowercase, deduped, schema-stripped table names in first-appearance order."""
+def extract_table_refs(sql_text: str) -> list[str]:
+    """Lowercase, deduped table refs in first-appearance order, schema kept(同 sqltune 那份)。"""
     seen: set[str] = set()
     out: list[str] = []
 
     def add(raw: str) -> None:
         name = raw.strip().lower()
-        if "." in name:
-            name = name[name.rindex(".") + 1:]
-        if name in ("", "(") or name in _SQL_KEYWORDS or name in seen:
+        tail = name[name.rindex(".") + 1:] if "." in name else name
+        if tail in ("", "(") or tail in _SQL_KEYWORDS or name in seen:
             return
         seen.add(name)
         out.append(name)
@@ -113,6 +113,18 @@ def extract_tables(sql_text: str) -> list[str]:
                     break
                 add(im2.group(0))
                 pos += len(im2.group(0))
+    return out
+
+
+def extract_tables(sql_text: str) -> list[str]:
+    """Lowercase, deduped, schema-stripped table names in first-appearance order."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for ref in extract_table_refs(sql_text):
+        name = ref[ref.rindex(".") + 1:] if "." in ref else ref
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
     return out
 
 
@@ -254,28 +266,34 @@ def _quoted_list(names: list[str]) -> str:
     return ",".join("'" + n.replace("'", "''") + "'" for n in names)
 
 
-def collect_tables(runner, names: list[str]) -> list[TableInfo]:
+def collect_tables(runner, names: list[str], scope=None) -> list[TableInfo]:
     if not names:
         return []
     rows = runner.run(TABLES_SCRIPT, {"names": _quoted_list(names)})
+    if scope is not None:   # 同名表跨 schema:只留过程所在 schema 的行(common/catalog_scope.py)
+        rows = cs.keep_rows(rows, scope, table_key="relname", schema_key="nspname")
     return [TableInfo(r["nspname"], r["relname"], as_int(r["relpages"]),
                       as_int(r["reltuples"]), r["relkind"], as_float(r["size_mb"]))
             for r in rows]
 
 
-def collect_indexes(runner, names: list[str]) -> list[IndexInfo]:
+def collect_indexes(runner, names: list[str], scope=None) -> list[IndexInfo]:
     if not names:
         return []
     rows = runner.run(INDEXES_SCRIPT, {"names": _quoted_list(names)})
+    if scope is not None:
+        rows = cs.keep_rows(rows, scope, table_key="table_name", schema_key="schema_name")
     # bool("f") 是 True —— 直接 bool() 会把每个索引都报成 UNIQUE/PRIMARY
     return [IndexInfo(r["table_name"], r["index_name"], as_bool(r["indisunique"]),
                       as_bool(r["indisprimary"]), r["index_def"]) for r in rows]
 
 
-def collect_column_stats(runner, names: list[str]) -> list[ColumnStat]:
+def collect_column_stats(runner, names: list[str], scope=None) -> list[ColumnStat]:
     if not names:
         return []
     rows = runner.run(COLUMN_STATS_SCRIPT, {"names": _quoted_list(names)})
+    if scope is not None:
+        rows = cs.keep_rows(rows, scope, table_key="tablename", schema_key="schemaname")
     out = []
     for r in rows:
         # correlation 允许为 NULL，而 NULL 与空串在协议里不可区分。这是数值
@@ -328,6 +346,7 @@ def collect(runner, db, sql_text: str, do_analyze: bool, schema: str = "") -> Ev
             sp_note = str(exc)
         plan = explain(db, sql_text, do_analyze)
     names = extract_tables(sql_text)
+    scope = cs.Scope(explicit=cs.explicit_schemas(extract_table_refs(sql_text)), default=schema or "")
     return Evidence(
         sql=sql_text,
         version=version,
@@ -337,9 +356,9 @@ def collect(runner, db, sql_text: str, do_analyze: bool, schema: str = "") -> Ev
         search_path=applied,
         search_path_note=sp_note,
         findings=scan_plan(plan),
-        tables=collect_tables(runner, names),
-        indexes=collect_indexes(runner, names),
-        columns=collect_column_stats(runner, names),
+        tables=collect_tables(runner, names, scope),
+        indexes=collect_indexes(runner, names, scope),
+        columns=collect_column_stats(runner, names, scope),
         gucs=collect_gucs(runner),
     )
 

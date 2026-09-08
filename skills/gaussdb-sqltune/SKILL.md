@@ -1,6 +1,6 @@
 ﻿---
 name: gaussdb-sqltune
-version: 2.4.0
+version: 2.5.0
 description: "通过内置脚本对 OpenGauss/GaussDB 的慢 SQL 做深度调优和证据化验证。仅在用户要定位慢 SQL 根因、给出索引/改写/GUC 调优建议、验证某个优化方案是否真的带来收益，或基于 sql_id、Top SQL、slow SQL、WDR 结果继续调优时使用，包括“优化这条 SQL”“这条 SQL 为什么慢并怎么改”“看看建什么索引”“这个改写有没有收益”“给我一套能落地的优化建议”等请求。触发后运行 scripts/sqltune.py 和 scripts/verify.py，输出带证据链、可解释原因和已验证收益的调优结论；如果用户只是想看 explain、执行计划、plan 对比，不要优先使用本 skill。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -64,6 +64,8 @@ metadata:
    statement_history 记录的 schema（备机退回 dbe_perf.statement 时按执行账号 user_name 推测，报告里标「推测」），EXPLAIN 前先
    `SET search_path`；`--sql-stdin` 时你要把用户说的 schema 传进 `--schema <schema>`。报告头部的 `Search path` 行写「已切到」才算生效；
    写「未切换」说明中间件不支持一条脚本跑两条语句，把那句原因转给用户，由 DBA 给执行账号设 search_path，不要自己改写 SQL 里的表名。
+   表、索引、列统计、统计新鲜度这些目录证据也按同一个 schema 过滤：同名表存在于多个 schema 时只留这条 SQL 所在的那份，
+   SQL 里显式写了 `schema.表` 的按显式的。所以 `## Tables` 里出现别的 schema 的表时，先怀疑 schema 传错，不是「数据库里有两份」。
 
 2b. **系统对象 SQL —— 直接结束。** 若输出是「# SQL Tune — 系统对象 SQL,按策略跳过」（脚本正常退出，不是报错），说明这条 SQL 只访问系统表/系统视图。**到此为止**：把跳过的原因和涉及的对象如实转达给用户，不要重跑、不要换 `--sql-stdin` 再试、不要绕开脚本自己分析，也不要给出任何索引/改写/参数建议。可以提示排查方向在监控采集频率与系统整体负载，但那不属于本技能的调优输出。
 

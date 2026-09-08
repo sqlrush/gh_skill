@@ -467,3 +467,72 @@ def test_whitelist_path_refuses_dml_before_calling_the_middleware():
         sqltune._guard_sql("update t set a = 1 where id = 1", False)
     msg = str(ei.value)
     assert "UPDATE" in msg and "只读" in msg and "中间件" in msg
+
+
+class _TwoSchemaRunner:
+    """同名表 orders 在 app 与 other 两个 schema 里各一份,列类型还不一样:看 collect / 列类型推断按 schema 过滤没有。"""
+
+    def __init__(self):
+        self.calls = []
+
+    def run(self, script, values=None):
+        self.calls.append((script, dict(values or {})))
+        if script == evidence.VERSION_SCRIPT:
+            return [{"version": "openGauss 5.0.3"}]
+        if script == "explain.multi_stmt_probe":
+            return [{"ok": "1"}]
+        if script.startswith("sqltune.plan_"):
+            return [{"QUERY PLAN": "Seq Scan on orders  (cost=0.00..1.00 rows=1 width=4)"}]
+        if script == evidence.TABLES_SCRIPT:
+            return [{"nspname": s, "relname": "orders", "relpages": "10", "reltuples": "100", "curpages": "10",
+                     "relkind": "r", "size_mb": "1.0"} for s in ("app", "other")]
+        if script == evidence.INDEXES_SCRIPT:
+            return [{"schema_name": s, "table_name": "orders", "index_name": f"idx_{s}", "indisunique": "f",
+                     "indisprimary": "f", "index_relpages": "1", "index_reltuples": "100",
+                     "index_def": f"CREATE INDEX idx_{s} ON {s}.orders(id)"} for s in ("app", "other")]
+        if script == evidence.COLUMN_STATS_SCRIPT:
+            return [{"schemaname": s, "tablename": "orders", "attname": "status", "n_distinct": "2",
+                     "null_frac": "0", "avg_width": "4", "correlation": "1", "most_common_vals": "",
+                     "most_common_freqs": "", "histogram_bounds": ""} for s in ("app", "other")]
+        if script == evidence.STATS_FRESHNESS_SCRIPT:
+            return [{"schemaname": s, "relname": "orders", "n_live_tup": "100", "n_dead_tup": "0",
+                     "last_analyze": "never", "last_autoanalyze": "never", "analyze_count": "0",
+                     "autoanalyze_count": "0"} for s in ("app", "other")]
+        if script == "sqltune.column_types":
+            return [{"schema_name": "app", "table_name": "orders", "attname": "status", "type_name": "text"},
+                    {"schema_name": "other", "table_name": "orders", "attname": "status", "type_name": "integer"}]
+        return []
+
+
+def test_collect_keeps_only_the_resolved_schema_rows():
+    """现场同名表跨 schema:证据包不能混进别的 schema 的表、索引、列统计。"""
+    from common import search_path as sp
+    sp.reset_probe_cache()
+    ev = evidence.collect(_TwoSchemaRunner(), None, "select * from orders where status = 'NEW'", False, schema="app")
+    assert [t.schema for t in ev.tables] == ["app"]
+    assert [i.name for i in ev.indexes] == ["idx_app"]
+    assert len(ev.columns) == 1 and len(ev.freshness) == 1 and ev.freshness[0].schema == "app"
+
+
+def test_collect_without_a_schema_keeps_everything_as_before():
+    from common import search_path as sp
+    sp.reset_probe_cache()
+    ev = evidence.collect(_TwoSchemaRunner(), None, "select * from orders", False)
+    assert sorted(t.schema for t in ev.tables) == ["app", "other"] and len(ev.indexes) == 2
+
+
+def test_explicit_schema_in_sql_beats_the_resolved_one():
+    from common import search_path as sp
+    sp.reset_probe_cache()
+    ev = evidence.collect(_TwoSchemaRunner(), None, "select * from other.orders", False, schema="app")
+    assert [t.schema for t in ev.tables] == ["other"] and [i.name for i in ev.indexes] == ["idx_other"]
+
+
+def test_column_type_inference_uses_the_resolved_schema():
+    """两个 schema 的同名列类型冲突时原先保守放弃(退回启发式,合成 'test' 塞进数值列就是 400);
+    知道 schema 就按它取,类型明确。"""
+    import coltypes
+    r = _TwoSchemaRunner()
+    types = coltypes.infer_types(r, "select * from orders where status = ?", schema="app")
+    assert types == ["text"]
+    assert coltypes.infer_types(_TwoSchemaRunner(), "select * from orders where status = ?") == [None]   # 不知道 schema:冲突就放弃,老行为

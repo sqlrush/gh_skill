@@ -828,7 +828,7 @@ LIMIT 5;
 | `names` | STRING |
 
 ```sql
-SELECT tablename, attname, n_distinct, null_frac, avg_width, correlation,
+SELECT schemaname, tablename, attname, n_distinct, null_frac, avg_width, correlation,
        COALESCE(most_common_vals::text, '') AS most_common_vals,
        COALESCE(most_common_freqs::text, '') AS most_common_freqs,
        COALESCE(histogram_bounds::text, '') AS histogram_bounds
@@ -855,12 +855,13 @@ SELECT version() AS version;
 | `names` | STRING |
 
 ```sql
-SELECT t.relname AS table_name, i.relname AS index_name,
+SELECT n.nspname AS schema_name, t.relname AS table_name, i.relname AS index_name,
        ix.indisunique, ix.indisprimary,
        pg_get_indexdef(ix.indexrelid) AS index_def
 FROM pg_class t
 JOIN pg_index ix ON t.oid = ix.indrelid
 JOIN pg_class i ON i.oid = ix.indexrelid
+JOIN pg_namespace n ON n.oid = t.relnamespace
 WHERE t.relname IN ({{names}});
 ```
 
@@ -1238,7 +1239,7 @@ LIMIT {{limit}};
 | `names` | STRING |
 
 ```sql
-SELECT tablename, attname, n_distinct, null_frac, avg_width, correlation,
+SELECT schemaname, tablename, attname, n_distinct, null_frac, avg_width, correlation,
        COALESCE(most_common_vals::text, '') AS most_common_vals,
        COALESCE(most_common_freqs::text, '') AS most_common_freqs,
        COALESCE(histogram_bounds::text, '') AS histogram_bounds
@@ -1256,7 +1257,8 @@ WHERE tablename IN ({{names}});
 | `columns` | STRING |
 
 ```sql
-SELECT a.attname, format_type(a.atttypid, NULL) AS type_name
+SELECT n.nspname AS schema_name, c.relname AS table_name,
+       a.attname, format_type(a.atttypid, NULL) AS type_name
 FROM pg_attribute a
 JOIN pg_class c ON c.oid = a.attrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -1309,7 +1311,7 @@ LIMIT 1;
 | `names` | STRING |
 
 ```sql
-SELECT t.relname AS table_name,
+SELECT n.nspname AS schema_name, t.relname AS table_name,
        i.relname AS index_name,
        ix.indisunique,
        ix.indisprimary,
@@ -1319,6 +1321,7 @@ SELECT t.relname AS table_name,
 FROM pg_class t
 JOIN pg_index ix ON t.oid = ix.indrelid
 JOIN pg_class i ON i.oid = ix.indexrelid
+JOIN pg_namespace n ON n.oid = t.relnamespace
 WHERE t.relname IN ({{names}});
 ```
 

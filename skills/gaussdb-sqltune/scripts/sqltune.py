@@ -266,7 +266,7 @@ def _tune(runner, db, *, original_sql: str, binds: list[str], do_analyze: bool,
     verdict = systables.system_verdict(original_sql)
     if verdict.is_system:
         raise systables.SystemSQLSkipped(verdict.system_objects)
-    types = coltypes.infer_types(runner, original_sql)
+    types = coltypes.infer_types(runner, original_sql, schema=schema)
     sub = substitute(original_sql, binds, types=types)
     coltypes.validate_binds(sub.substitutions, types)
     if db is None:
