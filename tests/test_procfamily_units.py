@@ -31,10 +31,27 @@ topproc = _load("topproc", "topproc")
 procinfo = _load("procinfo", "procinfo")
 
 
-def test_procinfo_split_qualified():
-    assert procinfo._split_qualified("public.foo") == ("public", "foo")
-    assert procinfo._split_qualified("foo") == ("", "foo")
-    assert procinfo._split_qualified("a.b.c") == ("a.b", "c")
+def test_procinfo_resolves_package_procs_and_refuses_ambiguity():
+    """三段名 schema.package.proc 能定位到包内过程;同名过程不止一个又没指定包时拒绝,不猜。"""
+    class _R:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, script, values=None):
+            v = dict(values or {})
+            self.calls.append(v)
+            rows = [{"nspname": "gmag", "proname": "proc_x", "lanname": "plpgsql", "prosrc": "BEGIN NULL; END",
+                     "args": "", "package": p} for p in ("pkg_a", "pkg_b")]
+            return [r for r in rows if r["proname"] == v["name"]
+                    and (not v["schema"] or r["nspname"] == v["schema"])
+                    and (not v["package"] or r["package"] == v["package"])]
+
+    import pytest
+    d = procinfo.fetch_proc_def(_R(), "gmag.pkg_a.proc_x")
+    assert d.schema == "gmag" and d.package == "pkg_a" and d.name == "proc_x"
+    with pytest.raises(ValueError) as ei:
+        procinfo.fetch_proc_def(_R(), "gmag.proc_x")
+    assert "gmag.pkg_a.proc_x" in str(ei.value) and "gmag.pkg_b.proc_x" in str(ei.value)
 
 
 def test_procinfo_structural_scan_detects_antipatterns():

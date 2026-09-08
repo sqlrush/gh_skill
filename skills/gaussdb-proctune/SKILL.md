@@ -1,6 +1,6 @@
 ﻿---
 name: gaussdb-proctune
-version: 2.1.0
+version: 2.2.0
 description: "通过内置脚本对 OpenGauss/GaussDB 存储过程做深度调优和证据化验证。仅在用户要定位慢过程根因、分析并优化过程里的游标 SELECT、验证索引或改写是否真的有效、拿到可落地且带收益证明的过程优化建议时使用，包括“优化这个存储过程”“调一下这个过程”“看看游标 SQL 怎么优化”“这个过程有没有可验证的优化方案”“这个过程改哪里最值”“帮我验证这个优化思路有没有收益”等请求。触发后运行 scripts/proctune.py 和 scripts/verify.py，输出带证据链、可解释原因和已验证收益的过程调优结论；如果用户只是想看过程源码、找热点、判断是不是循环里查库，不要优先使用本 skill，应先走 gaussdb-procinfo。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -47,9 +47,14 @@ metadata:
 2. **采集证据——两条命令，中途不停。**
 
    ```bash
-   python3 {baseDir}/scripts/proctune.py collect      -c <conn> <schema.proc>   # 结构发现 + 运行时归因（建议层）
-   python3 {baseDir}/scripts/proctune.py tune-cursor  -c <conn> <schema.proc>   # 每个合规游标的证据 + 索引硬验证
+   python3 {baseDir}/scripts/proctune.py collect      -c <conn> <schema.proc | schema.package.proc>   # 结构发现 + 运行时归因（建议层）
+   python3 {baseDir}/scripts/proctune.py tune-cursor  -c <conn> <schema.proc | schema.package.proc>   # 每个合规游标的证据 + 索引硬验证
    ```
+
+   **包（Package）内的过程照样能分析**：GaussDB/openGauss 把包体里的过程登记在 pg_proc 里，脚本联 gs_package 取源码。慢 SQL 里
+   `call a.b.c(...)` 的三段名**原样传**（schema.package.proc）；两段名脚本会同时按 schema.proc 与 package.proc 去找。
+   脚本报「同名过程不止一个」并列出候选时，把候选转给用户确认要哪一个，**不要自己挑**；报「找不到」时把脚本原话转给用户，
+   **不要自己解释成「GaussDB 不支持包 / 包子程序不在 pg_proc」**，那不是事实。
 
    `collect` 产 `## Procedure Source`、`## Structural Findings`、`## Embedded Statements`、`## Runtime Attribution`。
    `tune-cursor` 对每个只读游标产 `## Cursor <name>`、`## Variable Substitution`、`## SQL`、`## Execution Plan`、`## Verified Index Candidates`，并把不合规游标列进 `## Skipped Cursors`。
