@@ -549,7 +549,7 @@ python3 $SKILLS/gaussdb-sqlfetch/scripts/sqlfetch.py -c og-prod -- -9876543210
 |---|---|---|---|
 | `-c` / `--conn` | str（必填） | — | 连接名 |
 | `--sql-stdin` | flag（必填） | — | 从 stdin 读取 SQL 文本（必须指定此参数） |
-| `--analyze` | flag | 关闭 | 使用 `EXPLAIN ANALYZE`（会真实执行 SQL；DML 自动包在回滚事务中）|
+| `--analyze` | flag | 关闭 | 使用 `EXPLAIN ANALYZE`（直连原始会话时会真实执行 SQL，DML 自动包在回滚事务中；中间件路径的现场脚本按客户只读要求固定关闭 ANALYZE，此时拿到的是估算计划，报告会写明）|
 | `--format` | `markdown`\|`json` | `markdown` | 输出格式 |
 | `--timeout` | int | `30` | 语句超时（秒） |
 
@@ -565,7 +565,7 @@ WHERE u.status = 'active'
 GROUP BY u.name
 SQL
 
-# EXPLAIN ANALYZE（执行 SQL，DML 自动回滚）
+# EXPLAIN ANALYZE（直连时执行 SQL，DML 自动回滚；中间件路径现场固定关闭 ANALYZE，报告会写明是估算计划）
 python3 $SKILLS/gaussdb-explain/scripts/explain.py -c og-prod --sql-stdin --analyze <<'SQL'
 SELECT * FROM orders WHERE order_date > '2024-01-01'
 SQL
@@ -587,7 +587,7 @@ SQL
 | `-c` / `--conn` | str（必填） | — | 连接名 |
 | `--sql-stdin` | flag | 关闭 | 从 stdin 读取 SQL 文本，与 `sql_id` 二选一 |
 | `--bind` | str（可重复） | `[]` | 按占位符顺序提供真实绑定值，例如 `--bind 42 --bind foo` |
-| `--analyze` | flag | 关闭 | 使用 `EXPLAIN ANALYZE`（会真实执行 SQL；DML 自动包在回滚事务中） |
+| `--analyze` | flag | 关闭 | 使用 `EXPLAIN ANALYZE`（直连原始会话时会真实执行 SQL，DML 自动包在回滚事务中；中间件路径的现场脚本按客户只读要求固定关闭 ANALYZE，此时拿到的是估算计划，报告会写明） |
 | `--format` | `markdown`\|`json` | `markdown` | 输出格式 |
 | `--timeout` | int | `30` | 语句超时（秒） |
 
