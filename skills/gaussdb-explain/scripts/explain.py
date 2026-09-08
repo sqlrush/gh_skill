@@ -27,6 +27,7 @@ for _anc in _HERE.parents:  # locate common/ (repo root or install dir)
 import common  # noqa: E402
 from common import access  # noqa: E402
 from common import kernel_funcs as kf  # noqa: E402
+from common import explain_actual as ea  # noqa: E402
 from common.grmp import statement as stmt  # noqa: E402
 from common.grmp.statement import (  # noqa: E402
     ExplainNotAllowed,
@@ -295,9 +296,16 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 def _emit(args, sql_text: str, plan: str, source: str, notes: tuple) -> int:
     try:
+        # 要了 --analyze 却拿到估算计划(现场脚本按客户只读要求固定关闭 ANALYZE):来源行与说明都要写明。
+        # 只对 EXPLAIN 那几条来源判——gs_get_explain 的运行态计划本来就不是 ANALYZE 的产物。
+        analyzed = ea.analyzed_for_real(plan, args.analyze)
+        if args.analyze and not analyzed and source.startswith("EXPLAIN"):
+            source += ";ANALYZE 未生效,这是估算计划"
+            notes = tuple(notes) + (ea.FIELD_ANALYZE_OFF_NOTE,)
         findings = scan_plan(plan)
         if args.format == "json":
-            print(json.dumps({"sql": sql_text, "plan": plan, "source": source, "notes": list(notes),
+            print(json.dumps({"sql": sql_text, "plan": plan, "source": source, "analyzed": analyzed,
+                              "notes": list(notes),
                               "findings": [f.__dict__ for f in findings]},
                              ensure_ascii=False, indent=2))
         else:

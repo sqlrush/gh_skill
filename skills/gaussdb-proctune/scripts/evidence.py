@@ -35,6 +35,7 @@ for parent in _HERE.parents:
 # 字符串值的还原一律用共用层：bool("f") 是 True 这类坑错一次就是静默出
 # 错误结论，不该有各 skill 自己的一份实现
 from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
+from common import explain_actual as ea  # noqa: E402
 
 # SQL 已迁到 scripts/registry/proctune/ —— 两条路径共用同一份定义
 DB_VERSION_SCRIPT = "proctune.db_version"
@@ -295,6 +296,7 @@ class Evidence:
     columns: list = field(default_factory=list)
     gucs: list = field(default_factory=list)
     findings: list = field(default_factory=list)
+    analyze_requested: bool = False   # 要没要 analyze;analyzed 是「真跑了没」,两者可以不一致
 
 
 def collect(runner, db, sql_text: str, do_analyze: bool) -> Evidence:
@@ -314,7 +316,8 @@ def collect(runner, db, sql_text: str, do_analyze: bool) -> Evidence:
         sql=sql_text,
         version=version,
         plan=plan,
-        analyzed=do_analyze,
+        analyzed=ea.analyzed_for_real(plan, do_analyze),   # 看计划有没有 actual 行,不看请求标志
+        analyze_requested=do_analyze,
         findings=scan_plan(plan),
         tables=collect_tables(runner, names),
         indexes=collect_indexes(runner, names),
@@ -332,6 +335,8 @@ def evidence_report(ev: Evidence) -> str:
         "\n## SQL\n\n" + render.code_block("sql", ev.sql) +
         "\n## Execution Plan\n\n" + render.code_block("", ev.plan)
     )
+    if getattr(ev, "analyze_requested", False) and not ev.analyzed:
+        out += "\n> " + ea.FIELD_ANALYZE_OFF_NOTE + "\n"
     out += "\n## Deterministic Findings\n\n"
     if not ev.findings:
         out += "None.\n"

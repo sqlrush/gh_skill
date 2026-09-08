@@ -312,3 +312,35 @@ if __name__ == "__main__":
             traceback.print_exc()
     print(f"\n{len(fns) - failed}/{len(fns)} passed")
     sys.exit(1 if failed else 0)
+
+
+def test_evidence_says_when_analyze_was_requested_but_the_plan_is_an_estimate():
+    """现场 sqltune.plan_text_analyze 按客户只读要求把 ANALYZE 固定关闭:要了 --analyze,
+    模板回来的仍是估算计划。analyzed 必须按计划文本判(false),报告里要说明,不能写 Analyzed: true。"""
+    class _R:
+        def run(self, script, values=None):
+            if script == evidence.VERSION_SCRIPT:
+                return [{"version": "openGauss 5.0.3"}]
+            if script.endswith("plan_text_analyze"):
+                return [{"QUERY PLAN": "Seq Scan on t  (cost=0.00..1.00 rows=1 width=4)"}]
+            return []
+
+    ev = evidence.collect(_R(), None, "SELECT 1", True)
+    assert ev.analyzed is False and ev.analyze_requested is True
+    rep = evidence.evidence_report(ev)
+    assert "Analyzed: false" in rep and "估算" in rep and "ANALYZE" in rep and "只读" in rep
+
+
+def test_evidence_that_really_analyzed_is_reported_as_such():
+    class _R:
+        def run(self, script, values=None):
+            if script == evidence.VERSION_SCRIPT:
+                return [{"version": "openGauss 5.0.3"}]
+            if script.endswith("plan_text_analyze"):
+                return [{"QUERY PLAN": "Seq Scan on t  (cost=0.00..1.00 rows=1 width=4) "
+                                       "(actual time=0.01..0.02 rows=1 loops=1)"}]
+            return []
+
+    ev = evidence.collect(_R(), None, "SELECT 1", True)
+    assert ev.analyzed is True
+    assert "估算" not in evidence.evidence_report(ev)
