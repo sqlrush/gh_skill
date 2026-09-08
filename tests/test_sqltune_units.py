@@ -239,7 +239,7 @@ class _RtRunner:
             return rows
         if script == kf.ACTIVE_PID_SCRIPT:
             return [{"pid": "42", "query": "select 1", "query_start": ""}] if self.session else []
-        if script == kf.RUNTIME_PLAN_SCRIPT:
+        if script in (kf.RUNTIME_PLAN_SCRIPT, kf.RUNTIME_PLAN_INT4_SCRIPT):
             return [{"plan": self.plan}]
         raise AssertionError(script)
 

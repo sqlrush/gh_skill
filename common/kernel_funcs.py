@@ -9,15 +9,18 @@
   · **探测永不抛**:探测脚本本身跑不了(没注册、连不上)只算「未知」,由调用方决定退不退回;
   · **「该有而没有」只对 GaussDB 成立**:version() 含 GaussDB 而函数缺失才给中文说明
     (catalog 未升级 / 逐库不一致 / 实参类型),openGauss 缺失是常态,不报;
-  · **pid 显式转 integer**:文档签名是 gs_get_explain(integer),现场那次传 bigint 报「不存在」
-    ——int8 到 int4 没有隐式转换。脚本里写死 ::integer,调用侧也只接受能转成 int 的值。
+  · **签名按探测结果二选一,不按文档**:2026-09-08 客户在 505.2.1.SPC0600 的 pg_catalog 里查到的是
+    gs_get_explain(bigint),文档写的 (integer) 已过时(pg_stat_activity.pid 本来就是 64 位线程号)。
+    探到 bigint 走 explain.runtime_plan('{{pid}}'::bigint);探到 integer 走 explain.runtime_plan_int4
+    且 pid 必须在 integer 范围内;两者都不是则不调、说明后退回 EXPLAIN。
 
-四条白名单脚本(走中间件必须先注册,见 docs/delivery/08-初始化白名单.md):
-  explain.kernel_funcs   探测:version() + 两个函数在 pg_proc 里的签名
-  explain.runtime_plan   SELECT gs_get_explain({{pid}}::integer)
-  explain.active_pid     按 unique_sql_id 找正在执行的会话(pid / query / query_start)
-  explain.session_by_pid 按 pid 取该会话正在执行的 SQL
-  vacuum.kernel_info     SELECT node_name, module, name, value FROM gs_get_kernel_info()
+五条白名单脚本(走中间件必须先注册,见 docs/delivery/08-初始化白名单.md):
+  explain.kernel_funcs       探测:version() + 两个函数在 pg_proc 里的签名
+  explain.runtime_plan       SELECT gs_get_explain('{{pid}}'::bigint)   —— 505.2.1 实测签名
+  explain.runtime_plan_int4  SELECT gs_get_explain('{{pid}}'::integer)  —— 文档签名的老内核
+  explain.active_pid         按 unique_sql_id 找正在执行的会话(pid / query / query_start)
+  explain.session_by_pid     按 pid 取该会话正在执行的 SQL(pid 同样走 '{{pid}}'::bigint)
+  vacuum.kernel_info         SELECT node_name, module, name, value FROM gs_get_kernel_info()
 """
 from __future__ import annotations
 
@@ -27,7 +30,8 @@ from typing import Any, Dict, List, Optional, Sequence
 from .grmp.errors import QueryError
 
 PROBE_SCRIPT = "explain.kernel_funcs"
-RUNTIME_PLAN_SCRIPT = "explain.runtime_plan"
+RUNTIME_PLAN_SCRIPT = "explain.runtime_plan"            # gs_get_explain(bigint)——505.2.1 实测签名
+RUNTIME_PLAN_INT4_SCRIPT = "explain.runtime_plan_int4"  # gs_get_explain(integer)——文档签名的老内核
 ACTIVE_PID_SCRIPT = "explain.active_pid"
 SESSION_BY_PID_SCRIPT = "explain.session_by_pid"
 KERNEL_INFO_SCRIPT = "vacuum.kernel_info"
@@ -131,7 +135,9 @@ def missing_note(kf: KernelFuncs) -> str:
         f"② pg_proc 逐 database 独立,脚本连接的这个库缺少该对象——请在**同一个 database** 里执行 "
         f"SELECT proname, pg_get_function_arguments(oid) FROM pg_proc WHERE proname IN ('{FUNC_EXPLAIN}','{FUNC_KERNEL_INFO}') "
         f"核对,并与 postgres 库比对;"
-        f"③ 报错里的实参类型是调用时传的,函数存在但类型不符(如 integer 与 bigint)也报同一句 does not exist。"
+        f"③ 核对时连的库 / 实例与脚本实际执行的 dataIp 实例不是同一个(2026-09-08 客户在 grmp 库上查到三个函数齐全,"
+        f"而报错发生在诊断任务打到的实例上),或该实例升级尚未提交(SHOW upgrade_mode;)。"
+        f"另注意 505.2.1.SPC0600 实测签名是 gs_get_explain(bigint),文档写的 (integer) 已过时。"
         f"本次已退回现有路径(EXPLAIN 估算计划 / 标准视图)。"
     )
 
@@ -158,29 +164,34 @@ def _arg_types(args: str) -> str:
     return ",".join(parts)
 
 
-def runtime_plan(runner, pid: Any, explain_args: str = "integer") -> str:
+def runtime_plan(runner, pid: Any, explain_args: str = "bigint") -> str:
     """gs_get_explain(pid) 的运行态计划文本。空结果按文档前提给出原因,不当成功。
 
-    两道前置检查都**不打数据库**,失败抛 NoRuntimePlan 让调用方退回 EXPLAIN:
-      · 注册脚本按文档签名 (integer) 写死了 ::integer;探测到的签名不是 integer 就不调;
-      · openGauss / GaussDB 的 pg_stat_activity.pid 是 64 位线程号(实测 281440978523808),
-        超出 integer 范围时 ::integer 会报 integer out of range,而直接传 bigint 就是现场那句
-        function gs_get_explain(bigint) does not exist。超范围直接说明,不让它到库里炸。
+    按探测到的签名二选一,前置检查都**不打数据库**,失败抛 NoRuntimePlan 让调用方退回 EXPLAIN:
+      · (bigint) —— 505.2.1.SPC0600 现场实测的签名:走 explain.runtime_plan,任何 pid 都能传;
+      · (integer) —— 官方文档写法:走 explain.runtime_plan_int4,但 pg_stat_activity.pid 是 64 位线程号
+        (实测 281440978523808),超出 integer 范围时 ::integer 会报 integer out of range,超范围直接说明不调;
+      · 其他签名 —— 两条脚本都对不上,不调。
+    pid 一律以字符串传给 String 参数位,SQL 里显式转型——中间件是文本替换,不赌它的 INTEGER 能装 15 位数。
     """
     pid_int = _to_int(pid, "pid")
-    sig = _arg_types(explain_args or "integer")
-    if sig != "integer":
+    sig = _arg_types(explain_args or "")
+    if sig == "bigint":
+        script = RUNTIME_PLAN_SCRIPT
+    elif sig == "integer":
+        if pid_int > INT4_MAX or pid_int < INT4_MIN:
+            raise NoRuntimePlan(
+                f"本内核的 gs_get_explain 签名是 (integer)(文档写法;505.2.1.SPC0600 实测已是 bigint),"
+                f"而本实例 pg_stat_activity.pid 是 64 位线程号({pid_int}),超出 integer 范围,无法按该签名调用:"
+                f"硬转 ::integer 会报 integer out of range,直接传 bigint 则报 function gs_get_explain(bigint) does not exist。"
+                f"请确认内核版本与升级是否已提交,或改用 gs_get_dn_explain(node_name, global_sessionid);"
+                f"分布式 CN 上的 pid 若在 integer 范围内则不受此限。")
+        script = RUNTIME_PLAN_INT4_SCRIPT
+    else:
         raise NoRuntimePlan(
-            f"本内核的 gs_get_explain 签名是 ({explain_args}),而已注册脚本按官方文档写的是 (integer)"
-            f"(脚本内显式 ::integer)。签名不一致,未调用;请按实际签名调整 explain.runtime_plan 脚本。")
-    if pid_int > INT4_MAX or pid_int < INT4_MIN:
-        raise NoRuntimePlan(
-            f"gs_get_explain 的文档签名是 (integer),而本实例 pg_stat_activity.pid 是 64 位线程号({pid_int}),"
-            f"超出 integer 范围,无法按该签名调用:硬转 ::integer 会报 integer out of range,直接传 bigint 则报 "
-            f"function gs_get_explain(bigint) does not exist——这正是现场脚本报错的形态。"
-            f"请确认该内核是否提供 bigint 版本,或改用 gs_get_dn_explain(node_name, global_sessionid);"
-            f"分布式 CN 上的 pid 若在 integer 范围内则不受此限。")
-    rows = runner.run(RUNTIME_PLAN_SCRIPT, {"pid": pid_int})
+            f"本内核的 gs_get_explain 签名是 ({explain_args}),已注册脚本只覆盖 (bigint)(505.2.1 实测)与 (integer)(文档),"
+            f"未调用;请按实际签名补一条脚本。")
+    rows = runner.run(script, {"pid": str(pid_int)})
     lines = [str(next(iter(r.values()), "")) for r in (rows or []) if isinstance(r, dict)]
     text = "\n".join(ln for ln in lines if ln is not None).strip()
     if not text:
@@ -213,7 +224,7 @@ def active_session_for_sql(runner, sql_id: Any) -> Optional[Session]:
 
 
 def session_by_pid(runner, pid: Any) -> Optional[Session]:
-    rows = runner.run(SESSION_BY_PID_SCRIPT, {"pid": _to_int(pid, "pid")})
+    rows = runner.run(SESSION_BY_PID_SCRIPT, {"pid": str(_to_int(pid, "pid"))})   # String 参数位,SQL 里 ::bigint
     return _session_from(rows)
 
 
@@ -225,5 +236,5 @@ def kernel_info(runner) -> List[Dict[str, Any]]:
 
 __all__ = ["KernelFuncs", "Session", "NoRuntimePlan", "probe", "missing_note", "runtime_plan",
            "active_session_for_sql", "session_by_pid", "kernel_info", "QueryError",
-           "PROBE_SCRIPT", "RUNTIME_PLAN_SCRIPT", "ACTIVE_PID_SCRIPT", "SESSION_BY_PID_SCRIPT",
-           "KERNEL_INFO_SCRIPT"]
+           "PROBE_SCRIPT", "RUNTIME_PLAN_SCRIPT", "RUNTIME_PLAN_INT4_SCRIPT", "ACTIVE_PID_SCRIPT",
+           "SESSION_BY_PID_SCRIPT", "KERNEL_INFO_SCRIPT"]

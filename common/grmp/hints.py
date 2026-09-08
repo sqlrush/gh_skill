@@ -64,7 +64,8 @@ def _function_hint(text: str) -> str:
     return (
         f"函数 {name} 按「名字 + 实参类型({args or '无参'})」在当前 database 的 pg_proc 里找不到匹配。"
         f"报错里的实参类型是**调用时传的**,不代表已存在的重载。三种原因分开查:"
-        f"① 函数存在但实参类型不符(如文档要 integer 却传了 bigint,int8→int4 无隐式转换)——显式加 ::integer;"
+        f"① 函数存在但实参类型不符(int8→int4 无隐式转换;注意 505.2.1.SPC0600 实测签名是 gs_get_explain(bigint),"
+        f"文档写的 (integer) 已过时,pid 是 64 位线程号应按 bigint 传)——按 pg_proc 里的真实签名显式转型;"
         f"② pg_proc 逐 database 独立——在脚本连接的同一个 database 里执行 "
         f"SELECT proname, pg_get_function_arguments(oid) FROM pg_proc WHERE proname = '{name}',并与 postgres 库比对;"
         f"③ 集群升级后 catalog 升级未提交,新函数尚未写入。openGauss 本身没有 gs_get_explain / gs_get_kernel_info,"
