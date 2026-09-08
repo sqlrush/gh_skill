@@ -36,6 +36,7 @@ for parent in _HERE.parents:
 from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
 from common import explain_actual as ea  # noqa: E402
 from common import search_path as sp  # noqa: E402
+from common import catalog_scope as cs  # noqa: E402
 
 # SQL 已迁到 scripts/registry/sqltune/ —— 两条路径共用同一份定义
 VERSION_SCRIPT = "sqltune.version"
@@ -345,20 +346,24 @@ def _quoted_list(names: list[str]) -> str:
     return ",".join("'" + n.replace("'", "''") + "'" for n in names)
 
 
-def collect_tables(runner, names: list[str]) -> list[TableInfo]:
+def collect_tables(runner, names: list[str], scope=None) -> list[TableInfo]:
     if not names:
         return []
     rows = runner.run(TABLES_SCRIPT, {"names": _quoted_list(names)})
+    if scope is not None:   # 同名表跨 schema:只留本次 SQL 所在 schema 的行(common/catalog_scope.py)
+        rows = cs.keep_rows(rows, scope, table_key="relname", schema_key="nspname")
     return [TableInfo(r["nspname"], r["relname"], _pages(r["relpages"]),
                       as_int(r["reltuples"]), _pages(r["curpages"]),
                       r["relkind"], as_float(r["size_mb"]))
             for r in rows]
 
 
-def collect_indexes(runner, names: list[str]) -> list[IndexInfo]:
+def collect_indexes(runner, names: list[str], scope=None) -> list[IndexInfo]:
     if not names:
         return []
     rows = runner.run(INDEXES_SCRIPT, {"names": _quoted_list(names)})
+    if scope is not None:
+        rows = cs.keep_rows(rows, scope, table_key="table_name", schema_key="schema_name")
     # bool("f") 是 True —— 直接 bool() 会把每个索引都报成 UNIQUE/PRIMARY
     # index_relpages 同样是 double precision（"128.0"），走 _pages 截断
     return [IndexInfo(r["table_name"], r["index_name"], as_bool(r["indisunique"]),
@@ -367,10 +372,12 @@ def collect_indexes(runner, names: list[str]) -> list[IndexInfo]:
             for r in rows]
 
 
-def collect_column_stats(runner, names: list[str]) -> list[ColumnStat]:
+def collect_column_stats(runner, names: list[str], scope=None) -> list[ColumnStat]:
     if not names:
         return []
     rows = runner.run(COLUMN_STATS_SCRIPT, {"names": _quoted_list(names)})
+    if scope is not None:
+        rows = cs.keep_rows(rows, scope, table_key="tablename", schema_key="schemaname")
     # correlation 经常是 NULL，默认值给 None 而不是 0.0：0.0 会被读成
     # 「物理顺序与索引顺序完全无关」，那是一个结论，不是「不知道」。
     # 协议把 NULL 与真空串渲染成同一个值，这里只能把空串一律当 NULL。
@@ -388,10 +395,12 @@ def collect_gucs(runner) -> list[GUC]:
     return [GUC(r["name"], r["setting"], r["unit"]) for r in rows]
 
 
-def collect_stats_freshness(runner, names: list[str]) -> list[StatsFreshness]:
+def collect_stats_freshness(runner, names: list[str], scope=None) -> list[StatsFreshness]:
     if not names:
         return []
     rows = runner.run(STATS_FRESHNESS_SCRIPT, {"names": _quoted_list(names)})
+    if scope is not None:
+        rows = cs.keep_rows(rows, scope, table_key="relname", schema_key="schemaname")
     # n_live_tup/n_dead_tup 在 openGauss 里是 bigint，不像 relpages 那样带小数
     return [StatsFreshness(r["schemaname"], r["relname"],
                            as_int(r["n_live_tup"]), as_int(r["n_dead_tup"]),
@@ -440,6 +449,8 @@ def collect(runner, db, sql_text: str, do_analyze: bool, schema: str = "") -> Ev
             sp_note = str(exc)
         plan = explain(db, sql_text, do_analyze)
     names = extract_tables(sql_text)
+    # 目录行按 schema 过滤:SQL 里显式写的 schema.表 优先,其次本次解析出的 schema;都没有就不过滤
+    scope = cs.Scope(explicit=cs.explicit_schemas(extract_table_refs(sql_text)), default=schema or "")
     return Evidence(
         sql=sql_text,
         version=version,
@@ -449,11 +460,11 @@ def collect(runner, db, sql_text: str, do_analyze: bool, schema: str = "") -> Ev
         search_path=applied,
         search_path_note=sp_note,
         findings=scan_plan(plan),
-        tables=collect_tables(runner, names),
-        indexes=collect_indexes(runner, names),
-        columns=collect_column_stats(runner, names),
+        tables=collect_tables(runner, names, scope),
+        indexes=collect_indexes(runner, names, scope),
+        columns=collect_column_stats(runner, names, scope),
         gucs=collect_gucs(runner),
-        freshness=collect_stats_freshness(runner, names),
+        freshness=collect_stats_freshness(runner, names, scope),
     )
 
 

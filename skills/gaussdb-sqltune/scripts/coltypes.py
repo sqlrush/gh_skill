@@ -29,11 +29,13 @@ def _quoted_list(names: list[str]) -> str:
     return ",".join("'" + n.replace("'", "''") + "'" for n in names)
 
 
-def infer_types(runner, sql_text: str) -> list:
+def infer_types(runner, sql_text: str, schema: str = "") -> list:
     """Per-placeholder column type (or None), aligned with substitute() order.
 
     列名取自各占位符的左上下文；同名列在多张表里类型冲突时保守放弃
     （返回 None，交回启发式）。查询失败同样全量降级。
+    知道 SQL 所在 schema 时先把别的 schema 里同名表的列剔掉(common/catalog_scope.py):
+    现场同名表跨 schema,不剔的话类型「冲突」就放弃,合成 'test' 塞进数值列又是一个 400。
     """
     contexts = placeholder.placeholder_contexts(sql_text)
     if not contexts:
@@ -48,6 +50,10 @@ def infer_types(runner, sql_text: str) -> list:
         rows = runner.run(COLUMN_TYPES_SCRIPT,
                           {"tables": _quoted_list(tables),
                            "columns": _quoted_list(wanted)})
+        from common import catalog_scope as cs
+        scope = cs.Scope(explicit=cs.explicit_schemas(evidence.extract_table_refs(sql_text)),
+                         default=schema or "")
+        rows = cs.keep_rows(rows, scope, table_key="table_name", schema_key="schema_name")
         mapping = _unambiguous((r["attname"], r["type_name"]) for r in rows)
     except Exception as exc:  # 探测是增强,不是硬依赖——失败就退回启发式
         print(f"warning: 列类型探测失败,占位符替换退回启发式: {exc}",
