@@ -19,7 +19,7 @@ import argparse
 import json
 import pathlib
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 _HERE = pathlib.Path(__file__).resolve()
@@ -32,6 +32,7 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
 import coltypes  # noqa: E402
 import common  # noqa: E402
 from common import access  # noqa: E402
+from common import kernel_funcs as kf  # noqa: E402
 from common.grmp.statement import (  # noqa: E402
     ExplainNotAllowed,
     ensure_explainable,
@@ -99,6 +100,38 @@ class TuneResult:
     verified_indexes: list = field(default_factory=list)
     index_verify_note: str = ""
     derivation_report: str = ""
+    # 运行态计划(GaussDB 私有 gs_get_explain):按 sql_id 找到正在执行的会话时才有;
+    # 没有时 runtime_note 说明原因(openGauss 为空串——它本来就没有这个函数)。
+    runtime_plan: str = ""
+    runtime_plan_pid: int = 0
+    runtime_note: str = ""
+
+
+# 运行态计划依赖的白名单脚本(走中间件必须先注册;交付闸按脚本名全串在 skills/ 里检索,故写全):
+#   explain.kernel_funcs / explain.active_pid / explain.runtime_plan
+def _runtime_plan_for(runner, sql_id) -> tuple:
+    """(plan, pid, note)。尽力而为:任何失败都只落到 note,不影响调优主流程。
+
+    gs_get_explain 只能看**正在执行**的语句,所以先按 unique_sql_id 在 pg_stat_activity 找活跃会话;
+    找不到是常态(SQL 早跑完了),说明一句即可。函数在但返回为空按文档前提说明(track_activities /
+    plan_collect_thresh)。openGauss 没有这个函数,不说「该有而没有」。
+    """
+    probe = kf.probe(runner)
+    if not probe.has_explain:
+        return "", 0, kf.missing_note(probe)
+    try:
+        sess = kf.active_session_for_sql(runner, sql_id)
+    except (access.QueryError, common.DBError, ValueError) as exc:
+        return "", 0, f"定位正在执行该 SQL 的会话失败:{exc}"
+    if sess is None:
+        return "", 0, ("该 SQL 当前没有正在执行的会话,未取运行态计划——gs_get_explain 只能看正在执行的语句;"
+                       "上面的 EXPLAIN 估算计划仍然有效。")
+    try:
+        return kf.runtime_plan(runner, sess.pid, probe.explain_args), sess.pid, ""
+    except kf.NoRuntimePlan as exc:
+        return "", sess.pid, str(exc)
+    except (access.QueryError, common.DBError) as exc:
+        return "", sess.pid, f"gs_get_explain 调用失败:{exc}"
 
 
 _NO_HYPOPG_BODY = (
@@ -267,8 +300,10 @@ def tune_by_id(runner, db, raw_id: str, binds: list[str], do_analyze: bool) -> T
             f"track_activity_query_size 限制了留存长度，数据库里就没有完整 SQL。"
             f"无法对半截 SQL 做调优。请改用 `--sql-stdin` 传入完整 SQL 文本"
             f"（或调大 track_activity_query_size 并让该 SQL 重新执行后再按 id 取）。")
-    return _tune(runner, db, original_sql=fr.sql, binds=binds, do_analyze=do_analyze,
-                 sql_id=fr.sql_id, source=fr.source, schema=fr.schema)
+    tr = _tune(runner, db, original_sql=fr.sql, binds=binds, do_analyze=do_analyze,
+               sql_id=fr.sql_id, source=fr.source, schema=fr.schema)
+    plan, pid, note = _runtime_plan_for(runner, fr.sql_id)
+    return replace(tr, runtime_plan=plan, runtime_plan_pid=pid, runtime_note=note)
 
 
 def tune_by_sql(runner, db, sql_text: str, binds: list[str], do_analyze: bool) -> TuneResult:
@@ -335,6 +370,19 @@ def sqltune_report(tr: TuneResult) -> str:
 
     out += evidence_report(tr.evidence)
 
+    # 运行态计划紧跟估算计划:两者不一致时以运行态为准,这是 gs_get_explain 存在的全部意义。
+    # getattr:别的测试用 SimpleNamespace 造 TuneResult 的替身,没有这三个字段也不能炸。
+    runtime_plan = getattr(tr, "runtime_plan", "")
+    runtime_note = getattr(tr, "runtime_note", "")
+    if runtime_plan:
+        out += (f"\n## Runtime Plan (gs_get_explain, pid={getattr(tr, 'runtime_plan_pid', 0)})\n\n"
+                "> 内核返回的**运行态计划**:该会话此刻实际在走的计划,未执行该 SQL。"
+                "与上面的 EXPLAIN 估算计划不同时,以运行态计划为准分析"
+                "(估算计划受绑定值 / 统计信息 / 计划跳变影响)。\n\n" +
+                render.code_block("", runtime_plan) + "\n")
+    elif runtime_note:
+        out += "\n## Runtime Plan\n\n> " + runtime_note + "\n"
+
     # 客户知识库对这条 SQL 与计划发现怎么说——放在结论性小节之前,处置建议以它为首选依据。
     out += "\n" + kb_section(tr)[0]
 
@@ -382,6 +430,9 @@ def _to_jsonable(tr: TuneResult) -> dict:
         "verified_indexes": [c.__dict__ for c in tr.verified_indexes],
         "index_verify_note": tr.index_verify_note,
         "derivation_report": tr.derivation_report,
+        "runtime_plan": getattr(tr, "runtime_plan", ""),
+        "runtime_plan_pid": getattr(tr, "runtime_plan_pid", 0),
+        "runtime_note": getattr(tr, "runtime_note", ""),
         "kb_refs": kb_section(tr)[1],
     }
 

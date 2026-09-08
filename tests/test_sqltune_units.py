@@ -219,6 +219,85 @@ def test_count_placeholders():
     assert sqlfetch.count_placeholders("a::int") == 0  # cast, not placeholder
 
 
+# --- 运行态计划(gs_get_explain,GaussDB 私有):按 sql_id 找正在执行的会话,有就附一节 ----------
+
+from common import kernel_funcs as kf  # noqa: E402
+
+_GAUSS = "(GaussDB Kernel V500R002C10 build 1) compiled at 2025"
+_OG = "(openGauss-lite 5.0.3 build x) compiled at 2024"
+
+
+class _RtRunner:
+    def __init__(self, version, has_explain=True, session=True, plan="Index Scan rt"):
+        self.version, self.has_explain, self.session, self.plan = version, has_explain, session, plan
+
+    def run(self, script, values=None):
+        if script == kf.PROBE_SCRIPT:
+            rows = [{"item": "version", "detail": self.version}]
+            if self.has_explain:
+                rows.append({"item": "func:gs_get_explain", "detail": "integer"})
+            return rows
+        if script == kf.ACTIVE_PID_SCRIPT:
+            return [{"pid": "42", "query": "select 1", "query_start": ""}] if self.session else []
+        if script == kf.RUNTIME_PLAN_SCRIPT:
+            return [{"plan": self.plan}]
+        raise AssertionError(script)
+
+
+def _tr(**kw):
+    import sqltune
+    sub = placeholder.substitute("SELECT 1", [], [])
+    ev = evidence.Evidence(sql="SELECT 1", version="og", plan="Seq Scan", analyzed=False)
+    return sqltune.TuneResult(original_sql="SELECT 1", substitution=sub, evidence=ev, **kw)
+
+
+def test_report_shows_runtime_plan_section_when_present():
+    import sqltune
+    out = sqltune.sqltune_report(_tr(sql_id="1", runtime_plan="Index Scan rt", runtime_plan_pid=42))
+    assert "## Runtime Plan" in out and "gs_get_explain" in out and "42" in out
+    assert "Index Scan rt" in out and "运行态" in out
+    assert out.index("## Runtime Plan") > out.index("## Execution Plan")     # 紧跟估算计划之后
+
+
+def test_report_shows_runtime_note_when_plan_unavailable():
+    import sqltune
+    out = sqltune.sqltune_report(_tr(sql_id="1", runtime_note="该 SQL 当前没有正在执行的会话"))
+    assert "## Runtime Plan" in out and "没有正在执行" in out
+
+
+def test_report_is_silent_without_runtime_info():
+    import sqltune
+    assert "Runtime Plan" not in sqltune.sqltune_report(_tr(sql_id="1"))
+
+
+def test_runtime_plan_for_finds_active_session_and_fetches_plan():
+    import sqltune
+    assert sqltune._runtime_plan_for(_RtRunner(_GAUSS), "825712617") == ("Index Scan rt", 42, "")
+
+
+def test_runtime_plan_for_notes_when_no_active_session():
+    import sqltune
+    plan, pid, note = sqltune._runtime_plan_for(_RtRunner(_GAUSS, session=False), "1")
+    assert plan == "" and pid == 0 and "正在执行" in note
+
+
+def test_runtime_plan_for_on_opengauss_is_silent():
+    import sqltune
+    assert sqltune._runtime_plan_for(_RtRunner(_OG, has_explain=False), "1") == ("", 0, "")
+
+
+def test_runtime_plan_for_on_gaussdb_missing_function_explains():
+    import sqltune
+    plan, pid, note = sqltune._runtime_plan_for(_RtRunner(_GAUSS, has_explain=False), "1")
+    assert plan == "" and "GaussDB" in note and "pg_proc" in note
+
+
+def test_runtime_plan_for_empty_plan_reports_preconditions():
+    import sqltune
+    plan, pid, note = sqltune._runtime_plan_for(_RtRunner(_GAUSS, plan=""), "1")
+    assert plan == "" and "plan_collect_thresh" in note
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

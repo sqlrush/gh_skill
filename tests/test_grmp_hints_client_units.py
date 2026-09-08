@@ -30,6 +30,46 @@ def test_explain_matches_known_patterns_and_keeps_silent_otherwise():
     assert hints.explain("") == ""
 
 
+# --- 2026-09-07 现场四类报错:每类都要翻成一句能定位到动作的中文 -----------------------
+
+RECOVERY = ("SQL execution failed via JDBC on instance 5021a3af: ERROR: Recovery is in progress. "
+            "建议: WAL control functions cannot be executed during recovery. "
+            "在位置: referenced column: diff_xlog_size")
+PERM = "ERROR: Permission denied for relation pg_user_status."
+FUNC_MISSING = ("ERROR: function gs_get_explain(bigint) does not exist "
+                "建议: No function matches the given name and argument types. "
+                "You might need to add explicit type casts. (SQLSTATE 42883)")
+
+
+def test_recovery_in_progress_is_explained_as_standby():
+    """「Recovery is in progress」是被派到备机的第二种形态(第一种是 unlogged 表),
+    提示要点名 WAL 控制函数、要给出「换主库 IP」这个动作。"""
+    hint = hints.explain(RECOVERY)
+    assert "备机" in hint and "WAL" in hint and "主库" in hint
+    # 只命中「WAL control functions … during recovery」这一句也要认得
+    assert "备机" in hints.explain("WAL control functions cannot be executed during recovery")
+
+
+def test_permission_denied_names_the_object_and_the_action():
+    hint = hints.explain(PERM)
+    assert "权限" in hint and "pg_user_status" in hint and "授" in hint
+    # 大小写不同的 GaussDB 写法(Permission)与 PG 写法(permission)都要认
+    assert "权限" in hints.explain("ERROR: permission denied for relation statement_history")
+
+
+def test_function_missing_hint_separates_the_three_causes():
+    """函数级 does not exist 与视图/列的 does not exist 不能是同一句泛话:
+    报错里的实参类型是调用时传的,函数在但类型不符也报这句——三种原因都得点到。"""
+    hint = hints.explain(FUNC_MISSING)
+    assert "gs_get_explain" in hint                              # 点名函数
+    assert "参数类型" in hint or "实参" in hint                     # ① 类型不符
+    assert "pg_proc" in hint and "database" in hint               # ② 逐库 catalog
+    assert "升级" in hint                                         # ③ catalog 未升级
+    # 通用的对象不存在仍走老提示,不被函数提示抢走
+    generic = hints.explain("ERROR: relation \"dbe_perf.foo\" does not exist")
+    assert "版本差异" in generic and "pg_proc" not in generic
+
+
 def test_with_hint_appends_without_altering_original():
     out = hints.with_hint("请求 /x 失败：" + STANDBY)
     assert out.startswith("请求 /x 失败：" + STANDBY) and "\n提示:" in out and "主库 IP" in out

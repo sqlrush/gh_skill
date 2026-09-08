@@ -876,6 +876,10 @@ python3 $SKILLS/wdr/scripts/wdr.py render \
 | WDR `"WDR 未开启"` 或 `"快照不足"` | 实例 `enable_wdr_snapshot=off`，或快照数量不足 2 个 | 联系 DBA 执行 `ALTER SYSTEM SET enable_wdr_snapshot=on` 并 reload/重启；或手动 `SELECT create_wdr_snapshot()` 创建快照，但**本技能脚本不代为执行** |
 | `python3: command not found` | Python 未安装，或未加入 PATH | 参考 1.2 节安装 Python |
 | sqlfetch / sqltune / sqlreview / proctune 报 `HTTP 400`，错误里有 `cannot be accessed on the standby` | 登录的 dataIp 是**备机**：`dbe_perf.statement_history` 是 unlogged 表，备机读不到（slowsql/topsql 查的是内存视图 `dbe_perf.statement`，不受影响） | 用主库 IP 重新 `gaussdb-login`（登录输出的「主备」一行会直接告诉你）。不换也能用：脚本自动退到 `dbe_perf.statement`，拿到的是归一化 SQL，参数值用 `--bind` 补 |
+| 报错 `Recovery is in progress` / `WAL control functions cannot be executed during recovery` | 任务被派到了**备机**（实例处于恢复态），脚本里有恢复期禁用的 WAL 控制函数（如 `pg_current_xlog_location()`）。skill 输出会在原文后附「提示:当前连接的是备机…」 | 用主库 IP 重新 `gaussdb-login`；若是调度侧派发，核对 dataIp 的主备属性。我方 95 条脚本只有 `health.replication` 用 WAL 函数，且是纯算术的 `pg_xlog_location_diff`，备机上不触发 |
+| 报错 `Permission denied for relation <对象>` | GRMP 执行账号对该对象没有 SELECT 权限（`pg_user_status` 这类系统表默认只对高权限角色开放）。skill 输出会点名对象并附「提示:…请授予 … 的 SELECT 权限」 | 请 DBA 给执行账号授权，或让脚本改用有权限的视图 |
+| 报错 `function <名>(<类型>) does not exist` | 按「名字 + 实参类型」在**当前 database** 的 `pg_proc` 里找不到匹配。报错里的类型是**调用时传的**，不代表已存在的重载：函数不存在、函数在但类型不符（如文档要 `integer` 却传 `bigint`）、catalog 未升级，三种都报这一句。skill 输出会附三种原因的核对办法 | 在脚本连接的**同一个 database** 里执行 `SELECT proname, pg_get_function_arguments(oid) FROM pg_proc WHERE proname='<名>'`：有行看 args 改类型（GaussDB 的 `pg_stat_activity.pid` 是 64 位线程号，放不进 `integer`），零行再与 `postgres` 库比对 / 核对升级是否提交 |
+| explain `--pid` / sqltune 报告说「目标实例是 GaussDB…应包含 gs_get_explain / gs_get_kernel_info 但查不到」 | 内核探测（`explain.kernel_funcs`）发现 `version()` 是 GaussDB，但两个私有函数不在当前库的 `pg_proc` 里。openGauss 上不会出这句（它本来就没有） | 同上一行的核对办法；确认前 skill 已自动退回标准 EXPLAIN / 标准视图，功能不中断 |
 
 ---
 

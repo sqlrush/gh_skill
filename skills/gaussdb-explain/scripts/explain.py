@@ -26,12 +26,30 @@ for _anc in _HERE.parents:  # locate common/ (repo root or install dir)
 
 import common  # noqa: E402
 from common import access  # noqa: E402
+from common import kernel_funcs as kf  # noqa: E402
 from common.grmp import statement as stmt  # noqa: E402
 from common.grmp.statement import (  # noqa: E402
     ExplainNotAllowed,
     ensure_explainable,
 )
 import render  # noqa: E402
+
+# --pid 路径依赖的白名单脚本(走中间件必须先注册;交付闸按脚本名全串在 skills/ 里检索,故写全):
+#   explain.kernel_funcs   探测 version() 与 gs_get_explain / gs_get_kernel_info 是否存在
+#   explain.runtime_plan   gs_get_explain({{pid}}::integer) —— GaussDB 私有的运行态计划
+#   explain.session_by_pid 按 pid 取该会话当前语句,内核没有 gs_get_explain 时退回 EXPLAIN 用
+#
+# 2026-09 现场四类报错之一就是脚本直接调 gs_get_explain 报 does not exist:openGauss 从来没有它,
+# GaussDB 缺失时也可能是 catalog 未升级 / 逐库不一致 / 实参类型不符。所以先探测再用,
+# 两条路径同一份报告形状,只在「来源」一行注明拿到的是运行态计划还是估算计划。
+
+
+class PidNotFound(Exception):
+    """--pid 指定的会话不存在,或它此刻没有在执行任何语句。"""
+
+
+class ShapeRejected(Exception):
+    """从会话里取到的 SQL 过不了形态白名单(DML / 多语句 / 维护语句)。"""
 
 # 本 skill 唯一的查询点就是「对用户给的任意 SQL 做 EXPLAIN」。
 # 它**没有可迁到 scripts/registry/ 的部分**：白名单模型按逻辑脚本名放行
@@ -142,9 +160,16 @@ def scan_plan(plan_text: str) -> list[Finding]:
     return out
 
 
-def explain_report(sql_text: str, plan: str, findings: list[Finding]) -> str:
-    out = ("## SQL\n\n" + render.code_block("sql", render.truncate(sql_text, 2000)) +
-           "\n## Execution Plan\n\n" + render.code_block("", plan))
+def explain_report(sql_text: str, plan: str, findings: list[Finding],
+                   source: str = "", notes: tuple = ()) -> str:
+    sql_shown = sql_text if sql_text.strip() else "(未取到 SQL 文本)"
+    out = ("## SQL\n\n" + render.code_block("sql", render.truncate(sql_shown, 2000)) +
+           "\n## Execution Plan\n\n")
+    if source:
+        out += f"> 来源:{source}\n\n"
+    out += render.code_block("", plan)
+    for n in notes:
+        out += f"\n> {n}\n"
     if not findings:
         return out + "\n## Findings\n\nNo deterministic risk patterns detected.\n"
     out += "\n## Findings\n\n"
@@ -153,17 +178,81 @@ def explain_report(sql_text: str, plan: str, findings: list[Finding]) -> str:
     return out
 
 
+def explain_by_pid(runner, pid: int, analyze: bool):
+    """--pid 路径。返回 (sql_text, plan, source, notes)。
+
+    内核有 gs_get_explain → 运行态计划(不执行任何 SQL);没有、或函数在但返回为空、或调用失败
+    → 取该会话当前语句走 EXPLAIN 模板,并把原因写进 notes。GaussDB 该有而没有时 notes 里带中文说明。
+    会话不存在抛 PidNotFound;取到的 SQL 过不了形态白名单抛 ShapeRejected。
+    """
+    notes: list[str] = []
+    probe = kf.probe(runner)
+    note = kf.missing_note(probe)
+    if note:
+        notes.append(note)
+
+    sess = kf.session_by_pid(runner, pid)
+    sql_text = sess.query if sess is not None else ""
+
+    if probe.has_explain:
+        try:
+            plan = kf.runtime_plan(runner, pid, probe.explain_args)
+            return (sql_text, plan,
+                    f"gs_get_explain 运行态计划(pid={pid}):内核里该会话此刻实际执行的计划,未执行该 SQL",
+                    tuple(notes))
+        except kf.NoRuntimePlan as exc:
+            notes.append(f"{exc} 已退回 EXPLAIN 估算计划。")
+        except access.QueryError as exc:
+            notes.append(f"gs_get_explain 调用失败:{exc}\n已退回 EXPLAIN 估算计划。")
+
+    if sess is None or not sql_text.strip():
+        raise PidNotFound(
+            f"pid {pid} 没有对应的会话,或该会话当前没有正在执行的语句(pg_stat_activity 里查不到);"
+            f"退回 EXPLAIN 需要 SQL 文本,无法继续。")
+    reject = shape_reject(sql_text)
+    if reject:
+        raise ShapeRejected(reject)
+    ensure_explainable(sql_text, analyze=analyze)
+    plan = explain_via_script(runner, sql_text, analyze)
+    return (sql_text, plan,
+            f"EXPLAIN 估算计划(会话 pid={pid} 的当前语句;内核无 gs_get_explain 或其未返回计划)",
+            tuple(notes))
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="explain.py",
                                  description="EXPLAIN a statement with risk findings")
     ap.add_argument("-c", "--conn", default="", help="连接名（省略则用 gaussdb-login 建立的会话）")
-    ap.add_argument("--sql-stdin", action="store_true", required=True,
+    ap.add_argument("--sql-stdin", action="store_true",
                     help="read SQL text from stdin")
+    ap.add_argument("--pid", type=int, default=None,
+                    help="按后台线程 pid 取计划:内核有 gs_get_explain(GaussDB)时取运行态计划,"
+                         "否则取该会话当前语句走 EXPLAIN")
     ap.add_argument("--analyze", action="store_true",
                     help="EXPLAIN ANALYZE（真执行该 SQL；只受理只读语句）")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
     ap.add_argument("--timeout", type=int, default=None)
     args = ap.parse_args(argv)
+    if args.pid is None and not args.sql_stdin:
+        ap.error("需要 --sql-stdin 或 --pid 二选一")
+    if args.pid is not None and args.sql_stdin:
+        ap.error("--sql-stdin 与 --pid 不能同时给")
+
+    if args.pid is not None:
+        try:
+            runner = access.for_conn(args.conn, timeout=args.timeout)
+            sql_text, plan, source, notes = explain_by_pid(runner, args.pid, args.analyze)
+        except ShapeRejected as exc:
+            print(str(exc))
+            return 1
+        except (PidNotFound, ExplainNotAllowed) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        except (common.ConfigError, common.CredentialError, common.DBError,
+                access.AccessError, access.QueryError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        return _emit(args, sql_text, plan, source, notes)
 
     sql_text = sys.stdin.read()
     if not sql_text.strip():
@@ -200,14 +289,19 @@ def main(argv: Optional[list[str]] = None) -> int:
             access.AccessError, access.QueryError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    script = "explain.plan_text_analyze" if args.analyze else "explain.plan_text"
+    return _emit(args, sql_text, plan, f"EXPLAIN 模板({script})", ())
+
+
+def _emit(args, sql_text: str, plan: str, source: str, notes: tuple) -> int:
     try:
         findings = scan_plan(plan)
         if args.format == "json":
-            print(json.dumps({"sql": sql_text, "plan": plan,
+            print(json.dumps({"sql": sql_text, "plan": plan, "source": source, "notes": list(notes),
                               "findings": [f.__dict__ for f in findings]},
                              ensure_ascii=False, indent=2))
         else:
-            print(explain_report(sql_text, plan, findings), end="")
+            print(explain_report(sql_text, plan, findings, source=source, notes=notes), end="")
         return 0
     except (ValueError, common.DBError) as exc:
         print(f"error: {exc}", file=sys.stderr)

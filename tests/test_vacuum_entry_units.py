@@ -56,11 +56,14 @@ def _worker_row(**kw):
 
 
 class _Runner:
-    def __init__(self, dead=None, settings=None, workers=None, xmin=None):
+    def __init__(self, dead=None, settings=None, workers=None, xmin=None,
+                 version="(openGauss-lite 5.0.3 build x)", kernel_info=None):
         self._dead = dead if dead is not None else []
         self._settings = settings if settings is not None else _SETTINGS_ROWS
         self._workers = workers if workers is not None else []
         self._xmin = xmin if xmin is not None else []
+        self._version = version
+        self._kernel = kernel_info            # None = 内核没有 gs_get_kernel_info
 
     def run(self, script, values=None):
         if script == vacuum.DEAD_SCRIPT:
@@ -71,6 +74,13 @@ class _Runner:
             return self._workers
         if script == vacuum.XMIN_SCRIPT:
             return self._xmin
+        if script == vacuum.kf.PROBE_SCRIPT:
+            rows = [{"item": "version", "detail": self._version}]
+            if self._kernel is not None:
+                rows.append({"item": "func:gs_get_kernel_info", "detail": ""})
+            return rows
+        if script == vacuum.kf.KERNEL_INFO_SCRIPT:
+            return list(self._kernel or [])
         raise AssertionError("没料到的脚本 %s" % script)
 
 
@@ -251,6 +261,50 @@ def test_no_xmin_blocker_also_says_so_explicitly():
     md = vacuum.render_markdown(rep)
     assert "阻塞" in md  # 该小节本身要出现，且要明说「没有」
     assert "7777" not in md and "8888" not in md
+
+
+# ---------------------------------------------------------------------------
+# 6b. 内核事务水位（gs_get_kernel_info，GaussDB 私有）：有就附一节原样列出，
+#     openGauss 没有就整节不出现，GaussDB 该有而没有要用中文说明。
+# ---------------------------------------------------------------------------
+_GAUSS = "(GaussDB Kernel V500R002C10 build 1) compiled at 2025"
+_KERNEL_ROWS = [
+    {"node_name": "dn1", "module": "XACT", "name": "recent_global_xmin", "value": "15805"},
+    {"node_name": "dn1", "module": "UNDO", "name": "global_recycle_xid", "value": "15805"},
+]
+
+
+def test_kernel_info_section_lists_metrics_when_the_kernel_has_the_function():
+    rep = vacuum.collect(_Runner(version=_GAUSS, kernel_info=_KERNEL_ROWS), limit=20, th=_th())
+    md = vacuum.render_markdown(rep)
+    assert "gs_get_kernel_info" in md and "XACT" in md and "recent_global_xmin" in md and "15805" in md
+    assert "指标" in md                      # 明说每行是指标不是事务——现场问过这个
+
+
+def test_kernel_info_is_silent_on_opengauss():
+    md = vacuum.render_markdown(vacuum.collect(_Runner(), limit=20, th=_th()))
+    assert "gs_get_kernel_info" not in md and "内核事务水位" not in md
+
+
+def test_kernel_info_missing_on_gaussdb_is_explained_in_chinese():
+    rep = vacuum.collect(_Runner(version=_GAUSS), limit=20, th=_th())
+    md = vacuum.render_markdown(rep)
+    assert "gs_get_kernel_info" in md and "GaussDB" in md and "pg_proc" in md and "升级" in md
+
+
+def test_kernel_info_call_failure_does_not_break_the_report():
+    from common.grmp.errors import QueryError
+
+    class _Boom(_Runner):
+        def run(self, script, values=None):
+            if script == vacuum.kf.KERNEL_INFO_SCRIPT:
+                raise QueryError("ERROR: Permission denied for relation gs_get_kernel_info.")
+            return super().run(script, values)
+
+    rep = vacuum.collect(_Boom(version=_GAUSS, kernel_info=_KERNEL_ROWS), limit=20, th=_th())
+    md = vacuum.render_markdown(rep)
+    assert "Permission denied" in md and "权限" in md     # 原文 + 中文提示都在
+    assert "风险表" in md                                  # 主体报告照常
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 ﻿---
 name: gaussdb-sqltune
-version: 2.2.1
+version: 2.3.0
 description: "通过内置脚本对 OpenGauss/GaussDB 的慢 SQL 做深度调优和证据化验证。仅在用户要定位慢 SQL 根因、给出索引/改写/GUC 调优建议、验证某个优化方案是否真的带来收益，或基于 sql_id、Top SQL、slow SQL、WDR 结果继续调优时使用，包括“优化这条 SQL”“这条 SQL 为什么慢并怎么改”“看看建什么索引”“这个改写有没有收益”“给我一套能落地的优化建议”等请求。触发后运行 scripts/sqltune.py 和 scripts/verify.py，输出带证据链、可解释原因和已验证收益的调优结论；如果用户只是想看 explain、执行计划、plan 对比，不要优先使用本 skill。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -61,6 +61,12 @@ metadata:
 2b. **系统对象 SQL —— 直接结束。** 若输出是「# SQL Tune — 系统对象 SQL,按策略跳过」（脚本正常退出，不是报错），说明这条 SQL 只访问系统表/系统视图。**到此为止**：把跳过的原因和涉及的对象如实转达给用户，不要重跑、不要换 `--sql-stdin` 再试、不要绕开脚本自己分析，也不要给出任何索引/改写/参数建议。可以提示排查方向在监控采集频率与系统整体负载，但那不属于本技能的调优输出。
 
 3. **合成值提醒——看小节标题，别看有没有这一节。** `## Placeholder Substitution (synthetic values)` 表示至少有一个值是脚本合成的：计划「形状」可靠，但行数/选择性是近似值，要把这点说清楚，并指出索引/改写验证用的就是这些合成值。若标题是 `## Placeholder Substitution (real values from --bind)`，说明每个占位符都用了调用方给的真实值，**此时不要再加合成值免责**，那会把可靠的结论说弱。替换值的 Source 列：`bind` = 调用方给的真实值；`type` = 按 catalog 真实列类型生成（类型可靠）；`rule`/`default` = 纯文本启发式猜测。若报 `invalid input syntax`，报错里会点名坏值出自哪个占位符；若提示 bind 顺序错位，核对 `--bind` 传值顺序后重试——**手上没有真实值就不要用 `--bind` 顶上去**，把报错原样告诉用户并索要该占位符的真实值。
+
+3b. **运行态计划——有就以它为准。** 按 unique_sql_id 调优时，脚本会探测内核：GaussDB 有 `gs_get_explain` 且这条 SQL
+   **此刻正有会话在执行**，报告里会多出 `## Runtime Plan (gs_get_explain, pid=…)`——那是内核里该会话实际在走的计划，
+   不是估算。它与 `## Execution Plan`（EXPLAIN 估算）不一致时，**计划走查以运行态为准**，并把差异本身当作一条发现
+   （多半是绑定值、统计信息过期或计划跳变）。没有这一节是常态（openGauss 没有该函数；或 SQL 早跑完了）；
+   若这一节只有一句说明（会话不在跑 / 函数返回为空 / GaussDB 该有而没有 / pid 超出 integer 范围），如实转达，不要自己补一个「运行态计划」。
 
 4. **加载方法论。** 阅读 `{baseDir}/references/tuning-methodology.md`，对照证据各节按其检查清单分析（`## Execution Plan`、`## Tables`、`## Indexes`、`## Column Statistics`、`## Key Parameters (GUC)`、`## Deterministic Findings`）。深度判断按需查 GaussDB 专项知识：CBO 与诊断边界 → `{baseDir}/references/gaussdb-cbo-and-diagnosis.md`；改写候选 → `{baseDir}/references/gaussdb-rewrite-patterns.md`；A 兼容库（`sql_compatibility='A'`）→ `{baseDir}/references/gaussdb-a-compat-gotchas.md`；分区表/分布式 → `{baseDir}/references/gaussdb-partition-distribution.md`。
 

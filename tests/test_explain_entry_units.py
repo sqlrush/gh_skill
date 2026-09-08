@@ -143,6 +143,97 @@ def test_semicolon_inside_a_literal_is_not_a_second_statement(monkeypatch):
     assert explain_mod.main(["--sql-stdin"]) == 0
 
 
+# --- --pid:有 gs_get_explain 走运行态计划,没有就取该会话的 SQL 退回 EXPLAIN --------------
+#
+# 现场(2026-09)脚本直接调 gs_get_explain 报「不存在」。我们的做法是先探测:GaussDB 有它就用,
+# openGauss / 缺失就退回,两条路径同一份报告形状,只是注明来源;GaussDB 该有而没有时给中文说明。
+
+from common import kernel_funcs as kf  # noqa: E402
+
+GAUSS_VER = "(GaussDB Kernel V500R002C10 build 1) compiled at 2025"
+OG_VER = "(openGauss-lite 5.0.3 build 89d144c2) compiled at 2024-07-31"
+
+
+class _KernelRunner:
+    """按脚本名分发的 runner:probe 行 / 运行态计划 / 会话查询 / EXPLAIN 模板。"""
+
+    def __init__(self, version, explain_args=None, plan="Runtime: Index Scan on t", session_query="SELECT 1"):
+        self.version, self.explain_args, self.plan, self.session_query = version, explain_args, plan, session_query
+        self.calls = []
+
+    def run(self, script, values=None):
+        self.calls.append(script)
+        if script == kf.PROBE_SCRIPT:
+            rows = [{"item": "version", "detail": self.version}]
+            if self.explain_args is not None:
+                rows.append({"item": "func:gs_get_explain", "detail": self.explain_args})
+            return rows
+        if script == kf.RUNTIME_PLAN_SCRIPT:
+            return [{"plan": self.plan}]
+        if script == kf.SESSION_BY_PID_SCRIPT:
+            return [{"pid": str(values["pid"]), "query": self.session_query, "query_start": "", "state": "active"}]
+        return [{"QUERY PLAN": "Seq Scan on t  (cost=0.00..1.00 rows=1 width=4)"}]
+
+
+def test_pid_uses_runtime_plan_when_the_kernel_has_gs_get_explain(monkeypatch, capsys):
+    r = _KernelRunner(GAUSS_VER, explain_args="integer")
+    monkeypatch.setattr(explain_mod.access, "for_conn", lambda *a, **k: r)
+    assert explain_mod.main(["--pid", "4321"]) == 0
+    out = capsys.readouterr().out
+    assert "Runtime: Index Scan on t" in out
+    assert "gs_get_explain" in out and "4321" in out and "运行态" in out       # 报告注明来源
+    assert kf.RUNTIME_PLAN_SCRIPT in r.calls and "explain.plan_text" not in r.calls
+
+
+def test_pid_falls_back_to_explain_when_function_is_absent(monkeypatch, capsys):
+    """openGauss:探到没有 → 取该 pid 的 SQL 走 EXPLAIN 模板,报告注明是估算计划。"""
+    r = _KernelRunner(OG_VER, explain_args=None, session_query="SELECT count(*) FROM t")
+    monkeypatch.setattr(explain_mod.access, "for_conn", lambda *a, **k: r)
+    assert explain_mod.main(["--pid", "4321"]) == 0
+    out = capsys.readouterr().out
+    assert "Seq Scan on t" in out and "SELECT count(*) FROM t" in out
+    assert "估算" in out and "EXPLAIN" in out
+    assert kf.SESSION_BY_PID_SCRIPT in r.calls and "explain.plan_text" in r.calls
+    assert "应包含" not in out                                             # openGauss 不该说「该有而没有」
+
+
+def test_pid_on_gaussdb_missing_function_explains_in_chinese_then_falls_back(monkeypatch, capsys):
+    r = _KernelRunner(GAUSS_VER, explain_args=None)
+    monkeypatch.setattr(explain_mod.access, "for_conn", lambda *a, **k: r)
+    assert explain_mod.main(["--pid", "4321"]) == 0
+    out = capsys.readouterr().out + capsys.readouterr().err
+    assert "GaussDB" in out and "gs_get_explain" in out and "pg_proc" in out and "升级" in out
+    assert "Seq Scan on t" in out                                          # 仍然给出了估算计划
+
+
+def test_pid_with_no_such_session_is_a_clear_error(monkeypatch, capsys):
+    class _Empty(_KernelRunner):
+        def run(self, script, values=None):
+            if script == kf.SESSION_BY_PID_SCRIPT:
+                return []
+            return super().run(script, values)
+    monkeypatch.setattr(explain_mod.access, "for_conn", lambda *a, **k: _Empty(OG_VER))
+    assert explain_mod.main(["--pid", "99"]) == 2
+    err = capsys.readouterr().err
+    assert "99" in err and "会话" in err
+
+
+def test_pid_runtime_plan_empty_reports_the_documented_preconditions(monkeypatch, capsys):
+    """函数在、返回却为空:按文档前提说明(track_activities / plan_collect_thresh),再退回 EXPLAIN。"""
+    r = _KernelRunner(GAUSS_VER, explain_args="integer", plan="")
+    monkeypatch.setattr(explain_mod.access, "for_conn", lambda *a, **k: r)
+    assert explain_mod.main(["--pid", "4321"]) == 0
+    out = capsys.readouterr().out
+    assert "plan_collect_thresh" in out and "track_activities" in out and "Seq Scan on t" in out
+
+
+def test_pid_and_sql_stdin_are_mutually_exclusive(monkeypatch, capsys):
+    import io
+    monkeypatch.setattr(sys, "stdin", io.StringIO("SELECT 1"))
+    with pytest.raises(SystemExit):
+        explain_mod.main(["--sql-stdin", "--pid", "1"])
+
+
 class _FailingRunner:
     """模拟 SQL 到数据库那里执行失败（打错字、表不存在）。"""
 
