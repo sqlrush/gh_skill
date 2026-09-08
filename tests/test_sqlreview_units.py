@@ -506,3 +506,34 @@ def test_report_json_is_machine_readable():
     assert payload["summary"]["error"] == 1
     assert payload["findings"][0]["rule_id"] == "DML001"
     assert payload["findings"][0]["severity"] == "error"
+
+
+def test_two_sessions_without_a_handle_is_a_clean_error_not_a_traceback(tmp_path, monkeypatch, capsys):
+    """场景矩阵抓到的:两个会话并存、不带句柄时 sqlreview --top 直接 Traceback——
+    别的 skill 的 for_conn 都在 try 里,只有它在 try 外面直接问 session.current()。要的是一句 error 加候选清单。"""
+    import importlib.util
+    import os
+    from common import session
+    from common.config import Connection
+
+    monkeypatch.setenv("GSDB_HOME", str(tmp_path))
+    monkeypatch.delenv(session.ENV_HANDLE, raising=False)
+    session.use(None)
+
+    def conn(ip, db):
+        return Connection(name="%s-%s" % (ip.replace(".", "-"), db), type="gaussdb", host="127.0.0.1",
+                          port=8769, database=db, user="grmp", driver="grmp", data_ip=ip, app="api")
+    session.save(conn("10.0.0.9", "core"))
+    session.save(conn("10.0.0.20", "report"))
+
+    spec = importlib.util.spec_from_file_location("sqlreview_two_sessions_under_test", _SCRIPTS / "sqlreview.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    try:
+        rc = mod.main(["--top", "3"])
+    finally:
+        os.environ.pop(session.ENV_HANDLE, None)
+        session.use(None)
+    err = capsys.readouterr().err
+    assert rc == 1 and "沙箱里有 2 个会话" in err and "report" in err and "Traceback" not in err

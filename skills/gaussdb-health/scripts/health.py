@@ -47,6 +47,7 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
 import aggregate  # noqa: E402
 import common  # noqa: E402
 from common import access  # noqa: E402
+from common import cli  # noqa: E402
 import collectors  # noqa: E402
 from model import HealthEvidence, Severity, worst  # noqa: E402
 from report import render_health, render_health_json  # noqa: E402
@@ -129,6 +130,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         description="Read-only health check: 8 local dimensions + 3 sub-skill "
                     "dimensions aggregated via subprocess (deterministic findings)")
     ap.add_argument("-c", "--conn", default="", help="连接名（省略则用 gaussdb-login 建立的会话）")
+    cli.add_session_arg(ap)
     ap.add_argument("--include", default="",
                     help="只采集这些维度(逗号分隔)。本地: overview,slowsql,xact,conn,logs,"
                          "repl,schema,concurrency；路由到子 skill: waits,lwlock,locks,bloat")
@@ -137,6 +139,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
     ap.add_argument("--timeout", type=int, default=None)
     args = ap.parse_args(argv)
+    cli.apply_session_arg(args)
 
     try:
         runner = access.for_conn(args.conn, timeout=args.timeout)

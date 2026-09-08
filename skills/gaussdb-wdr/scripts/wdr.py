@@ -32,6 +32,7 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
 
 import common  # noqa: E402
 from common import access  # noqa: E402
+from common import cli  # noqa: E402
 from collectors import collect_evidence  # noqa: E402
 from interp import load_evidence, load_interp  # noqa: E402
 from finalreport import render_report  # noqa: E402
@@ -111,11 +112,13 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     ps = sub.add_parser("snaps", help="list WDR snapshots + preflight")
     ps.add_argument("-c", "--conn", default="")
+    cli.add_session_arg(ps)
     ps.add_argument("--limit", type=int, default=20, help="列出最近 N 个快照")
     ps.add_argument("--timeout", type=int, default=None)
 
     pc = sub.add_parser("collect", help="collect snapshot-delta evidence + findings")
     pc.add_argument("-c", "--conn", default="")
+    cli.add_session_arg(pc)
     pc.add_argument("--begin", type=int, default=0, help="begin snapshot id (required)")
     pc.add_argument("--end", type=int, default=0, help="end snapshot id (required, > begin)")
     pc.add_argument("--scope", default="node", help="cluster | node")
@@ -134,6 +137,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     pr.add_argument("--out", default="", help="落盘到文件（默认打印到 stdout）")
 
     args = ap.parse_args(argv)
+
+    cli.apply_session_arg(args)
     if args.cmd == "snaps":
         return _cmd_snaps(args)
     if args.cmd == "collect":

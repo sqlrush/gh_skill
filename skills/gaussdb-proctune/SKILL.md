@@ -1,6 +1,6 @@
 ﻿---
 name: gaussdb-proctune
-version: 2.0.2
+version: 2.0.3
 description: "通过内置脚本对 OpenGauss/GaussDB 存储过程做深度调优和证据化验证。仅在用户要定位慢过程根因、分析并优化过程里的游标 SELECT、验证索引或改写是否真的有效、拿到可落地且带收益证明的过程优化建议时使用，包括“优化这个存储过程”“调一下这个过程”“看看游标 SQL 怎么优化”“这个过程有没有可验证的优化方案”“这个过程改哪里最值”“帮我验证这个优化思路有没有收益”等请求。触发后运行 scripts/proctune.py 和 scripts/verify.py，输出带证据链、可解释原因和已验证收益的过程调优结论；如果用户只是想看过程源码、找热点、判断是不是循环里查库，不要优先使用本 skill，应先走 gaussdb-procinfo。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -42,6 +42,7 @@ metadata:
    `python3 {baseDir}/../gaussdb-login/scripts/login.py --status`。
    没有会话就先调 **gaussdb-login**：它读 `$GSDB_HOME/config.yaml`的首行 `connection_mode`，是 `gsql` 就把可选连接列成菜单让用户挑，是 `api` 就引导用户给出要访问的数据库。
    登录之后本 skill **不需要传 `-c`** —— 省略时自动用登录选定的那条连接；只有要临时换一个库时才显式传 `-c <连接名>`。
+   **api 模式下每条命令都要带 `--session <句柄>`**：句柄是 gaussdb-login 登录成功时输出的那一串（也可放在环境变量 `GSDB_SESSION` 里）。同一沙箱可能有别人的会话，脚本分不清时会拒绝执行并列出候选会话；这时把清单转给用户确认要用哪个库，或让用户重新登录，**不要自己挑一个**。沙箱里只有一个会话时可以不带。
    **不要自己去读 config.yaml 挑名字**：不同应用下可能有同名连接，猜错会在另一个库上做诊断，而输出看起来完全正常。口令在 `{baseDir}/../common/credentials/*.enc`，由脚本解密，**你不要去读/解密它**。
 2. **采集证据——两条命令，中途不停。**
 

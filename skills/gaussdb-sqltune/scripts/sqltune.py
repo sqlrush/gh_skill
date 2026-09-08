@@ -32,6 +32,7 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
 import coltypes  # noqa: E402
 import common  # noqa: E402
 from common import access  # noqa: E402
+from common import cli  # noqa: E402
 from common import kernel_funcs as kf  # noqa: E402
 from common.grmp.statement import (  # noqa: E402
     ExplainNotAllowed,
@@ -300,8 +301,20 @@ def tune_by_id(runner, db, raw_id: str, binds: list[str], do_analyze: bool) -> T
             f"track_activity_query_size 限制了留存长度，数据库里就没有完整 SQL。"
             f"无法对半截 SQL 做调优。请改用 `--sql-stdin` 传入完整 SQL 文本"
             f"（或调大 track_activity_query_size 并让该 SQL 重新执行后再按 id 取）。")
-    tr = _tune(runner, db, original_sql=fr.sql, binds=binds, do_analyze=do_analyze,
-               sql_id=fr.sql_id, source=fr.source, schema=fr.schema)
+    try:
+        tr = _tune(runner, db, original_sql=fr.sql, binds=binds, do_analyze=do_analyze,
+                   sql_id=fr.sql_id, source=fr.source, schema=fr.schema)
+    except access.QueryError as exc:
+        # statement_history 记着这条 SQL 当初执行的 schema_name。EXPLAIN 报表不存在时把它说出来:
+        # 业务 SQL 的表名不带 schema,靠应用账号的 search_path 解析;中间件执行账号解析不到——
+        # DBA 要知道该给执行账号设哪个 search_path,这个名字就是答案。
+        if "does not exist" in str(exc) and fr.schema:
+            raise access.QueryError(
+                f"{exc}\n补充:这条 SQL 在 statement_history 里记录的执行 schema 是 {fr.schema},"
+                f"执行账号当前的 search_path 里多半没有它。可让 DBA 给执行账号在该库上设置 search_path 包含 {fr.schema}"
+                f"(ALTER ROLE <执行账号> IN DATABASE <库> SET search_path = {fr.schema}, public),"
+                f"或把 SQL 里的表名写成 {fr.schema}.<表> 后用 --sql-stdin 重跑。") from exc
+        raise
     plan, pid, note = _runtime_plan_for(runner, fr.sql_id)
     return replace(tr, runtime_plan=plan, runtime_plan_pid=pid, runtime_note=note)
 
@@ -442,6 +455,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                                  description="One-shot SQL tuning evidence + hypopg index verification")
     ap.add_argument("sql_id", nargs="?", help="unique_sql_id (integer, may be negative)")
     ap.add_argument("-c", "--conn", default="", help="连接名（省略则用 gaussdb-login 建立的会话）")
+    cli.add_session_arg(ap)
     ap.add_argument("--sql-stdin", action="store_true", help="read SQL text from stdin")
     ap.add_argument("--bind", action="append", default=[],
                     help="bind value for placeholder (repeatable, positional order)")
@@ -450,6 +464,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
     ap.add_argument("--timeout", type=int, default=None, help="statement timeout (s)")
     args = ap.parse_args(argv)
+    cli.apply_session_arg(args)
 
     has_id = args.sql_id is not None
     if not has_id and not args.sql_stdin:

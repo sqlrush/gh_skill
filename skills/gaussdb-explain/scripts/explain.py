@@ -26,6 +26,7 @@ for _anc in _HERE.parents:  # locate common/ (repo root or install dir)
 
 import common  # noqa: E402
 from common import access  # noqa: E402
+from common import cli  # noqa: E402
 from common import kernel_funcs as kf  # noqa: E402
 from common import explain_actual as ea  # noqa: E402
 from common.grmp import statement as stmt  # noqa: E402
@@ -225,6 +226,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="explain.py",
                                  description="EXPLAIN a statement with risk findings")
     ap.add_argument("-c", "--conn", default="", help="连接名（省略则用 gaussdb-login 建立的会话）")
+    cli.add_session_arg(ap)
     ap.add_argument("--sql-stdin", action="store_true",
                     help="read SQL text from stdin")
     ap.add_argument("--pid", type=int, default=None,
@@ -235,6 +237,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
     ap.add_argument("--timeout", type=int, default=None)
     args = ap.parse_args(argv)
+    cli.apply_session_arg(args)
     if args.pid is None and not args.sql_stdin:
         ap.error("需要 --sql-stdin 或 --pid 二选一")
     if args.pid is not None and args.sql_stdin:

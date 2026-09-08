@@ -29,6 +29,7 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
 
 import common  # noqa: E402
 from common import access  # noqa: E402
+from common import cli  # noqa: E402
 import procanalyze as pa  # noqa: E402
 import render  # noqa: E402
 
@@ -171,9 +172,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         description="Read-only stored-procedure structural diagnostic")
     ap.add_argument("proc", help="schema.proc")
     ap.add_argument("-c", "--conn", default="", help="连接名（省略则用 gaussdb-login 建立的会话）")
+    cli.add_session_arg(ap)
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
     ap.add_argument("--timeout", type=int, default=None)
     args = ap.parse_args(argv)
+    cli.apply_session_arg(args)
 
     try:
         runner = access.for_conn(args.conn, timeout=args.timeout)

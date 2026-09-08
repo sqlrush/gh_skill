@@ -50,6 +50,7 @@ for parent in _HERE.parents:
 
 import common  # noqa: E402
 from common import access  # noqa: E402
+from common import cli  # noqa: E402
 from common.finding import findings_to_json  # noqa: E402
 # 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
 # 类型还原一律走这里，不用裸 int()/float()/bool()。
@@ -219,12 +220,14 @@ def main(argv: Optional[list] = None) -> int:
     ap = argparse.ArgumentParser(prog="waitevent.py",
                                  description="多窗口 DB time 分解 + 等待事件下钻（只读）")
     ap.add_argument("-c", "--conn", default="", help="连接名（省略则用 gaussdb-login 建立的会话）")
+    cli.add_session_arg(ap)
     ap.add_argument("--snapshots", type=int, default=DEFAULT_SNAPSHOTS, help="取最近几个快照")
     ap.add_argument("--begin", type=int, default=0, help="起始快照 ID（与 --end 一起给）")
     ap.add_argument("--end", type=int, default=0, help="结束快照 ID")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
     ap.add_argument("--timeout", type=int, default=None)
     args = ap.parse_args(argv)
+    cli.apply_session_arg(args)
 
     try:
         runner = access.for_conn(args.conn, timeout=args.timeout)

@@ -203,8 +203,30 @@ def _probe_role(conn: Connection) -> str:
     return "主库（in_recovery=false）"
 
 
-def _describe(conn: Connection, note: str, path, role: str = "") -> str:
+def _handle_banner(handle: str, conn: Connection) -> str:
+    """句柄要写在最前面、最醒目:模型只有把它带到后续每条命令上,同沙箱多用户才不会串库。"""
+    return (
+        "**会话句柄：`%s`**（%s / %s）\n\n"
+        "后续每条命令都带上 `--session %s`（或环境变量 `GSDB_SESSION=%s`）。"
+        "同一沙箱里还有别人的会话时，不带句柄的命令会被拒绝并列出候选。\n\n"
+        % (handle, session.target_of(conn), conn.database, handle, handle))
+
+
+def _others_note(handle: str) -> str:
+    """沙箱里已有的其他会话:只提示,不动它们——那是别人的登录。"""
+    others = [s for s in session.list_sessions() if s.handle != handle]
+    if not others:
+        return ""
+    lines = ["> ⚠ 沙箱里还有 %d 个其他会话（未受影响，各用各的句柄）：" % len(others)]
+    for s in others:
+        lines.append("> - `%s`  %s / %s" % (s.handle, session.target_of(s.conn), s.conn.database))
+    return "\n".join(lines) + "\n"
+
+
+def _describe(conn: Connection, note: str, path, role: str = "", handle: str = "") -> str:
     out = "# 已登录\n\n"
+    if handle:
+        out += _handle_banner(handle, conn)
     if conn.driver == "grmp":
         out += render.table(
         ["项", "值"],
@@ -229,6 +251,8 @@ def _describe(conn: Connection, note: str, path, role: str = "") -> str:
     if role.startswith("备机"):
         out += STANDBY_NOTE
     out += "\n会话已写入 `%s`。\n\n" % path
+    if handle:
+        out += _others_note(handle)
 
     if conn.driver == "grmp":
         # 白名单决定了这个库上**哪些 skill 真的能用** —— 客户环境里各库注册的
@@ -242,12 +266,36 @@ def _describe(conn: Connection, note: str, path, role: str = "") -> str:
         except Exception as exc:
             out += "> 白名单取不到：%s\n" % exc
 
-    out += ("\n后续 13 个 skill **不带 `-c` 就会用这条连接**；要临时换一个，"
-            "仍可显式传 `-c <连接名>`。\n")
+    if handle:
+        out += ("\n后续 skill 带 `--session %s` 就用这条连接；沙箱里只有这一个会话时也可以不带。"
+                "gsql 模式下仍可用 `-c <连接名>` 临时换库。\n" % handle)
+    else:
+        out += ("\n后续 13 个 skill **不带 `-c` 就会用这条连接**；要临时换一个，"
+                "仍可显式传 `-c <连接名>`。\n")
     if conn.driver == "grmp":
         out += ("\n> 中间件模式下 hypopg 虚拟索引验证不可用（白名单模型没有"
                 "跨语句持久会话）。sqltune 会改用代价推演给证据。\n")
     return out
+
+
+def _status(handle: str) -> int:
+    """列出沙箱里的全部会话。哪一条会被「不带句柄的命令」用到，标出来。"""
+    import time
+    sessions = session.list_sessions()
+    if not sessions:
+        print("当前没有会话。运行 gaussdb-login 选一个数据库。")
+        return 0
+    chosen = handle or session.selected() or (sessions[0].handle if len(sessions) == 1 else "")
+    rows = []
+    for s in sessions:
+        rows.append([s.handle, s.conn.app or "—",
+                     session.target_of(s.conn), s.conn.database,
+                     time.strftime("%m-%d %H:%M", time.localtime(s.last_used)),
+                     "← 不带句柄时用这条" if s.handle == chosen else ""])
+    print(render.table(["句柄", "应用", "目标", "数据库", "最后使用", ""], rows))
+    if len(sessions) > 1 and not chosen:
+        print("\n沙箱里有 %d 个会话：后续命令必须带 `--session <句柄>`，否则会被拒绝。" % len(sessions))
+    return 0
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -258,28 +306,25 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--ip", help="api 模式：目标实例 IP（接口一的 dataIp）")
     ap.add_argument("--database", help="api 模式：要访问的数据库名")
     ap.add_argument("--list", action="store_true", help="只列出可选项，不登录")
-    ap.add_argument("--status", action="store_true", help="显示当前会话")
-    ap.add_argument("--logout", action="store_true", help="清除当前会话")
+    ap.add_argument("--status", action="store_true", help="列出沙箱里的全部会话")
+    ap.add_argument("--logout", action="store_true", help="退出会话（多个会话时要带 --session，或 --all）")
+    ap.add_argument("--session", default="", metavar="句柄",
+                    help="--logout / --status 针对的会话句柄（登录时输出的那一串）")
+    ap.add_argument("--all", action="store_true", help="配合 --logout：清掉沙箱里全部会话")
     ap.add_argument("--no-verify", action="store_true",
                     help="跳过连通性验证（不建议：失败会推迟到下一个 skill）")
     args = ap.parse_args(argv)
 
     try:
         if args.logout:
-            print("已清除会话。" if session.clear() else "本来就没有会话。")
+            if args.all:
+                print("已清除 %d 个会话。" % session.clear_all())
+                return 0
+            print("已清除会话。" if session.clear(args.session or None) else "本来就没有会话。")
             return 0
 
         if args.status:
-            live = session.current()
-            if live is None:
-                print("当前没有会话。运行 gaussdb-login 选一个数据库。")
-                return 0
-            print(render.table(
-                ["项", "值"],
-                [["应用", live.app or "—"], 
-                 ["实例 IP（dataIp）", live.data_ip],
-                 ["数据库", live.database]]))
-            return 0
+            return _status(args.session)
 
         current_mode = config.mode()
 
@@ -347,8 +392,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                     % (conn.qualified, note))
 
         role = "未探测（--no-verify）" if args.no_verify else _probe_role(conn)
-        path = session.save(conn)
-        print(_describe(conn, note, path, role))
+        handle = session.save(conn)
+        print(_describe(conn, note, session.path_for(handle), role, handle=handle))
         return 0
 
     except ConfigError as exc:

@@ -1,6 +1,6 @@
 ---
 name: gaussdb-login
-version: 1.1.0
+version: 1.2.0
 description: "登录并选定本次会话要连的 OpenGauss/GaussDB 数据库。**这是所有数据库操作的第一步**：其余 gaussdb-* skill 不带 -c 时都用这里选定的连接。用户说“连数据库”“登录数据库”“换一个库”“连哪个库”“看有哪些数据库可以连”“切到 app2 的库”，或在尚未登录的情况下要求做慢 SQL/健康检查/调优/WDR 等任何取数操作时使用。触发后运行 scripts/login.py：配置首行 connection_mode 是 gsql 就把可选连接列成菜单让用户挑，不要凭空假设连接名, 是 api 就引导用户提供要访问的数据库名。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -12,8 +12,11 @@ metadata:
 
 # 数据库登录（OpenGauss/GaussDB）
 
-**所有数据库操作的第一步。** 其余 13 个 skill 不带 `-c` 时，用的都是这里选定
-的连接。
+**所有数据库操作的第一步。** 登录成功会得到一个**会话句柄**（5 位小写字母数字），其余 skill 用
+`--session <句柄>` 指名要用这条连接；沙箱里只有一个会话时也可以不带。
+
+**为什么有句柄**：客户现场多个用户共用一个沙箱。原先只有一个会话文件，谁最后登录所有人就连谁的库，
+退出码 0、不报错——静默串库。现在每次登录各存一份，靠句柄区分；分不清时脚本拒绝执行，不猜。
 
 命中以下请求时必须使用本 skill 并实际执行脚本：
 
@@ -60,8 +63,10 @@ python3 {baseDir}/scripts/login.py --ip <实例IP> --database <数据库名>
 ### 其他
 
 ```bash
-python3 {baseDir}/scripts/login.py --status    # 当前连的是哪个
-python3 {baseDir}/scripts/login.py --logout    # 清除会话
+python3 {baseDir}/scripts/login.py --status                    # 列出沙箱里的全部会话，标出不带句柄时会用哪条
+python3 {baseDir}/scripts/login.py --logout --session <句柄>   # 退出某一个会话
+python3 {baseDir}/scripts/login.py --logout                    # 只有一个会话时可以不带句柄
+python3 {baseDir}/scripts/login.py --logout --all              # 清掉沙箱里全部会话（会影响其他用户，用户明确要求才做）
 ```
 
 ## 登录成功之后
@@ -70,17 +75,22 @@ python3 {baseDir}/scripts/login.py --logout    # 清除会话
 `dbe_perf.statement_history` 是 unlogged 表备机读不到，sqlfetch / sqltune / sqlreview / proctune 取 SQL 文本会退到归一化文本，
 要真实参数值需用主库 IP 重新登录。显示「未探测」只是没判断出来（脚本没注册或版本没这列），不是失败，照常用。
 
-告诉用户现在连的是哪个库（应用 /实例 IP /数据库名称 / 模式），然后正常继续
-他原本要做的事。**其余 skill 不需要再传 `-c`**。
+告诉用户现在连的是哪个库（应用 / 实例 IP / 数据库名称 / 模式），然后正常继续
+他原本要做的事。**记住登录输出里的会话句柄，本次对话里后续每条 skill 命令都带 `--session <句柄>`**；
+句柄不需要念给用户，只在命令里用。登录输出里若列出「沙箱里还有 N 个其他会话」，那是别人的登录，不要动、不要用。
 
-用户中途要换库，再跑一次本 skill 即可，会话会被覆盖。
+用户中途要换库，再跑一次本 skill 拿一个新句柄即可，旧会话不会被覆盖；不再需要的那条用 `--logout --session <旧句柄>` 退掉。
+
+**没有句柄时怎么办**：某条命令被拒绝并列出「沙箱里有 N 个会话」，说明本次对话里没有登录过、或句柄丢了。
+把清单里的目标库转给用户确认要用哪个，或让用户重新登录；**不要自己从清单里挑一个**，挑错就是在别人的库上做诊断。
 
 ## 登出
-用户要求登出数据库，或更换其他数据库时，需要先登出当前数据库，清除会话后再跑一次本skill
+用户要求登出数据库，或更换其他数据库时，先退掉本次对话的会话再跑一次本 skill
 ```bash
-python3 {baseDir}/scripts/login.py --status    # 当前连的是哪个
-python3 {baseDir}/scripts/login.py --logout    # 清除会话
+python3 {baseDir}/scripts/login.py --status                    # 列出全部会话
+python3 {baseDir}/scripts/login.py --logout --session <句柄>   # 只退自己这一条
 ```
+`--logout --all` 会把其他用户的会话一起清掉，只在用户明确要求时用。
 
 
 ## 规则

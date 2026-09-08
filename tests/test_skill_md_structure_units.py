@@ -127,3 +127,14 @@ def test_data_skills_all_mention_login():
                if p.parent.name not in exempt
                and "gaussdb-login" not in p.read_text(encoding="utf-8")]
     assert not missing, "没有指向 gaussdb-login 的 skill：%s" % missing
+
+
+def test_data_skills_tell_the_model_to_carry_the_session_handle():
+    """同沙箱多用户串库的修法靠模型把 login 发的句柄带到每一条命令上——SKILL.md 不说,模型就不会带。
+    每一份写了「登录之后本 skill 不需要传 -c」的 SKILL.md 都必须紧跟句柄契约。"""
+    for path in sorted(_ROOT.glob("skills/gaussdb-*/SKILL.md")):
+        text = path.read_text(encoding="utf-8")
+        if "登录之后本 skill" not in text:
+            continue
+        assert "--session" in text and "句柄" in text, path.name
+        assert "不要自己挑" in text, path.name

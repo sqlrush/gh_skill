@@ -42,6 +42,7 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
 
 import common  # noqa: E402
 from common import access  # noqa: E402
+from common import cli  # noqa: E402
 from cost import explain_cost, quote_columns, quote_ident, quote_sql_literal  # noqa: E402
 from evidence import is_dml  # noqa: E402
 from sqlfetch import count_placeholders  # noqa: E402
@@ -293,6 +294,7 @@ def _to_dict(v) -> dict:
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="verify.py", description="Verify a SQL rewrite (cost + equivalence)")
     ap.add_argument("-c", "--conn", default="", help="连接名（省略则用 gaussdb-login 建立的会话）")
+    cli.add_session_arg(ap)
     ap.add_argument("--original", required=True, help="original SQL text")
     ap.add_argument("--rewrite", required=True, help="rewritten SQL text")
     ap.add_argument("--no-equiv", action="store_true", help="skip result-set equivalence check")
@@ -303,6 +305,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
     ap.add_argument("--timeout", type=int, default=None, help="statement timeout (s)")
     args = ap.parse_args(argv)
+    cli.apply_session_arg(args)
 
     if not args.original.strip():
         ap.error("--original must not be empty")

@@ -330,7 +330,10 @@ def find(name: str) -> Connection:
     # 会话里可能有一条**配置文件里不存在**的连接：api 模式下的连接是登录时
     # 按用户给的库名现场构造的。不在这里回落的话，下一个 skill 会找不到它。
     from . import session as _session  # 循环依赖：session 依赖本模块的类型
-    live = _session.current()
+    try:
+        live = _session.current()
+    except ConfigError:
+        live = None     # 多会话分不清是「省略 -c」那条路的事；按名字找不到就照常报「没有这个连接」
     if live is not None and live.name == wanted:
         if not wanted_app or live.app == wanted_app:
             return live
