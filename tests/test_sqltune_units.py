@@ -344,3 +344,25 @@ def test_evidence_that_really_analyzed_is_reported_as_such():
     ev = evidence.collect(_R(), None, "SELECT 1", True)
     assert ev.analyzed is True
     assert "估算" not in evidence.evidence_report(ev)
+
+
+def test_tune_by_id_adds_the_recorded_schema_when_a_relation_is_missing(monkeypatch):
+    """statement_history 里记着这条 SQL 当初执行的 schema_name,sqltune 一直取回来却没用上。
+    EXPLAIN 报 relation does not exist 时至少要把它说出来:DBA 才知道该给执行账号设哪个 search_path。"""
+    import pytest
+    import sqltune
+    from types import SimpleNamespace
+    from common.grmp.errors import QueryError
+
+    monkeypatch.setattr(sqltune, "sql_fetch", lambda runner, raw_id: SimpleNamespace(
+        sql="select * from orders where status = 'NEW'", truncated=False, truncated_reason="",
+        sql_id="123", source="statement_history", schema="app_trade"))
+
+    def _boom(*a, **k):
+        raise QueryError('执行脚本 sqltune.plan_text 失败：ERROR: relation "orders" does not exist (SQLSTATE 42P01)')
+    monkeypatch.setattr(sqltune, "_tune", _boom)
+
+    with pytest.raises(QueryError) as ei:
+        sqltune.tune_by_id(object(), None, "123", [], False)
+    msg = str(ei.value)
+    assert "app_trade" in msg and "search_path" in msg and 'relation "orders" does not exist' in msg

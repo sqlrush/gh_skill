@@ -45,6 +45,7 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
 
 import common  # noqa: E402
 from common import access  # noqa: E402
+from common import cli  # noqa: E402
 import procanalyze as pa  # noqa: E402
 import render  # noqa: E402
 from evidence import Evidence, collect, collect_gucs, evidence_report  # noqa: E402
@@ -381,12 +382,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     pc = sub.add_parser("collect", help="advisory evidence for a procedure")
     pc.add_argument("proc", help="schema.proc")
     pc.add_argument("-c", "--conn", default="")
+    cli.add_session_arg(pc)
     pc.add_argument("--format", choices=["markdown", "json"], default="markdown")
     pc.add_argument("--timeout", type=int, default=None)
 
     pt = sub.add_parser("tune-cursor", help="tune read-only cursor SELECTs")
     pt.add_argument("proc", help="schema.proc")
     pt.add_argument("-c", "--conn", default="")
+    cli.add_session_arg(pt)
     pt.add_argument("--cursor", action="append", default=[],
                     help="only process the named cursor(s) (repeatable)")
     pt.add_argument("--bind", action="append", default=[],
@@ -395,6 +398,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     pt.add_argument("--timeout", type=int, default=None)
 
     args = ap.parse_args(argv)
+
+    cli.apply_session_arg(args)
 
     try:
         binds = _parse_bind_pairs(args.bind) if args.cmd == "tune-cursor" else {}

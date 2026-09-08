@@ -210,6 +210,10 @@ def main() -> int:
 
     conn = sys.argv[1] if len(sys.argv) > 1 else ""
     if conn:
+        # 会话按句柄分文件之后,登录不再覆盖上一次:同一个 GSDB_HOME 里连跑两个连接的矩阵会留下两个会话,
+        # 不带句柄的用例就会被「沙箱里有 2 个会话」拒掉——那是产品的正确行为,不是失败。
+        # 矩阵模拟的是单用户换库,所以登录前先清掉本目录的会话。
+        subprocess.run([PY, skill("login"), "--logout", "--all"], capture_output=True, text=True)
         rc = subprocess.run([PY, skill("login"), "--app", APP, "--conn", conn],
                             capture_output=True, text=True).returncode
         if rc != 0:

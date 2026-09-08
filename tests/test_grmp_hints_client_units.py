@@ -131,3 +131,14 @@ def test_permission_denied_on_a_schema_asks_for_usage_not_select():
     assert "SELECT 权限" not in hint
     fn = hints.explain("ERROR: permission denied for function gs_get_kernel_info")
     assert "gs_get_kernel_info" in fn and "EXECUTE" in fn
+
+
+def test_relation_missing_hint_points_at_search_path_for_unqualified_names():
+    """sqltune 的 400:业务 SQL 的表名不带 schema,靠应用账号的 search_path 解析;
+    中间件执行账号的 search_path 是 "$user", public,解析不到就 relation does not exist。
+    原先的提示只说「版本差异 / 注册错库」,把人往错的方向带。"""
+    hint = hints.explain('ERROR: relation "orders" does not exist (SQLSTATE 42P01)')
+    assert "orders" in hint and "search_path" in hint and "schema" in hint
+    assert "版本差异" not in hint                       # 不带 schema 的业务表:先怀疑 search_path
+    qualified = hints.explain('ERROR: relation "dbe_perf.statement_history" does not exist')
+    assert "dbe_perf.statement_history" in qualified and "版本" in qualified   # 带 schema 的系统视图:版本差异

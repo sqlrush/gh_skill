@@ -34,6 +34,7 @@ for parent in _HERE.parents:
 
 import common  # noqa: E402
 from common import access  # noqa: E402
+from common import cli  # noqa: E402
 # 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
 # 类型还原一律走这里，不用裸 int()/float()/bool()。
 from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
@@ -104,11 +105,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         prog="topproc.py",
         description="Top resource-consuming stored procedures/functions")
     ap.add_argument("-c", "--conn", default="", help="连接名（省略则用 gaussdb-login 建立的会话）")
+    cli.add_session_arg(ap)
     ap.add_argument("--by", choices=SORT_KEYS, default="time", help="sort key")
     ap.add_argument("--limit", type=int, default=20, help="max rows")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
     ap.add_argument("--timeout", type=int, default=None)
     args = ap.parse_args(argv)
+    cli.apply_session_arg(args)
 
     try:
         runner = access.for_conn(args.conn, timeout=args.timeout)

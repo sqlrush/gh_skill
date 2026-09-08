@@ -45,6 +45,7 @@ for _anc in _HERE.parents:                      # locate common/
 
 import common  # noqa: E402
 from common import access  # noqa: E402
+from common import cli  # noqa: E402
 from common.finding import Finding, Severity, findings_to_json  # noqa: E402
 from common.grmp.values import as_float, as_int, is_null  # noqa: E402
 from common.lockmodes import conflict_reason, conflicts, typical_statements  # noqa: E402
@@ -646,10 +647,12 @@ def main(argv: Optional[list] = None) -> int:
     ap = argparse.ArgumentParser(prog="lockwait.py",
                                  description="锁堵塞分析（只读；kill 语句只生成不执行）")
     ap.add_argument("-c", "--conn", default="", help="连接名（省略则用 gaussdb-login 建立的会话）")
+    cli.add_session_arg(ap)
     ap.add_argument("--limit", type=int, default=20, help="阻塞明细条数上限")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
     ap.add_argument("--timeout", type=int, default=None)
     args = ap.parse_args(argv)
+    cli.apply_session_arg(args)
 
     try:
         runner = access.for_conn(args.conn, timeout=args.timeout)

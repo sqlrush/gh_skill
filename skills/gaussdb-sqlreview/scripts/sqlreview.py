@@ -31,6 +31,7 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
 
 import common  # noqa: E402
 from common import access, session  # noqa: E402
+from common import cli  # noqa: E402
 
 for parent in _HERE.parents:
     if (parent / "common" / "sql.py").exists():
@@ -95,6 +96,7 @@ def _parse_args(argv):
         prog="sqlreview.py",
         description="Review SQL against the standards in references/rules.yaml")
     ap.add_argument("-c", "--conn", help="连接名（--sql-id/--top/--schema 需要）")
+    cli.add_session_arg(ap)
 
     src = ap.add_argument_group("输入源（三选一）")
     src.add_argument("--file", help="待审查的 SQL 文件")
@@ -110,6 +112,7 @@ def _parse_args(argv):
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = _parse_args(argv)
+    cli.apply_session_arg(args)
 
     chosen = [n for n, v in (("--file", args.file), ("--stdin", args.stdin),
                              ("--sql-id", args.sql_id), ("--top", args.top),
@@ -131,10 +134,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     # 还在拦，表现成「明明登录了，sqlreview 却说要指定连接名」。
     # 两者都没有时由 config.resolve() 报错，那条消息会告诉用户去跑 login。
     needs_db = bool(args.sql_id or args.top or args.schema)
-    if needs_db and not args.conn and session.current() is None:
-        print(f"error: {chosen[0]} 需要连接：先运行 gaussdb-login 建立会话，"
-              f"或用 -c/--conn 指定连接名", file=sys.stderr)
-        return 1
+    if needs_db and not args.conn:
+        try:
+            live = session.current()
+        except common.ConfigError as exc:
+            # 沙箱里多个会话又没带句柄:session.current() 会抛出候选清单——这是给用户看的一句话,
+            # 不能裸露成 Traceback(场景矩阵抓到的:两个会话并存时 sqlreview 三条用例直接崩)。
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if live is None:
+            print(f"error: {chosen[0]} 需要连接：先运行 gaussdb-login 建立会话，"
+                  f"或用 -c/--conn 指定连接名", file=sys.stderr)
+            return 1
 
     # --- DB-free sources -------------------------------------------------
     if not needs_db:

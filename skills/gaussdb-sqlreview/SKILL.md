@@ -1,6 +1,6 @@
 ﻿---
 name: gaussdb-sqlreview
-version: 1.0.1
+version: 1.0.2
 description: "通过内置脚本对 OpenGauss/GaussDB SQL 做治理审查。用户要判断 SQL 或 DDL 是否符合规范、上线前评审 SQL、审查表/索引/列命名和主键等规则，或者检查线上 SQL 和已有 schema 对象是否有违规时使用，包括“这段 SQL 合不合规”“上线前审一下”“库里哪些表不合规范”“看看索引设计合不合规”等请求。触发后运行 scripts/sqlreview.py，输出真实规则检查结果，不要只给通用最佳实践建议。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -54,6 +54,7 @@ metadata:
    `python3 {baseDir}/../gaussdb-login/scripts/login.py --status`。
    没有会话就先调 **gaussdb-login**：它读 `$GSDB_HOME/config.yaml`的首行 `connection_mode`，是 `gsql` 就把可选连接列成菜单让用户挑，是 `api` 就引导用户给出要访问的数据库。
    登录之后本 skill **不需要传 `-c`** —— 省略时自动用登录选定的那条连接；只有要临时换一个库时才显式传 `-c <连接名>`。
+   **api 模式下每条命令都要带 `--session <句柄>`**：句柄是 gaussdb-login 登录成功时输出的那一串（也可放在环境变量 `GSDB_SESSION` 里）。同一沙箱可能有别人的会话，脚本分不清时会拒绝执行并列出候选会话；这时把清单转给用户确认要用哪个库，或让用户重新登录，**不要自己挑一个**。沙箱里只有一个会话时可以不带。
    **不要自己去读 config.yaml 挑名字**：不同应用下可能有同名连接，猜错会在另一个库上做诊断，而输出看起来完全正常。口令在 `{baseDir}/../common/credentials/*.enc`，由脚本解密，**你不要去读/解密它**。
    需要机器可读结果时加 `--format json`。
 

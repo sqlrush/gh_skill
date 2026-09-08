@@ -1,6 +1,6 @@
 ---
 name: gaussdb-waitevent
-version: 1.0.0
+version: 1.0.1
 description: "通过内置脚本对 OpenGauss/GaussDB 做多窗口 DB time 分解，回答“数据库时间花在哪”。用户想知道最近几个采样窗口里 DB time 都花到哪了、CPU 还是 IO 主导、等待事件耗时排名、数据库整体为什么慢（时间维度，而不是单条 SQL）时使用，包括“DB time 花在哪”“这几个窗口时间都花哪了”“是 CPU 主导还是 IO 主导”“等待事件耗时排名”“数据库整体慢在哪个环节”等请求。触发后运行 scripts/waitevent.py，输出真实的窗口时间分解与等待事件下钻结果，不要只解释 DB time 模型的概念。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -42,6 +42,7 @@ metadata:
    `python3 {baseDir}/../gaussdb-login/scripts/login.py --status`。
    没有会话就先调 **gaussdb-login**：它读 `$GSDB_HOME/config.yaml`（默认 `~/.gdaa/config.yaml`）的首行 `connection_mode`，是 `gsql` 就把可选连接列成菜单让用户挑，是 `api` 就引导用户给出要访问的数据库。
    登录之后本 skill **不需要传 `-c`** —— 省略时自动用登录选定的那条连接；只有要临时换一个库时才显式传 `-c <连接名>`。
+   **api 模式下每条命令都要带 `--session <句柄>`**：句柄是 gaussdb-login 登录成功时输出的那一串（也可放在环境变量 `GSDB_SESSION` 里）。同一沙箱可能有别人的会话，脚本分不清时会拒绝执行并列出候选会话；这时把清单转给用户确认要用哪个库，或让用户重新登录，**不要自己挑一个**。沙箱里只有一个会话时可以不带。
    **不要自己去读 config.yaml 挑名字**：不同应用下可能有同名连接，猜错会在另一个库上做诊断，而输出看起来完全正常。口令在 `{baseDir}/../common/credentials/*.enc`，由脚本解密，**你不要去读/解密它**。
 2. 如果用户没有提供连接名，但当前只有一个连接：
    直接使用该连接。

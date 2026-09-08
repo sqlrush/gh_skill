@@ -1,6 +1,6 @@
 ---
 name: gaussdb-vacuum
-version: 1.1.0
+version: 1.1.1
 description: "通过内置脚本对 OpenGauss/GaussDB 做死元组（dead tuple）与 autovacuum 健康度评估。用户想知道哪些表堆积了太多死元组、表膨胀（bloat）是不是严重、autovacuum 有没有追上、某张表是不是需要手工 VACUUM 时使用，包括“死元组多不多”“表膨胀严重吗”“autovacuum 追上了吗”“这张表要不要手工 vacuum”“死元组比例”“autovacuum 有没有卡住”等请求。触发后运行 scripts/vacuum.py，输出真实的风险表、命中的规则与证据、autovacuum 近期运行情况；不要只解释 vacuum/dead tuple 的概念。本 skill 只评估，不执行任何 VACUUM/ANALYZE。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -77,6 +77,7 @@ metadata:
    `python3 {baseDir}/../gaussdb-login/scripts/login.py --status`。
    没有会话就先调 **gaussdb-login**：它读 `$GSDB_HOME/config.yaml`（默认 `~/.gdaa/config.yaml`）的首行 `connection_mode`，是 `gsql` 就把可选连接列成菜单让用户挑，是 `api` 就引导用户给出要访问的数据库。
    登录之后本 skill **不需要传 `-c`** —— 省略时自动用登录选定的那条连接；只有要临时换一个库时才显式传 `-c <连接名>`。
+   **api 模式下每条命令都要带 `--session <句柄>`**：句柄是 gaussdb-login 登录成功时输出的那一串（也可放在环境变量 `GSDB_SESSION` 里）。同一沙箱可能有别人的会话，脚本分不清时会拒绝执行并列出候选会话；这时把清单转给用户确认要用哪个库，或让用户重新登录，**不要自己挑一个**。沙箱里只有一个会话时可以不带。
    **不要自己去读 config.yaml 挑名字**：不同应用下可能有同名连接，猜错会在另一个库上做诊断，而输出看起来完全正常。口令在 `{baseDir}/../common/credentials/*.enc`，由脚本解密，**你不要去读/解密它**。
 2. 如果用户没有提供连接名，但当前只有一个连接：
    直接使用该连接。

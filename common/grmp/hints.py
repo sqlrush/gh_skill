@@ -30,6 +30,7 @@ _HINTS: Sequence[Tuple[Tuple[str, ...], str]] = (
      "中间件按 dataIp 找不到实例:登录用的 IP 必须是 GRMP 里登记的实例 IP,不是主机管理 IP"),
     # 函数级 does not exist 必须排在通用 does not exist 之前:三种原因不同,给的动作也不同
     (("function ", " does not exist"), ""),             # 占位:文案由 _function_hint 生成(需两个子串同时命中)
+    (("relation ", " does not exist"), ""),             # 占位:文案由 _relation_hint 生成(不带 schema 的表先怀疑 search_path)
     (("does not exist",),
      "对象不存在:多半是版本差异(视图 / 列名不同)或脚本注册到了别的库——对照 whitelist.md 里的 SQL 与目标实例版本"),
 )
@@ -73,6 +74,27 @@ def _function_hint(text: str) -> str:
     )
 
 
+_RELATION_MISSING_RE = re.compile(r'relation\s+"?([\w.]+)"?\s+does not exist', re.I)
+
+
+def _relation_hint(text: str) -> str:
+    """表 / 视图不存在。不带 schema 的名字先怀疑 search_path(sqltune 现场 400 的成因):业务 SQL 的表名
+    靠应用账号的 search_path 解析,中间件执行账号的 search_path 是 "$user", public,解析不到。
+    带 schema 的多半是系统视图,那才是版本差异 / 注册错库。"""
+    m = _RELATION_MISSING_RE.search(text or "")
+    if not m:
+        return ""
+    name = m.group(1)
+    if "." in name:
+        return (f"对象 {name} 不存在:多半是版本差异(视图 / 列名不同)或脚本注册到了别的库——"
+                f"对照 whitelist.md 里的 SQL 与目标实例版本")
+    return (f"表 / 视图 {name} 找不到,而它没带 schema:多半不是不存在,是执行账号的 search_path 里没有它所在的 schema。"
+            f"业务 SQL 的表名靠应用账号的 search_path 解析,中间件执行账号的 search_path 默认是 \"$user\", public。"
+            f"核对:SELECT current_schemas(true); 与 SELECT nspname FROM pg_namespace n JOIN pg_class c ON c.relnamespace = n.oid "
+            f"WHERE c.relname = '{name}';。解决:由 DBA 给执行账号在该库上设置 search_path 包含业务 schema"
+            f"(ALTER ROLE <执行账号> IN DATABASE <库> SET search_path = <业务schema>, public),或在 SQL 里写全 schema.表 后重跑")
+
+
 def explain(text: str) -> str:
     """已知报错模式对应的中文提示;认不出来返回空串,由调用方决定要不要追加。"""
     low = (text or "").lower()
@@ -80,6 +102,12 @@ def explain(text: str) -> str:
         if needles == ("function ", " does not exist"):
             if all(n in low for n in needles):
                 made = _function_hint(text)
+                if made:
+                    return made
+            continue
+        if needles == ("relation ", " does not exist"):
+            if all(n in low for n in needles):
+                made = _relation_hint(text)
                 if made:
                     return made
             continue

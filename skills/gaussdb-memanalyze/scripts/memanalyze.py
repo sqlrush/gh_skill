@@ -33,6 +33,7 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
 
 import common  # noqa: E402
 from common import access  # noqa: E402
+from common import cli  # noqa: E402
 # 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
 # 类型还原一律走这里，不用裸 int()/float()/bool()。
 from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
@@ -163,6 +164,7 @@ def _normalize(argv) -> list:
 def _parse_args(argv):
     shared = argparse.ArgumentParser(add_help=False)
     shared.add_argument("-c", "--conn", default="", help="连接名（省略则用 gaussdb-login 建立的会话）")
+    cli.add_session_arg(shared)
     shared.add_argument("--top", type=int, default=20, help="每层返回行数（默认 20）")
     shared.add_argument("--format", choices=["markdown", "json"], default="markdown")
     shared.add_argument("--timeout", type=int, default=60, help="查询超时（秒）")
@@ -183,6 +185,7 @@ def _parse_args(argv):
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = _parse_args(argv)
+    cli.apply_session_arg(args)
 
     if args.cmd == "watch" and (args.interval < 1 or args.count < trend.MIN_SAMPLES):
         print(f"error: watch 需要 --interval >= 1 且 --count >= {trend.MIN_SAMPLES}",

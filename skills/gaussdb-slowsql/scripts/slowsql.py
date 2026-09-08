@@ -35,6 +35,7 @@ for parent in _HERE.parents:
 
 import common  # noqa: E402
 from common import access  # noqa: E402
+from common import cli  # noqa: E402
 # 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
 # 类型还原一律走这里，不用裸 int()/float()/bool()。
 from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
@@ -158,6 +159,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="slowsql.py",
                                  description="List statements slower than --threshold (avg ms)")
     ap.add_argument("-c", "--conn", default="", help="连接名（省略则用 gaussdb-login 建立的会话）")
+    cli.add_session_arg(ap)
     seven_days_ago = datetime.now() - timedelta(days=7)
     begin_time_str = seven_days_ago.strftime('%Y-%m-%d %H:%M:%S')
     ap.add_argument("--threshold", type=int, default=1000, help="avg elapsed threshold (ms)")
@@ -175,6 +177,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    cli.apply_session_arg(args)
     try:
         runner = access.for_conn(args.conn, timeout=args.timeout)
     except (common.ConfigError, common.CredentialError, access.AccessError) as exc:

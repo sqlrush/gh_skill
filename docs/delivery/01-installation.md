@@ -859,6 +859,18 @@ python3 $SKILLS/wdr/scripts/wdr.py render \
 
 ---
 
+## 7b. 多用户共用沙箱：会话句柄
+
+客户现场多个用户共用一个沙箱、同一个 `$GSDB_HOME`。原先 gaussdb-login 只写一个 `session.yaml`，谁最后登录所有人就连谁的库，
+退出码 0、不报错、报告抬头写着别人的库（2026-09-07 现场反馈）。现在：
+
+- 每次登录得到一个 **5 位句柄**，会话各存一份 `$GSDB_HOME/sessions/<句柄>.yaml`（0600，不含凭据），互不覆盖；
+- 其余 skill 用 `--session <句柄>`（或环境变量 `GSDB_SESSION`）指名要哪条连接；沙箱里只有一个会话时可以不带，单用户用法不变；
+- **多个会话又没带句柄时拒绝执行并列出候选**，由模型转给用户确认，不猜；
+- 闲置超过 12 小时的会话自动清理（`GSDB_SESSION_TTL_HOURS` 可调）；`login.py --status` 列出全部会话，`--logout --session <句柄>` 只退自己那条。
+
+对用户的交互没有变化：句柄由模型在命令里携带，用户不需要记。只在「本来会静默跑错库」的那一刻，改成被问一句「要用哪个库」。
+
 ## 8. 排障表
 
 | 现象 | 原因 | 解决方法 |
@@ -880,6 +892,7 @@ python3 $SKILLS/wdr/scripts/wdr.py render \
 | 报错 `Permission denied for relation/schema/function <对象>` | GRMP 执行账号对该对象没有权限（`pg_user_status` 这类系统表默认只对高权限角色开放；`dbe_perf`、`snapshot` 这类监控 schema 要 MONADMIN 角色）。skill 输出会按对象种类给动作：表/视图授 SELECT，schema 授 USAGE（监控 schema 实为 MONADMIN），函数授 EXECUTE | 请 DBA 按提示给执行账号授权，或让脚本改用有权限的视图 |
 | 报错 `function <名>(<类型>) does not exist` | 按「名字 + 实参类型」在**当前 database** 的 `pg_proc` 里找不到匹配。报错里的类型是**调用时传的**，不代表已存在的重载：函数不存在、函数在但类型不符（如文档要 `integer` 却传 `bigint`）、catalog 未升级，三种都报这一句。skill 输出会附三种原因的核对办法 | 在脚本连接的**同一个 database** 里执行 `SELECT proname, pg_get_function_arguments(oid) FROM pg_proc WHERE proname='<名>'`：有行看 args 改类型（GaussDB 的 `pg_stat_activity.pid` 是 64 位线程号，放不进 `integer`），零行再与 `postgres` 库比对 / 核对升级是否提交 |
 | explain `--pid` / sqltune 报告说「目标实例是 GaussDB…应包含 gs_get_explain / gs_get_kernel_info 但查不到」 | 内核探测（`explain.kernel_funcs`）发现 `version()` 是 GaussDB，但两个私有函数不在当前库的 `pg_proc` 里。openGauss 上不会出这句（它本来就没有） | 同上一行的核对办法；确认前 skill 已自动退回标准 EXPLAIN / 标准视图，功能不中断 |
+| 命令被拒绝，输出「沙箱里有 N 个会话，不知道该用哪个」 | 多个用户共用同一个沙箱（同一个 `$GSDB_HOME`），各自登录过，而这条命令没带 `--session <句柄>`。skill 不猜用哪一条——猜错会在别人的库上跑诊断而输出看起来完全正常 | 带上 gaussdb-login 登录时输出的句柄（或环境变量 `GSDB_SESSION`）；本次对话没登录过就重新登录拿新句柄；`login.py --status` 可列出全部会话 |
 
 ---
 

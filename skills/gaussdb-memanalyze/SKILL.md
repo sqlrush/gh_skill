@@ -1,6 +1,6 @@
 ﻿---
 name: gaussdb-memanalyze
-version: 1.0.1
+version: 1.0.2
 description: "通过内置脚本分析 OpenGauss/GaussDB 动态内存冲高问题。用户询问内存为什么满、为什么突然飙高、是谁在吃内存、哪条 SQL 或哪个算子在占内存、是否存在内存泄漏、为什么算子落盘、work_mem 和并发是否过高时使用，包括“内存怎么满了”“内存被谁吃了”“哪条 SQL 吃内存”“哪个算子吃内存”“是不是内存泄漏”等请求。触发后运行 scripts/memanalyze.py，采集真实的六层内存证据，不要只给泛化调优猜测。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -35,6 +35,7 @@ metadata:
    `python3 {baseDir}/../gaussdb-login/scripts/login.py --status`。
    没有会话就先调 **gaussdb-login**：它读 `$GSDB_HOME/config.yaml`的首行 `connection_mode`，是 `gsql` 就把可选连接列成菜单让用户挑，是 `api` 就引导用户给出要访问的数据库。
    登录之后本 skill **不需要传 `-c`** —— 省略时自动用登录选定的那条连接；只有要临时换一个库时才显式传 `-c <连接名>`。
+   **api 模式下每条命令都要带 `--session <句柄>`**：句柄是 gaussdb-login 登录成功时输出的那一串（也可放在环境变量 `GSDB_SESSION` 里）。同一沙箱可能有别人的会话，脚本分不清时会拒绝执行并列出候选会话；这时把清单转给用户确认要用哪个库，或让用户重新登录，**不要自己挑一个**。沙箱里只有一个会话时可以不带。
    **不要自己去读 config.yaml 挑名字**：不同应用下可能有同名连接，猜错会在另一个库上做诊断，而输出看起来完全正常。口令在 `{baseDir}/../common/credentials/*.enc`，由脚本解密，**你不要去读/解密它**。
 
 2. **选模式。** 按用户描述的时点选，三选一：
