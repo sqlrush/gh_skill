@@ -53,7 +53,9 @@ for _anc in _HERE.parents:                      # locate common/
 
 import common  # noqa: E402
 from common import access  # noqa: E402
+from common import kernel_funcs as kf  # noqa: E402
 from common.finding import findings_to_json  # noqa: E402
+from common.grmp.hints import with_hint  # noqa: E402
 # 结果值全是字符串：bool("f") 是 True、NULL 渲染成空串而不是 None。
 # 类型/空值还原一律走这里，不用裸 int()/float()/`is None`/`or 默认值`。
 from common.grmp.values import as_float, is_null  # noqa: E402
@@ -68,6 +70,9 @@ DEAD_SCRIPT = "vacuum.dead_tuples"
 SETTINGS_SCRIPT = "vacuum.autovac_settings"
 WORKERS_SCRIPT = "vacuum.autovac_workers"
 XMIN_SCRIPT = "vacuum.oldest_xmin"
+# 内核事务水位(GaussDB 私有,先探测再用;交付闸按脚本名全串在 skills/ 里检索,故写全):
+#   explain.kernel_funcs —— 探测;vacuum.kernel_info —— gs_get_kernel_info() 原样四列
+# openGauss 没有这个函数,报告不出这一节;GaussDB 该有而没有,用中文说明原因。
 
 MB = 1024 * 1024
 
@@ -79,6 +84,20 @@ class VacuumReport:
     workers: list = field(default_factory=list)
     oldest_xmin: list = field(default_factory=list)
     findings: list = field(default_factory=list)
+    kernel_info: list = field(default_factory=list)   # gs_get_kernel_info 的 node/module/name/value 行
+    kernel_note: str = ""                              # 没取到时的原因(中文);openGauss 为空
+
+
+def _kernel_info(runner) -> tuple:
+    """gs_get_kernel_info 有就取;没有就按引擎决定要不要说明;任何失败都不影响主报告。"""
+    probe = kf.probe(runner)
+    if not probe.kernel_info:
+        return [], kf.missing_note(probe)
+    try:
+        return kf.kernel_info(runner), ""
+    except (access.QueryError, common.DBError) as exc:
+        msg = str(exc)
+        return [], "gs_get_kernel_info 调用失败:" + (msg if "提示:" in msg else with_hint(msg))
 
 
 def collect(runner, limit: int, th) -> VacuumReport:
@@ -87,6 +106,7 @@ def collect(runner, limit: int, th) -> VacuumReport:
     raw = runner.run(DEAD_SCRIPT, {"limit": int(limit)})
     workers = runner.run(WORKERS_SCRIPT, {})
     xmin = runner.run(XMIN_SCRIPT, {})
+    kernel_rows, kernel_note = _kernel_info(runner)
     tables = []
     for row in raw:
         line = rules.trigger_line(as_float(row["reltuples"]), settings,
@@ -95,7 +115,8 @@ def collect(runner, limit: int, th) -> VacuumReport:
                            hits=rules.evaluate(row, settings, xmin, th)))
     return VacuumReport(tables=tables, settings=settings, workers=workers,
                         oldest_xmin=xmin,
-                        findings=rules.judge_tables(raw, settings, xmin, th))
+                        findings=rules.judge_tables(raw, settings, xmin, th),
+                        kernel_info=kernel_rows, kernel_note=kernel_note)
 
 
 # ---------------------------------------------------------------------------
@@ -244,9 +265,26 @@ def _xmin_blockers_section(rep: VacuumReport) -> str:
     return "\n".join(lines)
 
 
+def _kernel_info_section(rep: VacuumReport) -> str:
+    """gs_get_kernel_info(GaussDB 私有)的内核事务水位。有行就原样列出,不做判定;
+    没取到但有原因(GaussDB 该有而没有 / 调用失败)就写原因;openGauss 整节不出现。"""
+    if rep.kernel_info:
+        rows = [[str(r.get("node_name", "")), str(r.get("module", "")),
+                 str(r.get("name", "")), str(r.get("value", ""))] for r in rep.kernel_info]
+        return ("\n### 内核事务水位（gs_get_kernel_info）\n\n"
+                "> GaussDB 私有函数返回的内核内存态指标（XACT / STANDBY / UNDO 等模块），"
+                "**每行是一个指标，不是一个事务**；要看具体挡着回收的事务或复制槽，看上面的「回收阻塞源」。"
+                "这里只原样列出，不做判定。\n\n" +
+                render.table(["节点", "模块", "指标", "值"], rows))
+    if rep.kernel_note:
+        return "\n### 内核事务水位（gs_get_kernel_info）\n\n> " + rep.kernel_note + "\n"
+    return ""
+
+
 def _autovac_status_section(rep: VacuumReport) -> str:
     return ("\n## autovacuum 近期运行情况\n\n" + _guc_section(rep) + "\n" +
-            _workers_section(rep) + "\n" + _xmin_blockers_section(rep))
+            _workers_section(rep) + "\n" + _xmin_blockers_section(rep) +
+            _kernel_info_section(rep))
 
 
 def _manual_cleanup_section(rep: VacuumReport) -> str:

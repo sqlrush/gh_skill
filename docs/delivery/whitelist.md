@@ -12,8 +12,8 @@ python3 -m grmp_middleware.dump_whitelist
 
 | 项 | 值 |
 |---|---|
-| 脚本总数 | 95 |
-| id 范围 | 1 ~ 101 |
+| 脚本总数 | 100 |
+| id 范围 | 1 ~ 106 |
 
 > `id` 是**环境相关数据，不是契约**。skill 从不持有它 —— 运行时调
 > 接口一按 `cmd_name` 现查。客户环境重新发布后 id 会不同，属正常。
@@ -22,7 +22,7 @@ python3 -m grmp_middleware.dump_whitelist
 
 | 命名空间 | 条数 | 脚本 |
 |---|---|---|
-| **explain** | 2 | `plan_text`, `plan_text_analyze` |
+| **explain** | 6 | `plan_text`, `plan_text_analyze`, `active_pid`, `kernel_funcs`, `runtime_plan`, `session_by_pid` |
 | **health** | 15 | `archive_mode`, `bgwriter`, `conn_concentration`, `conn_states`, `db_concurrency`, `db_info`, `invalid_index`, `long_xact`, `overview`, `prepared_xacts`, `replication`, `slow_sql`, `stale_stats`, `unused_index`, `stats_window` |
 | **lockwait** | 2 | `chain`, `pairs` |
 | **memanalyze** | 11 | `activity`, `cols_bare`, `cols_qualified`, `context`, `gucs`, `instance`, `session`, `wlm_operator`, `wlm_operator_hist`, `wlm_sql`, `wlm_sql_hist` |
@@ -36,7 +36,7 @@ python3 -m grmp_middleware.dump_whitelist
 | **sqltune** | 12 | `column_stats`, `from_history`, `from_statement`, `indexes`, `key_gucs`, `plan_json`, `plan_text`, `plan_text_analyze`, `tables`, `version`, `stats_freshness`, `column_types` |
 | **topproc** | 1 | `top_procs` |
 | **topsql** | 1 | `top_sql` |
-| **vacuum** | 4 | `autovac_settings`, `autovac_workers`, `dead_tuples`, `oldest_xmin` |
+| **vacuum** | 5 | `autovac_settings`, `autovac_workers`, `dead_tuples`, `oldest_xmin`, `kernel_info` |
 | **waitevent** | 2 | `events`, `instance_time` |
 | **wdr** | 13 | `cache`, `checkpoint`, `db_stat`, `db_summary`, `file_io`, `load_profile`, `native_report`, `node_name`, `snapshots`, `top_sql`, `waits`, `wdr_enabled`, `window` |
 
@@ -1699,9 +1699,68 @@ SELECT 'replication_slot' AS source,
 ORDER BY xmin_age_s DESC NULLS FIRST;
 ```
 
-### `sqltune.column_types`
+### `explain.active_pid`
 
 - id `101` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `sql_id` | INTEGER |
+
+```sql
+SELECT pid, unique_sql_id, query, query_start
+  FROM pg_stat_activity
+ WHERE unique_sql_id = {{sql_id}}
+   AND state = 'active'
+   AND pid <> pg_backend_pid()
+ ORDER BY query_start
+ LIMIT 1;
+```
+
+### `explain.kernel_funcs`
+
+- id `102` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+无参数
+
+```sql
+SELECT 'version' AS item, version() AS detail
+UNION ALL
+SELECT 'func:' || p.proname AS item, pg_get_function_arguments(p.oid) AS detail
+  FROM pg_proc p
+ WHERE p.proname IN ('gs_get_explain', 'gs_get_kernel_info');
+```
+
+### `explain.runtime_plan`
+
+- id `103` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `pid` | INTEGER |
+
+```sql
+SELECT gs_get_explain({{pid}}::integer) AS plan;
+```
+
+### `explain.session_by_pid`
+
+- id `104` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `pid` | INTEGER |
+
+```sql
+SELECT pid, unique_sql_id, query, query_start, state
+  FROM pg_stat_activity
+ WHERE pid = {{pid}}
+ LIMIT 1;
+```
+
+### `sqltune.column_types`
+
+- id `105` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1718,5 +1777,16 @@ WHERE c.relname IN ({{tables}})
   AND a.attnum > 0 AND NOT a.attisdropped
   AND c.relkind IN ('r','v','p','m')
   AND n.nspname NOT IN ('pg_catalog','information_schema');
+```
+
+### `vacuum.kernel_info`
+
+- id `106` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+无参数
+
+```sql
+SELECT node_name, module, name, value
+  FROM gs_get_kernel_info();
 ```
 

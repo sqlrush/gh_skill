@@ -1,6 +1,6 @@
 ---
 name: gaussdb-explain
-version: 2.0.0
+version: 2.1.0
 description: "通过内置脚本查看、运行、对比 OpenGauss/GaussDB SQL 的执行计划。用户只是想看 explain、执行计划、plan、cost、节点路径，包括“给我这条 SQL 的执行计划”“给我几个 SQL 的执行计划”“跑 explain”“看 plan”等请求。触发后运行 scripts/explain.py，返回真实 plan 和通俗易懂的节点解读；如果用户要继续做慢 SQL 根因分析、索引/改写建议、收益验证或完整调优，不要停在本 skill，应优先转给 gaussdb-sqltune。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -76,6 +76,19 @@ metadata:
    <the SQL>
    SQL
    ```
+
+2b. 如果用户给的是**正在执行的会话 pid**（从 gaussdb-lockwait / gaussdb-health / `pg_stat_activity` 看到的 `pid`），而不是 SQL 文本：
+
+   ```bash
+   python3 {baseDir}/scripts/explain.py -c <conn> --pid <pid>
+   ```
+
+   脚本先探测内核：**GaussDB 有 `gs_get_explain` 时取该会话的运行态计划**（内核里此刻实际在走的计划，不执行任何 SQL）；
+   没有（openGauss 本来就没有）或函数在但没返回计划时，自动取该会话当前语句走标准 `EXPLAIN`，得到的是估算计划。
+   报告「执行计划」下第一行「来源:…」写明拿到的是哪一种，**引用时要照实说**：运行态计划才能说「它现在就是这么跑的」，
+   估算计划只能说「规划器现在会这么跑」（受绑定值 / 统计信息 / 计划跳变影响）。
+   输出里若有「> 目标实例是 GaussDB…应包含 gs_get_explain…但查不到」这段说明，原样转达给用户——那是 catalog 未升级 /
+   逐库不一致 / 实参类型不符三种可能，脚本已给出核对 SQL，不要自己下结论是哪一种。
 
 3. 如果一次要看多条 SQL：
    - 每条 SQL 分别跑一次, 不允许多条SQL合成一段直接执行。
