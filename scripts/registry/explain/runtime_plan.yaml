@@ -3,24 +3,25 @@
 # 与 explain.plan_text 的本质差别:不执行任何 SQL、不需要 SQL 文本,拿到的是内核里正在走的那个计划
 # (估算计划可能因绑定值 / 统计信息 / 计划跳变而与之不同)。
 #
-# **`::integer` 是刻意写死的。** 官方签名 gs_get_explain(integer);2026-09-06 现场脚本传了 bigint,
-# int8 → int4 没有隐式转换,报 function gs_get_explain(bigint) does not exist。这里显式转型。
+# **签名按现场实测写 (bigint),不按文档的 (integer)。** 2026-09-08 客户在 GaussDB Kernel 505.2.1.SPC0600 上查
+# pg_catalog:gs_get_explain(bigint) / gs_get_dn_explain(text, bigint) / gs_get_kernel_info(),
+# 文档写的 (integer) 已过时。pg_stat_activity.pid 本来就是 64 位线程号(og5 实测 281440978523808),
+# 放不进 integer,bigint 才对得上。文档签名是 (integer) 的老内核用同族的 explain.runtime_plan_int4,
+# 调用侧(common/kernel_funcs.py)按探测到的签名二选一,签名两者都不是则不调、说明后退回 EXPLAIN。
 #
-# **但 pid 本身可能就放不进 integer。** openGauss / GaussDB 的 pg_stat_activity.pid 是 64 位线程号
-# (og5 实测 281440978523808),超出 integer 范围时 ::integer 会报 integer out of range。所以调用侧
-# (common/kernel_funcs.py)在**打库之前**检查范围与探测到的签名,超范围就不调、直接说明原因并退回
-# EXPLAIN——这一层关系正是现场那条报错的成因,写进提示里比让它在库里炸有用。
+# pid 走 String 参数位并在 SQL 里显式 ::bigint:中间件是文本替换,INTEGER 类型能不能承载 15 位数字
+# 各家实现不一,字符串 + 显式转型两边都没有歧义。
 #
 # 文档前提(任一不满足则返回空,调用方要把空当「没拿到」而不是「计划为空」):
 #   track_activities = on;plan_collect_thresh ≠ -1;语句可 EXPLAIN 且计划不含 STREAM 算子;
 #   分布式下只看 CN 生成的计划,DN 上的用 gs_get_dn_explain。
 # 只在 explain.kernel_funcs 探到该函数存在时调用;openGauss 上没有此函数,不会走到这条。
 name: explain.runtime_plan
-description: 按后台线程 pid 取运行态执行计划(gs_get_explain,GaussDB 私有;不执行 SQL)
+description: 按后台线程 pid 取运行态执行计划(gs_get_explain(bigint),GaussDB 私有,505.2.1 实测签名;不执行 SQL)
 readonly: true
 sql: |
-  SELECT gs_get_explain({{pid}}::integer) AS plan;
+  SELECT gs_get_explain('{{pid}}'::bigint) AS plan;
 params:
   - key: pid
-    type: INTEGER
-    description: 后台线程 pid(pg_stat_activity.pid);脚本内显式转为 integer
+    type: String
+    description: 后台线程 pid(pg_stat_activity.pid,64 位线程号);脚本内显式转为 bigint

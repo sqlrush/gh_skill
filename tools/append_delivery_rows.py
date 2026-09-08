@@ -48,12 +48,22 @@ def _existing_names(text: str) -> set:
     return set(re.findall(r"VALUES \([^,]+, '[A-Z]+', '([a-z_]+\.[a-z_0-9]+)'", text))
 
 
+def _drop_rows(text: str, name: str) -> str:
+    """删掉该脚本已有的 INSERT 块(块从行首 INSERT 开始、到下一个行首 INSERT 之前;SQL 正文跨多行)。
+    按块切再按名过滤,不用跨块的非贪婪正则——那种写法会从上一块的 INSERT 一路吞到本块。"""
+    blocks = re.split(r"(?=^INSERT INTO grmp\.script_config )", text, flags=re.M)
+    marker = re.compile(r"'SQL', '" + re.escape(name) + r"'")
+    return "".join(b for b in blocks if not marker.search(b))
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("names", nargs="+")
     ap.add_argument("--create-user", default="999999999")
     ap.add_argument("--database-type", action="append", default=[],
                     help="按前缀指定 database_type,如 explain=appbusiness;默认 postgres")
+    ap.add_argument("--replace", action="store_true",
+                    help="脚本已存在时先删旧行再按 registry 现状重写(SQL 正文或参数变了用这个)")
     args = ap.parse_args(argv)
     dbtype = dict(kv.split("=", 1) for kv in args.database_type)
 
@@ -61,7 +71,10 @@ def main(argv=None) -> int:
     have = _existing_names(text)
     added = []
     for name in args.names:
-        if name in have:
+        if name in have and args.replace:
+            text = _drop_rows(text, name)
+            print(f"替换(先删旧行):{name}")
+        elif name in have:
             print(f"跳过(已存在):{name}")
             continue
         prefix = name.split(".", 1)[0]

@@ -168,7 +168,7 @@ class _KernelRunner:
             if self.explain_args is not None:
                 rows.append({"item": "func:gs_get_explain", "detail": self.explain_args})
             return rows
-        if script == kf.RUNTIME_PLAN_SCRIPT:
+        if script in (kf.RUNTIME_PLAN_SCRIPT, kf.RUNTIME_PLAN_INT4_SCRIPT):
             return [{"plan": self.plan}]
         if script == kf.SESSION_BY_PID_SCRIPT:
             return [{"pid": str(values["pid"]), "query": self.session_query, "query_start": "", "state": "active"}]
@@ -182,7 +182,7 @@ def test_pid_uses_runtime_plan_when_the_kernel_has_gs_get_explain(monkeypatch, c
     out = capsys.readouterr().out
     assert "Runtime: Index Scan on t" in out
     assert "gs_get_explain" in out and "4321" in out and "运行态" in out       # 报告注明来源
-    assert kf.RUNTIME_PLAN_SCRIPT in r.calls and "explain.plan_text" not in r.calls
+    assert kf.RUNTIME_PLAN_INT4_SCRIPT in r.calls and "explain.plan_text" not in r.calls   # integer 签名走 int4 脚本
 
 
 def test_pid_falls_back_to_explain_when_function_is_absent(monkeypatch, capsys):
@@ -311,3 +311,14 @@ def test_analyze_that_really_ran_is_not_second_guessed(monkeypatch, capsys):
     import json
     data = json.loads(capsys.readouterr().out)
     assert data["analyzed"] is True and "估算" not in data["source"] and not data["notes"]
+
+
+def test_pid_bigint_signature_uses_runtime_plan_for_a_64bit_thread_id(monkeypatch, capsys):
+    """505.2.1.SPC0600 实测 gs_get_explain(bigint):64 位线程号直接走运行态计划,不再被 integer 范围检查拦下。"""
+    r = _KernelRunner(GAUSS_VER, explain_args="bigint")
+    monkeypatch.setattr(explain_mod.access, "for_conn", lambda *a, **k: r)
+    assert explain_mod.main(["--pid", "281440978523808"]) == 0
+    out = capsys.readouterr().out
+    assert "Runtime: Index Scan on t" in out and "运行态" in out and "281440978523808" in out
+    assert kf.RUNTIME_PLAN_SCRIPT in r.calls and kf.RUNTIME_PLAN_INT4_SCRIPT not in r.calls
+    assert "integer 范围" not in out and "来源:EXPLAIN 估算计划" not in out
