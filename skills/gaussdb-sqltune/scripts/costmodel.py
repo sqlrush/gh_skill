@@ -164,7 +164,7 @@ def clamp_row_est(rows: float) -> float:
     没有这个下限，选择率极小时会算出 0.0001 行，后面一路乘下去让代价趋近 0
     —— 于是任何索引看起来都收益无穷大。
     """
-    if rows != rows:  # NaN
+    if math.isnan(rows):
         raise ModelError("行数估算得到 NaN")
     if rows <= 1.0:
         return 1.0
@@ -640,5 +640,5 @@ def _maxalign(width: int) -> int:
 
 
 def _require_range(name: str, value: float, low: float, high: float) -> None:
-    if value is None or value != value or not (low <= value <= high):
+    if value is None or math.isnan(value) or not (low <= value <= high):
         raise ModelError("%s 应在 [%.15g, %.15g] 内，取到 %r" % (name, low, high, value))

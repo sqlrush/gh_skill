@@ -20,6 +20,7 @@
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
@@ -190,7 +191,7 @@ def relative_deviation(computed: float, measured: float) -> float:
     比较都返回 False，`deviation <= tolerance` 会**判成不超差**，于是一个
     彻底算错的节点被当成吻合。这是本文件里最隐蔽的一个坑。
     """
-    if computed != computed or measured != measured:   # NaN
+    if math.isnan(computed) or math.isnan(measured):
         return float("inf")
     if measured == 0.0:
         return abs(computed)

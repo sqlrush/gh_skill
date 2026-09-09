@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -266,6 +267,6 @@ def merge_scan_fractions(outer: ColumnStats, inner: ColumnStats
 
 
 def _clamp(value: float) -> float:
-    if value != value:      # NaN
+    if math.isnan(value):
         raise SelectivityError("选择率算出 NaN")
     return min(1.0, max(0.0, value))
