@@ -12,8 +12,8 @@ python3 -m grmp_middleware.dump_whitelist
 
 | 项 | 值 |
 |---|---|
-| 脚本总数 | 117 |
-| id 范围 | 1 ~ 123 |
+| 脚本总数 | 118 |
+| id 范围 | 1 ~ 124 |
 
 > `id` 是**环境相关数据，不是契约**。skill 从不持有它 —— 运行时调
 > 接口一按 `cmd_name` 现查。客户环境重新发布后 id 会不同，属正常。
@@ -22,7 +22,7 @@ python3 -m grmp_middleware.dump_whitelist
 
 | 命名空间 | 条数 | 脚本 |
 |---|---|---|
-| **explain** | 12 | `plan_text`, `plan_text_analyze`, `active_pid`, `kernel_funcs`, `runtime_plan`, `session_by_pid`, `runtime_plan_int4`, `multi_stmt_probe`, `plan_text_analyze_schema`, `plan_text_schema`, `from_history`, `from_statement` |
+| **explain** | 13 | `plan_text`, `plan_text_analyze`, `active_pid`, `kernel_funcs`, `runtime_plan`, `session_by_pid`, `runtime_plan_int4`, `multi_stmt_probe`, `plan_text_analyze_schema`, `plan_text_schema`, `from_history`, `from_statement`, `relation_schemas` |
 | **health** | 15 | `archive_mode`, `bgwriter`, `conn_concentration`, `conn_states`, `db_concurrency`, `db_info`, `invalid_index`, `long_xact`, `overview`, `prepared_xacts`, `replication`, `slow_sql`, `stale_stats`, `unused_index`, `stats_window` |
 | **lockwait** | 2 | `chain`, `pairs` |
 | **memanalyze** | 11 | `activity`, `cols_bare`, `cols_qualified`, `context`, `gucs`, `instance`, `session`, `wlm_operator`, `wlm_operator_hist`, `wlm_sql`, `wlm_sql_hist` |
@@ -2051,5 +2051,20 @@ WHERE unique_sql_id = {{sid}}
   AND query IS NOT NULL
   AND LENGTH(TRIM(query)) > 0
 LIMIT 1;
+```
+
+### `explain.relation_schemas`
+
+- id `124` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `names` | STRING |
+
+```sql
+SELECT n.nspname, c.relname
+FROM pg_class c
+LEFT JOIN pg_namespace n ON c.relnamespace = n.oid
+WHERE c.relname IN ({{names}}) AND c.relkind IN ('r','v','p','m','f');
 ```
 

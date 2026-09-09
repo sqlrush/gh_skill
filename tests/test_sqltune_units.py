@@ -538,3 +538,53 @@ def test_column_type_inference_uses_the_resolved_schema():
     types = coltypes.infer_types(r, "select * from orders where status = ?", schema="app")
     assert types == ["text"]
     assert coltypes.infer_types(_TwoSchemaRunner(), "select * from orders where status = ?") == [None]   # 不知道 schema:冲突就放弃,老行为
+
+
+# ---------------------------------------------------------------- 贴文本没带 --schema / 按 id 只有推测值 → 目录推断
+
+class _CatalogRunner:
+    def __init__(self, rows):
+        self.rows, self.calls = rows, []
+
+    def run(self, script, values=None):
+        self.calls.append((script, dict(values or {})))
+        assert script == evidence.TABLES_SCRIPT
+        return [{"nspname": s, "relname": t} for s, t in self.rows]
+
+
+def test_text_without_schema_is_resolved_from_the_catalog():
+    import sqltune
+    r = _CatalogRunner([("gmag", "batch_job_status")])
+    assert sqltune.resolve_schema(r, "select count(1) from batch_job_status", "", "") == ("gmag", "catalog")
+    assert r.calls and r.calls[0][1] == {"names": "'batch_job_status'"}
+
+
+def test_explicit_schema_is_never_second_guessed():
+    import sqltune
+    r = _CatalogRunner([("other", "t")])
+    assert sqltune.resolve_schema(r, "select * from t", "gmag", "--schema") == ("gmag", "--schema")
+    assert r.calls == []
+
+
+def test_user_name_guess_yields_to_a_unique_catalog_match():
+    import sqltune
+    r = _CatalogRunner([("gmag", "t")])
+    assert sqltune.resolve_schema(r, "select * from t", "kf_app", "user_name") == ("gmag", "catalog")
+
+
+def test_ambiguous_tables_raise_with_candidates_instead_of_guessing():
+    import pytest
+    import sqltune
+    r = _CatalogRunner([("gbatch", "t"), ("dsc_ora_public", "t")])
+    with pytest.raises(ValueError) as ei:
+        sqltune.resolve_schema(r, "select * from t", "", "")
+    assert "gbatch" in str(ei.value) and "dsc_ora_public" in str(ei.value) and "--schema" in str(ei.value)
+    assert sqltune.resolve_schema(r, "select * from t", "gbatch", "user_name") == ("gbatch", "user_name")   # 推测值在候选里就留
+
+
+def test_nothing_in_catalog_keeps_the_old_behaviour():
+    import sqltune
+    r = _CatalogRunner([])
+    assert sqltune.resolve_schema(r, "select * from t", "", "") == ("", "")
+    assert sqltune.resolve_schema(r, "select * from t", "kf_app", "user_name") == ("kf_app", "user_name")
+    assert "catalog" in sqltune._SCHEMA_SOURCE_LABEL

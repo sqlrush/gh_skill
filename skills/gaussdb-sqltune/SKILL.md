@@ -1,6 +1,6 @@
 ﻿---
 name: gaussdb-sqltune
-version: 2.6.0
+version: 2.7.0
 description: "通过内置脚本对 OpenGauss/GaussDB 的慢 SQL 做深度调优和证据化验证。仅在用户要定位慢 SQL 根因、给出索引/改写/GUC 调优建议、验证某个优化方案是否真的带来收益，或基于 sql_id、Top SQL、slow SQL、WDR 结果继续调优时使用，包括“优化这条 SQL”“这条 SQL 为什么慢并怎么改”“看看建什么索引”“这个改写有没有收益”“给我一套能落地的优化建议”等请求。触发后运行 scripts/sqltune.py 和 scripts/verify.py，输出带证据链、可解释原因和已验证收益的调优结论；如果用户只是想看 explain、执行计划、plan 对比，不要优先使用本 skill。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -62,8 +62,10 @@ metadata:
 2a. **表名不带 schema 的业务 SQL —— 让脚本先切 search_path。** 应用 SQL 的表名多半不带 schema，靠应用账号的 search_path 解析；
    中间件执行账号解析不到就报 `relation "xxx" does not exist`（中间件路径表现为 HTTP 400）。按 sql_id 调优时脚本会自动取
    statement_history 记录的 schema（备机退回 dbe_perf.statement 时按执行账号 user_name 推测，报告里标「推测」），EXPLAIN 前先
-   `SET search_path`；`--sql-stdin` 时你要把 schema 传进 `--schema <schema>`——文本来自 sqlfetch 就用它打印的 `Schema:` 行，
-   用户没说又查不到就问用户，**绝不猜 public 或别的 schema 去试**；用户给的是 sql_id 时**首选按 id 调**，不要先 sqlfetch 再贴文本。
+   `SET search_path`；`--sql-stdin` 时你要把 schema 传进 `--schema <schema>`——文本来自 sqlfetch 就用它打印的 `Schema:` 行。
+   没带 `--schema` 时脚本会按表名在目录里找：只在一个 schema 下就直接用（报告写「按表名在目录里唯一匹配推断」）；同名表在
+   多个 schema 下时脚本拒绝执行并列出候选——把候选转给用户选，**绝不猜 public 或别的 schema 去试**；用户给的是 sql_id 时
+   **首选按 id 调**，不要先 sqlfetch 再贴文本。
    报告头部的 `Search path` 行：「已切到」= 切换生效；「未切换,已改为补全表名取计划」= 中间件跑不了两条语句，**脚本已自己把
    不带 schema 的表名按该 schema 补全**，计划与原 SQL 等价，照常分析，并把那句里的根治办法（DBA 给执行账号设 search_path 的
    `ALTER ROLE` 命令）转给用户；「未切换 ——」且没有补全说明，把原因原样转给用户。你自己**不要改写 SQL 里的表名**。

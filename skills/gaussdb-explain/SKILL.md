@@ -1,6 +1,6 @@
 ---
 name: gaussdb-explain
-version: 2.3.0
+version: 2.4.0
 description: "通过内置脚本查看、运行、对比 OpenGauss/GaussDB SQL 的执行计划。用户只是想看 explain、执行计划、plan、cost、节点路径，包括“给我这条 SQL 的执行计划”“给我几个 SQL 的执行计划”“跑 explain”“看 plan”等请求。触发后运行 scripts/explain.py，返回真实 plan 和通俗易懂的节点解读；如果用户要继续做慢 SQL 根因分析、索引/改写建议、收益验证或完整调优，不要停在本 skill，应优先转给 gaussdb-sqltune。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -81,8 +81,9 @@ metadata:
    SQL
    ```
 
-   **SQL 文本来自 sqlfetch 的输出时，把它打印的 `Schema:` 那一行原样带成 `--schema <schema>`**（见 2c）；
-   表名不带 schema 又不知道 schema 时问用户，**绝不自己猜 public 或别的 schema 去试**。
+   **SQL 文本来自 sqlfetch 的输出时，把它打印的 `Schema:` 那一行原样带成 `--schema <schema>`**（见 2c）。
+   没带 `--schema` 时脚本会按表名在目录里找：只在一个 schema 下就直接用（「来源:」行写「按表名在目录里唯一匹配推断」）；
+   同名表在多个 schema 下时脚本会停下来列出候选——把候选转给用户选，**绝不自己猜 public 或别的 schema 去试**。
 
 2. 如果用户明确要求 `EXPLAIN ANALYZE`，执行：
 

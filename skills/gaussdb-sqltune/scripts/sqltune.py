@@ -36,6 +36,7 @@ from common import cli  # noqa: E402
 from common.grmp.hints import ensure_hint  # noqa: E402
 from common import kernel_funcs as kf  # noqa: E402
 from common import search_path as sp  # noqa: E402
+from common import schema_infer  # noqa: E402
 from common.grmp import statement as stmt_mod  # noqa: E402
 from common.grmp.statement import (  # noqa: E402
     ExplainNotAllowed,
@@ -43,6 +44,7 @@ from common.grmp.statement import (  # noqa: E402
 )
 import render  # noqa: E402
 import systables  # noqa: E402
+from evidence import TABLES_SCRIPT  # noqa: E402  —— 贴文本没带 --schema 时按表名查目录推断 schema
 from evidence import (  # noqa: E402
     Evidence,
     collect,
@@ -323,6 +325,7 @@ def tune_by_id(runner, db, raw_id: str, binds: list[str], do_analyze: bool,
             f"track_activity_query_size 限制了留存长度，数据库里就没有完整 SQL。"
             f"无法对半截 SQL 做调优。请改用 `--sql-stdin` 传入完整 SQL 文本"
             f"（或调大 track_activity_query_size 并让该 SQL 重新执行后再按 id 取）。")
+    schema, schema_source = resolve_schema(runner, fr.sql, schema, schema_source)   # 推测值让位给目录唯一匹配
     try:
         tr = _tune(runner, db, original_sql=fr.sql, binds=binds, do_analyze=do_analyze,
                    sql_id=fr.sql_id, source=fr.source, schema=schema)
@@ -343,11 +346,27 @@ def tune_by_id(runner, db, raw_id: str, binds: list[str], do_analyze: bool,
 
 def tune_by_sql(runner, db, sql_text: str, binds: list[str], do_analyze: bool,
                 schema: str = "") -> TuneResult:
+    schema, source = resolve_schema(runner, sql_text, schema, "--schema" if schema else "")
     tr = _tune(runner, db, original_sql=sql_text, binds=binds, do_analyze=do_analyze, schema=schema)
-    return replace(tr, schema_source="--schema") if schema else tr
+    return replace(tr, schema_source=source) if schema else tr
+
+
+def resolve_schema(runner, sql_text: str, schema: str, source: str) -> tuple[str, str]:
+    """贴文本没带 --schema(客户 09-09 早:模型漏了参数 → 400)/ 按 id 只有按账号名推测的值时,按表名在目录里找:
+    唯一匹配就用(来源记 catalog);同名表跨 schema 又定不下来就拒绝并列出候选——不猜;目录里没有就照旧。
+    用户显式给的 --schema 和 statement_history 的记录值不动。"""
+    if schema and source != "user_name":
+        return schema, source
+    inf = schema_infer.infer(runner, TABLES_SCRIPT, sql_text, guess=schema)
+    if inf.ambiguous:
+        raise ValueError(schema_infer.describe(inf))
+    if inf.schema and not inf.via_guess:
+        return inf.schema, "catalog"
+    return schema, source
 
 
 _SCHEMA_SOURCE_LABEL = {
+    "catalog": "按表名在目录里唯一匹配推断",
     "statement_history": "statement_history 记录值",
     "user_name": "按执行账号 user_name 推测",
     "--schema": "用户指定",

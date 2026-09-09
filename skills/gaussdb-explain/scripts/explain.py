@@ -29,6 +29,7 @@ from common import access  # noqa: E402
 from common import cli  # noqa: E402
 from common import kernel_funcs as kf  # noqa: E402
 from common import search_path as sp  # noqa: E402
+from common import schema_infer  # noqa: E402
 from common import explain_actual as ea  # noqa: E402
 from common.grmp import statement as stmt  # noqa: E402
 from common.grmp.statement import (  # noqa: E402
@@ -36,7 +37,15 @@ from common.grmp.statement import (  # noqa: E402
     ensure_explainable,
 )
 import render  # noqa: E402
-import sqlfetch  # noqa: E402  —— --sql-id:按 unique_sql_id 取 SQL 原文与 schema(explain.from_history / explain.from_statement)
+# --sql-id:按 unique_sql_id 取 SQL 原文与 schema(explain.from_history / explain.from_statement)。
+# 按路径显式加载本目录的 sqlfetch.py:各 skill 都有一份同名 sqlfetch 模块、脚本名不同,同一进程里(单测)按模块名 import 会拿到别家的。
+import importlib.util as _ilu  # noqa: E402
+_sf_spec = _ilu.spec_from_file_location("explain_sqlfetch", str(_HERE.parent / "sqlfetch.py"))
+sqlfetch = _ilu.module_from_spec(_sf_spec)
+sys.modules[_sf_spec.name] = sqlfetch          # dataclass 解析字段类型时要在 sys.modules 里找到它
+_sf_spec.loader.exec_module(sqlfetch)
+
+RELATION_SCHEMAS_SCRIPT = "explain.relation_schemas"   # 贴文本没带 --schema 时按表名查目录推断 schema
 
 # --pid 路径依赖的白名单脚本(走中间件必须先注册;交付闸按脚本名全串在 skills/ 里检索,故写全):
 #   explain.kernel_funcs   探测 version() 与 gs_get_explain / gs_get_kernel_info 是否存在
@@ -49,6 +58,8 @@ import sqlfetch  # noqa: E402  —— --sql-id:按 unique_sql_id 取 SQL 原文�
 #   explain.plan_text_analyze_schema  同上,analyze 名下的那份(现场 ANALYZE 固定关闭)
 # --sql-id 路径依赖的白名单脚本(scripts/sqlfetch.py,与 sqltune 的同体):
 #   explain.from_history / explain.from_statement
+# 贴文本没带 --schema 时按表名查目录推断 schema(common/schema_infer.py):
+#   explain.relation_schemas
 #
 # 2026-09 现场四类报错之一就是脚本直接调 gs_get_explain 报 does not exist:openGauss 从来没有它,
 # GaussDB 缺失时也可能是 catalog 未升级 / 逐库不一致 / 实参类型不符。所以先探测再用,
@@ -272,6 +283,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     fetch_notes: tuple = ()
     fetch_source = ""
     schema = args.schema
+    fr = None
     if args.sql_id is not None:
         # 客户 09-09 早截图:模型按 sqlfetch → explain 的流程贴文本,schema 在贴文本那一步丢了 → 400。
         # 按 id 取时 statement_history 的 schema_name 一起带回来,表名不带 schema 也能出计划。
@@ -351,6 +363,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         if args.sql_id is None:
             runner = access.for_conn(args.conn, timeout=args.timeout)
+        # 没有 schema(贴文本漏了 --schema)或只有按账号名推测的值:按表名在目录里找,唯一就用,歧义就停下来问,不猜。
+        guessed = args.sql_id is not None and getattr(fr, "schema_source", "") == "user_name"
+        if not schema or guessed:
+            inf = schema_infer.infer(runner, RELATION_SCHEMAS_SCRIPT, sql_text, guess=schema)
+            if inf.ambiguous:
+                print(f"error: {schema_infer.describe(inf)}", file=sys.stderr)
+                return 2
+            if inf.schema and not inf.via_guess:
+                schema = inf.schema
+                fetch_source = (fetch_source + ";" if fetch_source else "") + f"schema={schema}(按表名在目录里唯一匹配推断)"
         plan, applied, sp_note = explain_plan_via_script(runner, sql_text, args.analyze, schema)
     # access.QueryError 必须在列 —— 它是本项目归一化的「取数失败」类型，
     # runner.run() 在 SQL 本身执行失败时抛的就是它（打错字、表不存在、

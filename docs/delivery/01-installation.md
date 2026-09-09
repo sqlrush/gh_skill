@@ -551,7 +551,7 @@ python3 $SKILLS/gaussdb-sqlfetch/scripts/sqlfetch.py -c og-prod -- -9876543210
 | `--sql-stdin` | flag | — | 从 stdin 读取 SQL 文本；与 `--sql-id`、`--pid` 三选一 |
 | `--sql-id` | int（可为负） | — | 按 `unique_sql_id` 从 statement_history 取 SQL 原文与它当初执行的 schema（备机退回 dbe_perf.statement 时按执行账号推测）；表名不带 schema 也能出计划。依赖白名单脚本 `explain.from_history` / `explain.from_statement` |
 | `--analyze` | flag | 关闭 | 使用 `EXPLAIN ANALYZE`（直连原始会话时会真实执行 SQL，DML 自动包在回滚事务中；中间件路径的现场脚本按客户只读要求固定关闭 ANALYZE，此时拿到的是估算计划，报告会写明）|
-| `--schema` | string | 空 | SQL 原本执行时的 schema：EXPLAIN 前先切 search_path（表名不带 schema 时必需；按 sql_id 时默认取 statement_history 记录值） |
+| `--schema` | string | 空 | SQL 原本执行时的 schema：EXPLAIN 前先切 search_path。不给时脚本按表名在目录里找（explain 用 `explain.relation_schemas`，sqltune 用 `sqltune.tables`）：唯一匹配直接用，同名表跨 schema 则列出候选并退出；按 sql_id 时默认取 statement_history 记录值 |
 | `--format` | `markdown`\|`json` | `markdown` | 输出格式 |
 | `--timeout` | int | `30` | 语句超时（秒） |
 
@@ -590,7 +590,7 @@ SQL
 | `--sql-stdin` | flag | 关闭 | 从 stdin 读取 SQL 文本，与 `sql_id` 二选一 |
 | `--bind` | str（可重复） | `[]` | 按占位符顺序提供真实绑定值，例如 `--bind 42 --bind foo` |
 | `--analyze` | flag | 关闭 | 使用 `EXPLAIN ANALYZE`（直连原始会话时会真实执行 SQL，DML 自动包在回滚事务中；中间件路径的现场脚本按客户只读要求固定关闭 ANALYZE，此时拿到的是估算计划，报告会写明） |
-| `--schema` | string | 空 | SQL 原本执行时的 schema：EXPLAIN 前先切 search_path（表名不带 schema 时必需；按 sql_id 时默认取 statement_history 记录值） |
+| `--schema` | string | 空 | SQL 原本执行时的 schema：EXPLAIN 前先切 search_path。不给时脚本按表名在目录里找（explain 用 `explain.relation_schemas`，sqltune 用 `sqltune.tables`）：唯一匹配直接用，同名表跨 schema 则列出候选并退出；按 sql_id 时默认取 statement_history 记录值 |
 | `--format` | `markdown`\|`json` | `markdown` | 输出格式 |
 | `--timeout` | int | `30` | 语句超时（秒） |
 

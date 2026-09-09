@@ -428,3 +428,45 @@ def test_sql_id_with_normalized_text_points_to_sqltune(monkeypatch, capsys):
     assert explain_mod.main(["--sql-id", "7"]) == 2
     err = capsys.readouterr().err
     assert "归一化" in err and "sqltune" in err and "--sql-stdin --schema kf_app" in err and "Traceback" not in err
+
+
+# ---------------------------------------------------------------- 贴文本没带 --schema → 脚本按表名在目录里推断
+
+class _InferRunner(_Runner):
+    def __init__(self, rows):
+        self.rows, self.calls = rows, []
+
+    def run(self, script, values=None):
+        self.calls.append((script, dict(values or {})))
+        if script == "explain.relation_schemas":
+            return [{"nspname": s, "relname": t} for s, t in self.rows]
+        if script == "explain.multi_stmt_probe":
+            return [{"ok": "1"}]
+        return super().run(script, values)
+
+
+def test_stdin_without_schema_infers_it_from_the_catalog(monkeypatch, capsys):
+    import io
+    from common import search_path as sp
+    sp.reset_probe_cache()
+    r = _InferRunner([("gmag", "batch_job_status")])
+    monkeypatch.setattr(explain_mod.access, "for_conn", lambda *a, **k: r)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("SELECT COUNT(1) FROM batch_job_status WHERE x = 1"))
+    assert explain_mod.main(["--sql-stdin"]) == 0, capsys.readouterr().err
+    out = capsys.readouterr().out
+    assert ("explain.relation_schemas", {"names": "'batch_job_status'"}) in r.calls
+    assert any(c[0] == "explain.plan_text_schema" and c[1]["schema"] == "gmag" for c in r.calls)
+    assert "search_path=gmag" in out and "推断" in out
+
+
+def test_stdin_with_ambiguous_tables_lists_candidates_and_stops(monkeypatch, capsys):
+    import io
+    from common import search_path as sp
+    sp.reset_probe_cache()
+    r = _InferRunner([("gbatch", "t_lmpcdtl"), ("dsc_ora_public", "t_lmpcdtl")])
+    monkeypatch.setattr(explain_mod.access, "for_conn", lambda *a, **k: r)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("SELECT * FROM t_lmpcdtl"))
+    assert explain_mod.main(["--sql-stdin"]) == 2
+    err = capsys.readouterr().err
+    assert "gbatch" in err and "dsc_ora_public" in err and "--schema" in err
+    assert not any(c[0].startswith("explain.plan_text") for c in r.calls)     # 没猜着去跑

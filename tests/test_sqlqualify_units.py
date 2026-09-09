@@ -109,3 +109,7 @@ def test_placeholders_and_whitespace_are_preserved():
 def test_invalid_schema_is_rejected():
     with pytest.raises(ValueError):
         _q("SELECT * FROM t", schema="x; drop")
+
+
+def test_unqualified_tables_lists_only_bare_table_positions():
+    assert q.unqualified_tables("SELECT * FROM a x, b.c y JOIN d ON true WHERE id IN (SELECT id FROM e)") == ["a", "d", "e"]
