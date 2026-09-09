@@ -96,3 +96,19 @@ def test_sqltune_statement_fallback_guesses_the_schema_from_user_name():
     assert r2.schema == "app" and r2.schema_source == "statement_history"
     r3 = mod.sql_fetch(FakeRunner(), "7")                       # 老白名单行没有 user_name 列:不崩,schema 为空
     assert r3.schema == "" and r3.schema_source == ""
+
+
+def test_sqlfetch_report_points_to_by_id_and_carries_the_schema():
+    """现场(客户 09-09 早):模型按 sqlfetch → explain --sql-stdin 贴文本,schema 在这一步丢了 → 400。
+    sqlfetch 的收尾提示是模型下一步的直接依据:要指向按 id 的入口,贴文本时必须把 Schema 带成 --schema,不许猜。"""
+    mod = _load("sqlfetch")
+    r = mod.FetchResult(sql_id="1568852919", sql="select 1 from batch_job_status", schema="gmag",
+                        source="statement_history", normalized=False, placeholders=0)
+    out = mod.fetch_report(r)
+    assert "explain.py -c <conn> --sql-id 1568852919" in out
+    assert "sqltune.py -c <conn> 1568852919" in out
+    assert "--schema gmag" in out and "不要猜" in out
+    r2 = mod.FetchResult(sql_id="7", sql="select 1 from t", schema="",
+                         source="statement", normalized=True, placeholders=1)
+    out2 = mod.fetch_report(r2)
+    assert "--schema " not in out2 and "问用户" in out2
