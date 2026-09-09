@@ -198,3 +198,12 @@ def test_validate_is_quiet_when_the_symptom_is_merged(tmp_path, capsys):
     kb.cmd_validate(_ns(d))
     out = capsys.readouterr().out
     assert "canonical.yaml" not in out or "走不到" not in out
+
+
+def test_health_prints_the_upload_inbox_dir(tmp_path, capsys, monkeypatch):
+    """用户要导入自己电脑上的文件时,模型得能说出「传到沙箱哪个目录」——这行就是那个目录。"""
+    monkeypatch.delenv("GSDB_KB_INBOX", raising=False)
+    d = _kb(tmp_path)
+    kb_store.cmd_health(_ns(d))
+    out = capsys.readouterr().out
+    assert "收件目录" in out and str(d / "inbox" / "uploads") in out

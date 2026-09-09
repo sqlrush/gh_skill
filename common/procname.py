@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]{0,62}$")
 
@@ -25,6 +25,16 @@ class ProcRef:
     schema: str
     package: str
     name: str
+
+
+class NotFound(ValueError):
+    """按名字查不到过程。带上 ref 与 tried(按什么查过),skill 用它们代为排查(common/proc_locate.py):
+    连的库对不对、执行账号有没有权限、过程本身在不在——而不是只给用户一句「找不到」。"""
+
+    def __init__(self, ref: ProcRef, tried: Tuple[str, ...], message: str):
+        super().__init__(message)
+        self.ref = ref
+        self.tried = tuple(tried)
 
 
 def _ident(part: str, what: str) -> str:
@@ -66,11 +76,11 @@ def lookup(runner, script: str, qualified_name: str) -> Dict[str, Any]:
         if rows:
             break
     if not rows:
-        tried = " / ".join(qualified(s, p, ref.name) for s, p in attempts)
-        raise ValueError(
+        tried = tuple(qualified(s, p, ref.name) for s, p in attempts)
+        raise NotFound(ref, tried, (
             "过程 %r 在当前库的 pg_proc 里找不到(按 %s 查过)。包内过程请写全 schema.package.proc;"
             "也请核对所连的库与 schema——包内过程同样登记在 pg_proc 里,不是「不支持」。"
-            % (qualified_name, tried))
+            % (qualified_name, " / ".join(tried))))
     distinct = sorted({(str(r.get("nspname", "")), str(r.get("package", "") or "")) for r in rows})
     if len(distinct) > 1:
         cands = "、".join(qualified(s, p, ref.name) for s, p in distinct)
@@ -80,4 +90,4 @@ def lookup(runner, script: str, qualified_name: str) -> Dict[str, Any]:
     return rows[0]
 
 
-__all__ = ["IDENT_RE", "ProcRef", "split_qualified", "qualified", "lookup"]
+__all__ = ["IDENT_RE", "ProcRef", "NotFound", "split_qualified", "qualified", "lookup"]

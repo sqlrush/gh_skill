@@ -1021,3 +1021,13 @@ def test_ingest_says_so_when_it_overwrites_an_unprocessed_inbox(tmp_path):
     assert "覆盖" in second.stdout, "静默冲掉上次未处理的待办是不行的"
     assert "2 行" in second.stdout, "要报出被覆盖的是多少内容"
     assert "sources/" in second.stdout, "要指明原文快照还在,没真丢"
+
+
+def test_ingest_local_machine_path_tells_user_to_upload(tmp_path, capsys, monkeypatch):
+    """现场:用户给 D:\\AI\\…md 让导入。skill 在沙箱里读不到,要直说「传到沙箱的哪个目录」,不是一句「文件不存在」。"""
+    monkeypatch.delenv("GSDB_KB_INBOX", raising=False)
+    rc = kb.main(["ingest", r"D:\AI\报告.md", "--kb", str(tmp_path / "kb")])
+    cap = capsys.readouterr()
+    text = cap.out + cap.err
+    assert rc != 0
+    assert "沙箱" in text and "上传" in text and str(tmp_path / "kb" / "inbox" / "uploads") in text

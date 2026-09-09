@@ -1,6 +1,6 @@
 ﻿---
 name: gaussdb-procinfo
-version: 2.1.0
+version: 2.2.0
 description: "通过内置脚本查看、拆解、解读 OpenGauss/GaussDB 存储过程的源码结构和热点分布。用户只是想看过程源码、看看过程里哪一段最重、查循环内 SQL、逐行 DML、动态 SQL、循环异常、嵌入语句等结构问题，或想先知道过程为什么慢但暂时不做收益验证时使用，包括“看下这个存储过程”“查过程源码”“这个过程为什么慢”“有没有循环里执行 SQL”“帮我看看这个过程卡在哪一段”等请求。触发后运行 scripts/procinfo.py，返回真实过程证据和通俗易懂的热点解读；如果用户要继续做可验证的优化、验证游标 SQL 改写或索引收益，不要停在本 skill，应优先转给 gaussdb-proctune。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -53,8 +53,11 @@ metadata:
 
    **包（Package）内的过程照样能看**：GaussDB/openGauss 把包体里的过程登记在 pg_proc 里，脚本联 gs_package 取源码。慢 SQL 里
    `call a.b.c(...)` 的三段名**原样传**（schema.package.proc）；两段名脚本会同时按 schema.proc 与 package.proc 去找。
-   脚本报「同名过程不止一个」并列出候选时，把候选转给用户确认要哪一个，**不要自己挑**；报「找不到」时把脚本原话转给用户，
-   **不要自己解释成「GaussDB 不支持包 / 包子程序不在 pg_proc」**，那不是事实。
+   脚本报「同名过程不止一个」并列出候选时，把候选转给用户确认要哪一个，**不要自己挑**。
+   脚本报「过程未找到」时它已经代为排查过（当前连的库和账号、schema 是否可见与有无 USAGE 权限、近似名的过程与包），
+   输出里有**结论**、编号的**问题清单**和 DBA 核对 SQL：把结论和问题清单**原样**转给用户，等用户回答后按回答重跑
+   （要换库就让用户重新 login 到那个库；要授权就让 DBA 执行报告里的 GRANT 命令）。**不要自己另写 SQL 去查目录、不要猜名字、
+   不要拿别的过程代替**，也**不要解释成「GaussDB 不支持包 / 包子程序不在 pg_proc」**，那不是事实。
 
    产 `## Procedure Source`、`## Structural Findings`、`## Embedded Statements`、`## Runtime Attribution`、`## Key Parameters (GUC)`。
 

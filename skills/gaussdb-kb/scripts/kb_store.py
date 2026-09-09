@@ -221,6 +221,8 @@ def cmd_health(args: argparse.Namespace) -> int:
     finally:
         sess.close()
     print(render.status_line(status))
+    from common.kb import inbox as kbinbox
+    print(f"收件目录  : {kbinbox.inbox_dir(kb)}(用户要导入自己电脑上的文件时,先上传到这里再 ingest)")
     for w in file_warnings:
         print(f"[warn ] 文件:{w}")
     state = indexer.read_state(kb) or {}

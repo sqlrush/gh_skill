@@ -35,6 +35,18 @@ _REGISTRY = _ROOT / "scripts" / "registry"
 
 # 每组内的脚本 SQL 必须逐字相同。组名只是给失败信息用的。
 _GROUPS = {
+    "过程找不到时的排查:当前连接": [
+        "procinfo/locate_context.yaml",
+        "proctune/locate_context.yaml",
+    ],
+    "过程找不到时的排查:schema": [
+        "procinfo/locate_schema.yaml",
+        "proctune/locate_schema.yaml",
+    ],
+    "过程找不到时的排查:近似名搜索": [
+        "procinfo/locate_search.yaml",
+        "proctune/locate_search.yaml",
+    ],
     "关键 GUC": [
         "procinfo/key_gucs.yaml",
         "proctune/key_gucs.yaml",

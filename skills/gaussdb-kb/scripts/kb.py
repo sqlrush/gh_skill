@@ -367,7 +367,10 @@ def unique_path(target: pathlib.Path) -> pathlib.Path:
 def cmd_ingest(args: argparse.Namespace) -> int:
     src = pathlib.Path(args.file).expanduser()
     if not src.is_file():
-        raise KbError(f"文件不存在:{src}")
+        # 现场:用户给的是自己电脑上的路径(D:\…)。skill 在沙箱里读不到,要说清「上传到沙箱哪个目录、命令怎么写」,
+        # 并按文件名在沙箱常见目录找一遍同名文件——前端可能已经传上来了。
+        from common.kb import inbox as kbinbox
+        raise KbError(kbinbox.missing_file_message(args.file, resolve_kb_dir(args.kb)))
     kb = resolve_kb_dir(args.kb)
     ensure_kb_skeleton(kb)
 

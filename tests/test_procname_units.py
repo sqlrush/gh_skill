@@ -94,3 +94,14 @@ def test_not_found_message_teaches_the_three_part_form():
 def test_qualified_display():
     assert pn.qualified("gmag", "pkg_a", "proc_x") == "gmag.pkg_a.proc_x"
     assert pn.qualified("gmag", "", "proc_x") == "gmag.proc_x"
+
+
+def test_not_found_carries_ref_and_tried_for_the_locate_report():
+    """找不到时抛 NotFound(ValueError 子类):skill 靠它上面的 ref / tried 去代为排查,而不是只打一句 error。"""
+    r = FakeRunner([])
+    with pytest.raises(pn.NotFound) as ei:
+        pn.lookup(r, SCRIPT, "gmag.pkg_a.proc_x")
+    assert isinstance(ei.value, ValueError)
+    assert ei.value.ref == pn.ProcRef("gmag", "pkg_a", "proc_x")
+    assert ei.value.tried == ("gmag.pkg_a.proc_x",)
+    assert "找不到" in str(ei.value)

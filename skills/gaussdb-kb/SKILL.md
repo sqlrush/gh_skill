@@ -1,6 +1,6 @@
 ---
 name: gaussdb-kb
-version: 2.2.0
+version: 2.3.0
 description: "客户知识库(原 kbimport):把客户的 GaussDB/OpenGauss 规范文档(txt/md/docx/doc/pdf)与故障工单/问题分析报告(md/docx/csv/xlsx)导入知识库——规范条款化进 rules/guides/errata,工单结构化成案例并抽成图谱关系,关键数据写入前一律生成编号选择列表交用户确认;向量进高斯/PG 向量库、关系进 Neo4j,各诊断 skill 按发现检索并优先引用客户先例。脚本负责转换、快照、校验、索引、检索、契约注入;你负责条款分类、案例抽取、呈现选择列表与收集确认。用户说「导入规范 / 导入工单 / 建知识库 / 把 xxx 加进知识库 / 更新规范库 / 知识库里有没有类似案例 / 让 skill 按我们的经验来」即用。"
 allowed-tools: ["exec", "read", "write"]
 compatibility: opencode
@@ -41,6 +41,11 @@ python3 {baseDir}/scripts/kb.py health
    产出 `<kb>/sources/` 原文快照、`<kb>/inbox/<slug>/source.md` + `outline.md`。
    `.doc` / `.pdf` 转换失败或 PDF 是扫描件时脚本会**拒绝导入并说明原因**——如实转告用户,停下,不要自己猜内容;
    客户若同时有 `.docx` 和 `.pdf`,永远优先要 `.docx`。
+   **用户给的是自己电脑上的路径**(`D:\…`、`C:\Users\…`、`/Users/…`、`~/Desktop/…`)时不要去读、不要绕:skill 跑在沙箱里够不到。
+   脚本会报「文件不存在」并写明沙箱的**收件目录**(`kb.py health` 的「收件目录」行,默认 `<kb>/inbox/uploads`,平台可用
+   `GSDB_KB_INBOX` 改到它的上传目录)——把这段原样告诉用户:先通过对话界面的上传功能把文件传到该目录,再用沙箱内路径导入。
+   脚本列出「沙箱里找到同名文件」时,先向用户确认是不是这一份再用。md/txt/csv 这类文本材料,用户明确要求时也可以直接贴进对话,
+   由你写到收件目录下的同名文件再 ingest(原文以贴入内容为准,告诉用户这一点)。
 2. **条款化(你的核心工作)**:先读 `{baseDir}/references/kb-layout.md`(格式与 ID 规范),再按 `outline.md` 分段读 `source.md`:
    能写成「看到 X 即违规」→ `rules/<域>.yaml`(拿不准 → `check: advisory`);讲设计方法/权衡 → `guides/*.md`;
    与库内既有条款矛盾/版本特例 → `errata/`。每条带 `source` 指回原文小节,rules 条款补 3-6 个 `keywords` 同义词;

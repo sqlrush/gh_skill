@@ -31,6 +31,7 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
 import common  # noqa: E402
 from common import access  # noqa: E402
 from common import cli  # noqa: E402
+from common import proc_locate  # noqa: E402
 from common import procname  # noqa: E402
 import procanalyze as pa  # noqa: E402
 import render  # noqa: E402
@@ -79,6 +80,9 @@ class ProcEvidence:
 
 KEY_GUCS_SCRIPT = "procinfo.key_gucs"
 PROC_DEF_SCRIPT = "procinfo.proc_def"
+# 过程找不到时代为排查用的三条脚本(common/proc_locate.py 按前缀拼名;这里写全名是给交付闸门看的——
+# 白名单里每条脚本都要能在 skill 源码里按全名搜到):
+LOCATE_SCRIPTS = ("procinfo.locate_context", "procinfo.locate_schema", "procinfo.locate_search")
 
 
 def collect_gucs(runner) -> list[GUC]:
@@ -183,6 +187,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         else:
             print(proc_info_report(pe), end="")
         return 0
+    except procname.NotFound as exc:
+        # 找不到不再只是一句 error:代为排查连的库 / 权限 / 本身在不在,给用户问题清单(stdout,模型原样转达)。
+        print(proc_locate.report(runner, "procinfo", exc, fmt=args.format), end="")
+        return 1
     except (ValueError, KeyError, common.DBError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

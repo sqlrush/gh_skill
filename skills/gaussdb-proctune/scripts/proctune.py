@@ -47,6 +47,7 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
 import common  # noqa: E402
 from common import access  # noqa: E402
 from common import cli  # noqa: E402
+from common import proc_locate  # noqa: E402
 from common import procname  # noqa: E402
 from common.grmp.hints import ensure_hint  # noqa: E402
 import procanalyze as pa  # noqa: E402
@@ -61,6 +62,8 @@ for parent in _HERE.parents:
 
 # SQL 已迁到 scripts/registry/proctune/ —— 两条路径共用同一份定义
 PROC_DEF_SCRIPT = "proctune.proc_def"
+# 过程找不到时代为排查用的三条脚本(common/proc_locate.py 按前缀拼名;全名写在这里是给交付闸门看的)。
+LOCATE_SCRIPTS = ("proctune.locate_context", "proctune.locate_schema", "proctune.locate_search")
 
 # 单个游标取证失败时降级成 Skipped Cursor 的错误集合。
 # access.QueryError 归一了两条路径的取数失败（中间件 GrmpError / 直连
@@ -431,6 +434,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             out = _tune_json(tr) if args.format == "json" else cursor_tune_report(tr)
         print(out, end="" if args.format == "markdown" else "\n")
         return 0
+    except procname.NotFound as exc:
+        # 找不到不再只是一句 error:代为排查连的库 / 权限 / 本身在不在,给用户问题清单(stdout,模型原样转达)。
+        print(proc_locate.report(runner, "proctune", exc, fmt=args.format), end="")
+        return 1
     # access.QueryError 归一了两条路径的取数失败；common.DBError 仍要留着 ——
     # 会话那条口子不经过 runner，报的还是原始的 DBError。
     # ColumnError / ParamError 刻意不接：那是脚本定义缺陷，必须响亮失败。

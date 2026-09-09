@@ -12,8 +12,8 @@ python3 -m grmp_middleware.dump_whitelist
 
 | 项 | 值 |
 |---|---|
-| 脚本总数 | 109 |
-| id 范围 | 1 ~ 109 |
+| 脚本总数 | 115 |
+| id 范围 | 1 ~ 121 |
 
 > `id` 是**环境相关数据，不是契约**。skill 从不持有它 —— 运行时调
 > 接口一按 `cmd_name` 现查。客户环境重新发布后 id 会不同，属正常。
@@ -22,21 +22,21 @@ python3 -m grmp_middleware.dump_whitelist
 
 | 命名空间 | 条数 | 脚本 |
 |---|---|---|
-| **explain** | 10 | `active_pid`, `kernel_funcs`, `multi_stmt_probe`, `plan_text`, `plan_text_analyze`, `plan_text_analyze_schema`, `plan_text_schema`, `runtime_plan`, `runtime_plan_int4`, `session_by_pid` |
-| **health** | 15 | `archive_mode`, `bgwriter`, `conn_concentration`, `conn_states`, `db_concurrency`, `db_info`, `invalid_index`, `long_xact`, `overview`, `prepared_xacts`, `replication`, `slow_sql`, `stale_stats`, `stats_window`, `unused_index` |
+| **explain** | 10 | `plan_text`, `plan_text_analyze`, `active_pid`, `kernel_funcs`, `runtime_plan`, `session_by_pid`, `runtime_plan_int4`, `multi_stmt_probe`, `plan_text_analyze_schema`, `plan_text_schema` |
+| **health** | 15 | `archive_mode`, `bgwriter`, `conn_concentration`, `conn_states`, `db_concurrency`, `db_info`, `invalid_index`, `long_xact`, `overview`, `prepared_xacts`, `replication`, `slow_sql`, `stale_stats`, `unused_index`, `stats_window` |
 | **lockwait** | 2 | `chain`, `pairs` |
 | **memanalyze** | 11 | `activity`, `cols_bare`, `cols_qualified`, `context`, `gucs`, `instance`, `session`, `wlm_operator`, `wlm_operator_hist`, `wlm_sql`, `wlm_sql_hist` |
 | **perf** | 9 | `bgwriter`, `db_stat`, `instance_time`, `locks`, `memory`, `sessions`, `table_stat`, `wait_events`, `wait_status` |
-| **procinfo** | 2 | `key_gucs`, `proc_def` |
-| **proctune** | 12 | `column_stats`, `db_version`, `indexes`, `key_gucs`, `plan_text`, `plan_text_analyze`, `plan_text_analyze_schema`, `plan_text_schema`, `proc_def`, `sql_from_history`, `sql_from_statement`, `tables` |
+| **procinfo** | 5 | `key_gucs`, `proc_def`, `locate_context`, `locate_schema`, `locate_search` |
+| **proctune** | 15 | `column_stats`, `db_version`, `indexes`, `key_gucs`, `plan_text`, `plan_text_analyze`, `proc_def`, `sql_from_history`, `sql_from_statement`, `tables`, `plan_text_analyze_schema`, `plan_text_schema`, `locate_context`, `locate_schema`, `locate_search` |
 | **session** | 3 | `active_only`, `by_user`, `top_by` |
 | **slowsql** | 1 | `slow_sql` |
 | **sqlfetch** | 2 | `from_history`, `from_statement` |
 | **sqlreview** | 5 | `from_history`, `from_statement`, `indexes`, `tables`, `top_sql` |
-| **sqltune** | 15 | `column_stats`, `column_types`, `from_history`, `from_statement`, `indexes`, `key_gucs`, `plan_json`, `plan_json_schema`, `plan_text`, `plan_text_analyze`, `plan_text_analyze_schema`, `plan_text_schema`, `stats_freshness`, `tables`, `version` |
+| **sqltune** | 15 | `column_stats`, `from_history`, `from_statement`, `indexes`, `key_gucs`, `plan_json`, `plan_text`, `plan_text_analyze`, `tables`, `version`, `stats_freshness`, `column_types`, `plan_json_schema`, `plan_text_analyze_schema`, `plan_text_schema` |
 | **topproc** | 1 | `top_procs` |
 | **topsql** | 1 | `top_sql` |
-| **vacuum** | 5 | `autovac_settings`, `autovac_workers`, `dead_tuples`, `kernel_info`, `oldest_xmin` |
+| **vacuum** | 5 | `autovac_settings`, `autovac_workers`, `dead_tuples`, `oldest_xmin`, `kernel_info` |
 | **waitevent** | 2 | `events`, `instance_time` |
 | **wdr** | 13 | `cache`, `checkpoint`, `db_stat`, `db_summary`, `file_io`, `load_profile`, `native_report`, `node_name`, `snapshots`, `top_sql`, `waits`, `wdr_enabled`, `window` |
 
@@ -44,51 +44,9 @@ python3 -m grmp_middleware.dump_whitelist
 
 ## 全部脚本
 
-### `explain.active_pid`
-
-- id `1` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `sql_id` | INTEGER |
-
-```sql
-SELECT pid, unique_sql_id, query, query_start
-  FROM pg_stat_activity
- WHERE unique_sql_id = {{sql_id}}
-   AND state = 'active'
-   AND pid <> pg_backend_pid()
- ORDER BY query_start
- LIMIT 1;
-```
-
-### `explain.kernel_funcs`
-
-- id `2` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-无参数
-
-```sql
-SELECT 'version' AS item, version() AS detail
-UNION ALL
-SELECT 'func:' || p.proname AS item, pg_get_function_arguments(p.oid) AS detail
-  FROM pg_proc p
- WHERE p.proname IN ('gs_get_explain', 'gs_get_kernel_info');
-```
-
-### `explain.multi_stmt_probe`
-
-- id `3` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-无参数
-
-```sql
-SET search_path TO public; SELECT 1 AS ok;
-```
-
 ### `explain.plan_text`
 
-- id `4` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `1` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -100,7 +58,7 @@ EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
 
 ### `explain.plan_text_analyze`
 
-- id `5` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `2` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -110,74 +68,9 @@ EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
 EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
 ```
 
-### `explain.plan_text_analyze_schema`
-
-- id `6` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `schema` | STRING |
-| `sql` | STRING |
-
-```sql
-SET search_path TO "{{schema}}", public; EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
-```
-
-### `explain.plan_text_schema`
-
-- id `7` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `schema` | STRING |
-| `sql` | STRING |
-
-```sql
-SET search_path TO "{{schema}}", public; EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
-```
-
-### `explain.runtime_plan`
-
-- id `8` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `pid` | INTEGER |
-
-```sql
-SELECT gs_get_explain({{pid}}::bigint) AS plan;
-```
-
-### `explain.runtime_plan_int4`
-
-- id `9` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `pid` | INTEGER |
-
-```sql
-SELECT gs_get_explain({{pid}}::integer) AS plan;
-```
-
-### `explain.session_by_pid`
-
-- id `10` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `pid` | INTEGER |
-
-```sql
-SELECT pid, unique_sql_id, query, query_start, state
-  FROM pg_stat_activity
- WHERE pid = {{pid}}
- LIMIT 1;
-```
-
 ### `health.archive_mode`
 
-- id `11` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `3` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -187,7 +80,7 @@ SELECT setting FROM pg_settings WHERE name='archive_mode';
 
 ### `health.bgwriter`
 
-- id `12` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `4` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -197,7 +90,7 @@ SELECT checkpoints_timed, checkpoints_req FROM pg_stat_bgwriter;
 
 ### `health.conn_concentration`
 
-- id `13` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `6` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -210,7 +103,7 @@ GROUP BY query ORDER BY c DESC LIMIT 1;
 
 ### `health.conn_states`
 
-- id `14` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `7` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -223,7 +116,7 @@ ORDER BY cnt DESC;
 
 ### `health.db_concurrency`
 
-- id `15` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `8` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -234,7 +127,7 @@ FROM pg_stat_database WHERE datname=current_database();
 
 ### `health.db_info`
 
-- id `16` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `9` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -246,7 +139,7 @@ where datname not in ('template1','postgres','template0');
 
 ### `health.invalid_index`
 
-- id `17` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `10` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -256,7 +149,7 @@ SELECT count(*) AS cnt FROM pg_index WHERE NOT indisvalid;
 
 ### `health.long_xact`
 
-- id `18` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `12` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -278,7 +171,7 @@ LIMIT {{limit}};
 
 ### `health.overview`
 
-- id `19` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `14` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -298,7 +191,7 @@ FROM pg_stat_database;
 
 ### `health.prepared_xacts`
 
-- id `20` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `15` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -308,7 +201,7 @@ SELECT count(*) AS cnt FROM pg_prepared_xacts;
 
 ### `health.replication`
 
-- id `21` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `16` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -322,7 +215,7 @@ FROM pg_stat_replication;
 
 ### `health.slow_sql`
 
-- id `22` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `17` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -347,7 +240,7 @@ LIMIT {{limit}};
 
 ### `health.stale_stats`
 
-- id `23` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `18` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -373,22 +266,9 @@ WHERE c.relkind = 'r' AND n.nspname NOT IN {{schema_filter}}
 ORDER BY c.relpages DESC LIMIT {{limit}};
 ```
 
-### `health.stats_window`
-
-- id `24` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-无参数
-
-```sql
-SELECT COALESCE(to_char(stats_reset, 'YYYY-MM-DD HH24:MI:SS'), 'never') AS stats_reset,
-       COALESCE(EXTRACT(EPOCH FROM (now() - stats_reset)), -1) AS window_seconds
-FROM pg_stat_database
-WHERE datname = current_database();
-```
-
 ### `health.unused_index`
 
-- id `25` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `19` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -416,63 +296,9 @@ ORDER BY s.idx_scan ASC, pg_relation_size(s.indexrelid) DESC
 LIMIT {{limit}};
 ```
 
-### `lockwait.chain`
-
-- id `26` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-无参数
-
-```sql
-SELECT w.sessionid       AS sessionid,
-       w.block_sessionid AS block_sessionid
-  FROM pg_thread_wait_status w
- WHERE w.block_sessionid IS NOT NULL
-   AND w.block_sessionid <> 0
-   AND w.block_sessionid <> w.sessionid;
-```
-
-### `lockwait.pairs`
-
-- id `27` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `limit` | INTEGER |
-
-```sql
-SELECT w.pid                         AS waiter_pid,
-       COALESCE(w.sessionid, 0)      AS waiter_sessionid,
-       w.mode                        AS waiter_mode,
-       h.pid                         AS holder_pid,
-       COALESCE(h.sessionid, 0)      AS holder_sessionid,
-       h.mode                        AS holder_mode,
-       w.locktype                    AS locktype,
-       COALESCE(n.nspname || '.' || c.relname, '')  AS lock_object,
-       COALESCE(w.locktag, '')       AS locktag,
-       round(EXTRACT(EPOCH FROM (now() - wa.query_start))::numeric, 1) AS waiter_wait_s,
-       COALESCE(wa.usename, '')      AS waiter_user,
-       COALESCE(wa.application_name, '') AS waiter_app,
-       COALESCE(substr(wa.query, 1, 300), '')       AS waiter_query,
-       COALESCE(ha.state, '')        AS holder_state,
-       COALESCE(ha.usename, '')      AS holder_user,
-       COALESCE(ha.application_name, '') AS holder_app,
-       round(EXTRACT(EPOCH FROM (now() - ha.xact_start))::numeric, 1) AS holder_xact_age_s,
-       COALESCE(substr(ha.query, 1, 300), '')       AS holder_query
-  FROM pg_locks w
-  JOIN pg_locks h
-    ON h.locktag = w.locktag AND h.granted AND h.pid <> w.pid
-  LEFT JOIN pg_class c     ON c.oid = w.relation
-  LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
-  LEFT JOIN pg_stat_activity wa ON wa.pid = w.pid
-  LEFT JOIN pg_stat_activity ha ON ha.pid = h.pid
- WHERE w.granted = false
- ORDER BY waiter_wait_s DESC NULLS FIRST -- 未知时长（见上）排最前，不许沉底
- LIMIT {{limit}};
-```
-
 ### `memanalyze.activity`
 
-- id `28` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `21` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -482,7 +308,7 @@ SELECT sessionid, pid, usename, application_name, state, query FROM pg_stat_acti
 
 ### `memanalyze.cols_bare`
 
-- id `29` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `22` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -501,7 +327,7 @@ ORDER BY a.attnum;
 
 ### `memanalyze.cols_qualified`
 
-- id `30` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `23` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -520,7 +346,7 @@ ORDER BY a.attnum;
 
 ### `memanalyze.context`
 
-- id `31` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `24` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -536,7 +362,7 @@ LIMIT {{limit}};
 
 ### `memanalyze.gucs`
 
-- id `32` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `25` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -554,7 +380,7 @@ ORDER BY name;
 
 ### `memanalyze.instance`
 
-- id `33` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `26` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -564,7 +390,7 @@ SELECT memorytype, memorymbytes FROM gs_total_memory_detail;
 
 ### `memanalyze.session`
 
-- id `34` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `27` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -577,7 +403,7 @@ ORDER BY peak_mem DESC NULLS LAST LIMIT {{limit}};
 
 ### `memanalyze.wlm_operator`
 
-- id `35` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `28` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -590,7 +416,7 @@ ORDER BY max_peak_memory DESC NULLS LAST LIMIT {{limit}};
 
 ### `memanalyze.wlm_operator_hist`
 
-- id `36` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `29` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -603,7 +429,7 @@ ORDER BY max_peak_memory DESC NULLS LAST LIMIT {{limit}};
 
 ### `memanalyze.wlm_sql`
 
-- id `37` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `30` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -616,7 +442,7 @@ ORDER BY max_peak_memory DESC NULLS LAST LIMIT {{limit}};
 
 ### `memanalyze.wlm_sql_hist`
 
-- id `38` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `31` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -629,7 +455,7 @@ ORDER BY max_peak_memory DESC NULLS LAST LIMIT {{limit}};
 
 ### `perf.bgwriter`
 
-- id `39` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `32` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -644,7 +470,7 @@ from pg_stat_bgwriter;
 
 ### `perf.db_stat`
 
-- id `40` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `33` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -659,7 +485,7 @@ order by xact_commit desc;
 
 ### `perf.instance_time`
 
-- id `41` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `34` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -671,7 +497,7 @@ order by value desc;
 
 ### `perf.locks`
 
-- id `42` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `35` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -691,7 +517,7 @@ limit {{limit}};
 
 ### `perf.memory`
 
-- id `43` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `36` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -706,7 +532,7 @@ limit {{limit}};
 
 ### `perf.sessions`
 
-- id `44` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `37` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -726,7 +552,7 @@ limit {{limit}};
 
 ### `perf.table_stat`
 
-- id `45` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `38` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -745,7 +571,7 @@ limit {{limit}};
 
 ### `perf.wait_events`
 
-- id `46` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `39` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -761,7 +587,7 @@ limit {{limit}};
 
 ### `perf.wait_status`
 
-- id `47` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `40` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -777,7 +603,7 @@ limit {{limit}};
 
 ### `procinfo.key_gucs`
 
-- id `48` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `41` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -796,7 +622,7 @@ ORDER BY name;
 
 ### `procinfo.proc_def`
 
-- id `49` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `42` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -821,7 +647,7 @@ LIMIT 5;
 
 ### `proctune.column_stats`
 
-- id `50` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `43` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -838,7 +664,7 @@ WHERE tablename IN ({{names}});
 
 ### `proctune.db_version`
 
-- id `51` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `44` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -848,7 +674,7 @@ SELECT version() AS version;
 
 ### `proctune.indexes`
 
-- id `52` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `45` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -867,7 +693,7 @@ WHERE t.relname IN ({{names}});
 
 ### `proctune.key_gucs`
 
-- id `53` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `46` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -886,7 +712,7 @@ ORDER BY name;
 
 ### `proctune.plan_text`
 
-- id `54` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `48` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -898,7 +724,7 @@ EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
 
 ### `proctune.plan_text_analyze`
 
-- id `55` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `49` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -908,35 +734,9 @@ EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
 EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
 ```
 
-### `proctune.plan_text_analyze_schema`
-
-- id `56` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `schema` | STRING |
-| `sql` | STRING |
-
-```sql
-SET search_path TO "{{schema}}", public; EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
-```
-
-### `proctune.plan_text_schema`
-
-- id `57` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `schema` | STRING |
-| `sql` | STRING |
-
-```sql
-SET search_path TO "{{schema}}", public; EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
-```
-
 ### `proctune.proc_def`
 
-- id `58` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `50` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -961,7 +761,7 @@ LIMIT 5;
 
 ### `proctune.sql_from_history`
 
-- id `59` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `51` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -978,7 +778,7 @@ LIMIT 1;
 
 ### `proctune.sql_from_statement`
 
-- id `60` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `52` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -994,7 +794,7 @@ LIMIT 1;
 
 ### `proctune.tables`
 
-- id `61` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `53` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1013,7 +813,7 @@ WHERE c.relname IN ({{names}}) AND c.relkind IN ('r','v','p','m');
 
 ### `session.active_only`
 
-- id `62` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `54` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1029,7 +829,7 @@ limit {{limit}};
 
 ### `session.by_user`
 
-- id `63` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `55` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1043,7 +843,7 @@ where usename = '{{username}}';
 
 ### `session.top_by`
 
-- id `64` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `56` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1059,7 +859,7 @@ limit {{limit}};
 
 ### `slowsql.slow_sql`
 
-- id `65` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `57` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1085,7 +885,7 @@ LIMIT {{limit}};
 
 ### `sqlfetch.from_history`
 
-- id `66` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `58` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1102,7 +902,7 @@ LIMIT 1;
 
 ### `sqlfetch.from_statement`
 
-- id `67` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `59` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1118,7 +918,7 @@ LIMIT 1;
 
 ### `sqlreview.from_history`
 
-- id `68` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `60` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1135,7 +935,7 @@ LIMIT 1;
 
 ### `sqlreview.from_statement`
 
-- id `69` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `61` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1151,7 +951,7 @@ LIMIT 1;
 
 ### `sqlreview.indexes`
 
-- id `70` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `62` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1186,7 +986,7 @@ ORDER BY t.relname, i.relname;
 
 ### `sqlreview.tables`
 
-- id `71` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `63` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1216,7 +1016,7 @@ ORDER BY c.relname;
 
 ### `sqlreview.top_sql`
 
-- id `72` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `64` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1232,7 +1032,7 @@ LIMIT {{limit}};
 
 ### `sqltune.column_stats`
 
-- id `73` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `65` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1247,31 +1047,9 @@ FROM pg_stats
 WHERE tablename IN ({{names}});
 ```
 
-### `sqltune.column_types`
-
-- id `74` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `tables` | STRING |
-| `columns` | STRING |
-
-```sql
-SELECT n.nspname AS schema_name, c.relname AS table_name,
-       a.attname, format_type(a.atttypid, NULL) AS type_name
-FROM pg_attribute a
-JOIN pg_class c ON c.oid = a.attrelid
-JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE c.relname IN ({{tables}})
-  AND a.attname IN ({{columns}})
-  AND a.attnum > 0 AND NOT a.attisdropped
-  AND c.relkind IN ('r','v','p','m')
-  AND n.nspname NOT IN ('pg_catalog','information_schema');
-```
-
 ### `sqltune.from_history`
 
-- id `75` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `66` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1288,7 +1066,7 @@ LIMIT 1;
 
 ### `sqltune.from_statement`
 
-- id `76` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `67` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1304,7 +1082,7 @@ LIMIT 1;
 
 ### `sqltune.indexes`
 
-- id `77` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `68` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1327,7 +1105,7 @@ WHERE t.relname IN ({{names}});
 
 ### `sqltune.key_gucs`
 
-- id `78` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `69` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -1346,7 +1124,7 @@ ORDER BY name;
 
 ### `sqltune.plan_json`
 
-- id `79` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `70` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1356,22 +1134,9 @@ ORDER BY name;
 EXPLAIN (ANALYZE false, BUFFERS false, FORMAT JSON) {{sql}}
 ```
 
-### `sqltune.plan_json_schema`
-
-- id `80` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `schema` | STRING |
-| `sql` | STRING |
-
-```sql
-SET search_path TO "{{schema}}", public; EXPLAIN (ANALYZE false, BUFFERS false, FORMAT JSON) {{sql}}
-```
-
 ### `sqltune.plan_text`
 
-- id `81` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `71` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1383,7 +1148,7 @@ EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
 
 ### `sqltune.plan_text_analyze`
 
-- id `82` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `72` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1393,53 +1158,9 @@ EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
 EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
 ```
 
-### `sqltune.plan_text_analyze_schema`
-
-- id `83` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `schema` | STRING |
-| `sql` | STRING |
-
-```sql
-SET search_path TO "{{schema}}", public; EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
-```
-
-### `sqltune.plan_text_schema`
-
-- id `84` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `schema` | STRING |
-| `sql` | STRING |
-
-```sql
-SET search_path TO "{{schema}}", public; EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
-```
-
-### `sqltune.stats_freshness`
-
-- id `85` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `names` | STRING |
-
-```sql
-SELECT schemaname, relname,
-       n_live_tup, n_dead_tup,
-       COALESCE(to_char(last_analyze, 'YYYY-MM-DD HH24:MI:SS'), 'never') AS last_analyze,
-       COALESCE(to_char(last_autoanalyze, 'YYYY-MM-DD HH24:MI:SS'), 'never') AS last_autoanalyze,
-       analyze_count, autoanalyze_count
-FROM pg_stat_user_tables
-WHERE relname IN ({{names}});
-```
-
 ### `sqltune.tables`
 
-- id `86` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `73` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1458,7 +1179,7 @@ WHERE c.relname IN ({{names}}) AND c.relkind IN ('r','v','p','m');
 
 ### `sqltune.version`
 
-- id `87` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `74` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
@@ -1468,7 +1189,7 @@ SELECT version() AS version;
 
 ### `topproc.top_procs`
 
-- id `88` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `75` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1488,7 +1209,7 @@ LIMIT {{limit}};
 
 ### `topsql.top_sql`
 
-- id `89` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `76` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
@@ -1509,107 +1230,345 @@ ORDER BY {{order}}
 LIMIT {{limit}};
 ```
 
-### `vacuum.autovac_settings`
+### `wdr.cache`
 
-- id `90` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `77` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `b` | INTEGER |
+| `e` | INTEGER |
+| `top` | INTEGER |
+
+```sql
+WITH b AS (SELECT db_name, snap_schemaname, snap_relname,
+                  (COALESCE(snap_heap_blks_read,0)+COALESCE(snap_idx_blks_read,0)) AS phys,
+                  (COALESCE(snap_heap_blks_hit,0)+COALESCE(snap_idx_blks_hit,0))   AS logi
+             FROM snapshot.snap_summary_statio_all_tables WHERE snapshot_id={{b}}),
+     e AS (SELECT db_name, snap_schemaname, snap_relname,
+                  (COALESCE(snap_heap_blks_read,0)+COALESCE(snap_idx_blks_read,0)) AS phys,
+                  (COALESCE(snap_heap_blks_hit,0)+COALESCE(snap_idx_blks_hit,0))   AS logi
+             FROM snapshot.snap_summary_statio_all_tables WHERE snapshot_id={{e}})
+SELECT e.snap_relname, (e.phys-b.phys) AS phys_read, (e.logi-b.logi) AS logical_read
+FROM e JOIN b USING (db_name, snap_schemaname, snap_relname)
+WHERE (e.phys-b.phys) > 0
+ORDER BY phys_read DESC LIMIT {{top}};
+```
+
+### `wdr.checkpoint`
+
+- id `78` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `b` | INTEGER |
+| `e` | INTEGER |
+
+```sql
+WITH b AS (SELECT snap_node_name, snap_checkpoints_timed AS timed, snap_checkpoints_req AS req
+             FROM snapshot.snap_global_bgwriter_stat WHERE snapshot_id={{b}}),
+     e AS (SELECT snap_node_name, snap_checkpoints_timed AS timed, snap_checkpoints_req AS req
+             FROM snapshot.snap_global_bgwriter_stat WHERE snapshot_id={{e}})
+SELECT COALESCE(SUM(e.timed-b.timed),0) AS checkpoints_timed,
+       COALESCE(SUM(e.req-b.req),0)     AS checkpoints_req
+FROM e JOIN b USING (snap_node_name);
+```
+
+### `wdr.db_stat`
+
+- id `79` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `b` | INTEGER |
+| `e` | INTEGER |
+
+```sql
+WITH b AS (SELECT snap_datname, snap_xact_commit, snap_xact_rollback, snap_deadlocks,
+                  snap_temp_bytes, snap_blks_hit, snap_blks_read
+             FROM snapshot.snap_summary_stat_database WHERE snapshot_id={{b}}),
+     e AS (SELECT snap_datname, snap_xact_commit, snap_xact_rollback, snap_deadlocks,
+                  snap_temp_bytes, snap_blks_hit, snap_blks_read
+             FROM snapshot.snap_summary_stat_database WHERE snapshot_id={{e}})
+SELECT COALESCE(SUM(e.snap_xact_commit-b.snap_xact_commit),0)     AS xact_commit,
+       COALESCE(SUM(e.snap_xact_rollback-b.snap_xact_rollback),0) AS xact_rollback,
+       COALESCE(SUM(e.snap_deadlocks-b.snap_deadlocks),0)         AS deadlocks,
+       COALESCE(SUM(e.snap_temp_bytes-b.snap_temp_bytes),0)       AS temp_bytes,
+       COALESCE(SUM(e.snap_blks_hit-b.snap_blks_hit),0)           AS blks_hit,
+       COALESCE(SUM(e.snap_blks_read-b.snap_blks_read),0)         AS blks_read
+FROM e JOIN b USING (snap_datname);
+```
+
+### `wdr.db_summary`
+
+- id `80` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `b` | INTEGER |
+| `e` | INTEGER |
+
+```sql
+WITH b AS (SELECT snap_datname, snap_xact_commit, snap_blks_read, snap_blks_hit
+             FROM snapshot.snap_summary_stat_database WHERE snapshot_id={{b}}),
+     e AS (SELECT snap_datname, snap_xact_commit, snap_blks_read, snap_blks_hit
+             FROM snapshot.snap_summary_stat_database WHERE snapshot_id={{e}})
+SELECT COALESCE(SUM(e.snap_xact_commit-b.snap_xact_commit),0) AS xact_commit,
+       COALESCE(SUM(e.snap_blks_read-b.snap_blks_read),0)     AS blks_read,
+       COALESCE(SUM(e.snap_blks_hit-b.snap_blks_hit),0)       AS blks_hit
+FROM e JOIN b USING (snap_datname);
+```
+
+### `wdr.file_io`
+
+- id `81` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `b` | INTEGER |
+| `e` | INTEGER |
+| `top` | INTEGER |
+
+```sql
+WITH b AS (SELECT snap_filenum, snap_dbid, snap_spcid, snap_phyrds AS reads, snap_phywrts AS writes
+             FROM snapshot.snap_summary_file_iostat WHERE snapshot_id={{b}}),
+     e AS (SELECT snap_filenum, snap_dbid, snap_spcid, snap_phyrds AS reads, snap_phywrts AS writes
+             FROM snapshot.snap_summary_file_iostat WHERE snapshot_id={{e}})
+SELECT ('db'||e.snap_dbid||'/spc'||e.snap_spcid||'/f'||e.snap_filenum) AS filename,
+       (e.reads-b.reads)   AS reads,
+       (e.writes-b.writes) AS writes
+FROM e JOIN b USING (snap_filenum, snap_dbid, snap_spcid)
+WHERE (e.reads-b.reads) > 0 OR (e.writes-b.writes) > 0
+ORDER BY reads DESC LIMIT {{top}};
+```
+
+### `wdr.load_profile`
+
+- id `82` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `b` | INTEGER |
+| `e` | INTEGER |
+
+```sql
+WITH b AS (SELECT snap_unique_sql_id AS sid, sum(snap_total_elapse_time) AS t, sum(snap_cpu_time) AS c
+             FROM snapshot.snap_summary_statement WHERE snapshot_id={{b}} GROUP BY snap_unique_sql_id),
+     e AS (SELECT snap_unique_sql_id AS sid, sum(snap_total_elapse_time) AS t, sum(snap_cpu_time) AS c
+             FROM snapshot.snap_summary_statement WHERE snapshot_id={{e}} GROUP BY snap_unique_sql_id)
+SELECT COALESCE(SUM(e.t-b.t),0)  AS db_time_us,
+       COALESCE(SUM(e.c-b.c),0)  AS cpu_time_us
+FROM e JOIN b USING (sid);
+```
+
+### `wdr.native_report`
+
+- id `83` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `begin` | INTEGER |
+| `end` | INTEGER |
+| `scope` | STRING |
+| `node` | STRING |
+
+```sql
+SELECT generate_wdr_report({{begin}}, {{end}}, 'all', '{{scope}}', '{{node}}') AS report_line;
+```
+
+### `wdr.node_name`
+
+- id `84` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
 ```sql
-SELECT name, setting
-  FROM pg_settings
- WHERE name LIKE 'autovacuum%' OR name LIKE 'vacuum_cost%'
- ORDER BY name;
+SHOW pgxc_node_name;
 ```
 
-### `vacuum.autovac_workers`
+### `wdr.snapshots`
 
-- id `91` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-无参数
-
-```sql
-SELECT pid,
-       COALESCE(sessionid,0) AS sessionid,
-       EXTRACT(EPOCH FROM (now()-xact_start)) AS xact_age_s,
-       COALESCE(query,'') AS query
-  FROM pg_stat_activity
- WHERE query LIKE 'autovacuum:%';
-```
-
-### `vacuum.dead_tuples`
-
-- id `92` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `85` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
 | `limit` | INTEGER |
 
 ```sql
-SELECT n.nspname AS schema,
-       t.relname AS "table",
-       t.n_live_tup AS n_live_tup,
-       t.n_dead_tup AS n_dead_tup,
-       c.reltuples AS reltuples,
-       pg_total_relation_size(c.oid) AS table_bytes,
-       EXTRACT(EPOCH FROM (now()-t.last_autovacuum)) AS last_autovacuum_age_s,
-       EXTRACT(EPOCH FROM (now()-t.last_vacuum)) AS last_vacuum_age_s,
-       t.vacuum_count AS vacuum_count,
-       t.autovacuum_count AS autovacuum_count,
-       CASE WHEN 'autovacuum_enabled=false' = ANY(c.reloptions) THEN false ELSE true END AS autovac_enabled,
-       COALESCE(array_to_string(c.reloptions, ','), '') AS reloptions
-  FROM pg_stat_user_tables t
-  JOIN pg_class c ON c.oid = t.relid
-  JOIN pg_namespace n ON n.oid = c.relnamespace
- WHERE n.nspname NOT IN ('pg_catalog','information_schema','snapshot','dbe_perf','dbe_pldeveloper','cstore')
- ORDER BY t.n_dead_tup DESC
- LIMIT {{limit}};
+SELECT snapshot_id,
+       to_char(start_ts,'YYYY-MM-DD HH24:MI') AS start_ts,
+       to_char(end_ts,'YYYY-MM-DD HH24:MI')   AS end_ts,
+       round(EXTRACT(EPOCH FROM (end_ts-start_ts))/60)::bigint AS dur_min
+FROM snapshot.snapshot ORDER BY snapshot_id DESC LIMIT {{limit}};
 ```
 
-### `vacuum.kernel_info`
+### `wdr.top_sql`
+
+- id `86` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `b` | INTEGER |
+| `e` | INTEGER |
+| `top` | INTEGER |
+
+```sql
+WITH b AS (SELECT snap_unique_sql_id AS sid, max(snap_query) AS query,
+                  sum(snap_n_calls) AS calls, sum(snap_total_elapse_time) AS elapsed, sum(snap_cpu_time) AS cpu,
+                  sum(COALESCE(snap_sort_spill_size,0)+COALESCE(snap_hash_spill_size,0)) AS spill,
+                  sum(snap_n_blocks_fetched-snap_n_blocks_hit) AS phys
+             FROM snapshot.snap_summary_statement WHERE snapshot_id={{b}} GROUP BY snap_unique_sql_id),
+     e AS (SELECT snap_unique_sql_id AS sid, max(snap_query) AS query,
+                  sum(snap_n_calls) AS calls, sum(snap_total_elapse_time) AS elapsed, sum(snap_cpu_time) AS cpu,
+                  sum(COALESCE(snap_sort_spill_size,0)+COALESCE(snap_hash_spill_size,0)) AS spill,
+                  sum(snap_n_blocks_fetched-snap_n_blocks_hit) AS phys
+             FROM snapshot.snap_summary_statement WHERE snapshot_id={{e}} GROUP BY snap_unique_sql_id)
+SELECT e.sid, e.query,
+       (e.calls-b.calls)       AS calls,
+       (e.elapsed-b.elapsed)   AS elapsed_us,
+       (e.cpu-b.cpu)           AS cpu_us,
+       (e.spill-b.spill)       AS spill_kb,
+       (e.phys-b.phys)         AS phys_blocks
+FROM e JOIN b USING (sid)
+WHERE (e.elapsed-b.elapsed) > 0
+ORDER BY elapsed_us DESC LIMIT {{top}};
+```
+
+### `wdr.waits`
+
+- id `87` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `b` | INTEGER |
+| `e` | INTEGER |
+| `top` | INTEGER |
+
+```sql
+WITH b AS (SELECT snap_type AS wait_class, snap_event AS event, sum(snap_wait) AS waits, sum(snap_total_wait_time) AS wt
+             FROM snapshot.snap_global_wait_events WHERE snapshot_id={{b}} GROUP BY snap_type, snap_event),
+     e AS (SELECT snap_type AS wait_class, snap_event AS event, sum(snap_wait) AS waits, sum(snap_total_wait_time) AS wt
+             FROM snapshot.snap_global_wait_events WHERE snapshot_id={{e}} GROUP BY snap_type, snap_event)
+SELECT e.wait_class,
+       SUM(e.waits-b.waits) AS waits,
+       SUM(e.wt-b.wt)       AS wait_us
+FROM e JOIN b USING (wait_class, event)
+WHERE upper(e.wait_class) NOT IN ('STATUS','NONE')
+GROUP BY e.wait_class
+HAVING SUM(e.wt-b.wt) > 0
+ORDER BY wait_us DESC LIMIT {{top}};
+```
+
+### `wdr.wdr_enabled`
+
+- id `88` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+无参数
+
+```sql
+SHOW enable_wdr_snapshot;
+```
+
+### `wdr.window`
+
+- id `89` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `begin` | INTEGER |
+| `end` | INTEGER |
+
+```sql
+SELECT to_char(b.start_ts,'YYYY-MM-DD HH24:MI') AS b_start,
+       to_char(e.start_ts,'YYYY-MM-DD HH24:MI') AS e_start,
+       round(EXTRACT(EPOCH FROM (e.start_ts-b.start_ts))/60)::bigint AS dur
+FROM (SELECT start_ts FROM snapshot.snapshot WHERE snapshot_id={{begin}}) b,
+     (SELECT start_ts FROM snapshot.snapshot WHERE snapshot_id={{end}}) e;
+```
+
+### `health.stats_window`
+
+- id `90` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+无参数
+
+```sql
+SELECT COALESCE(to_char(stats_reset, 'YYYY-MM-DD HH24:MI:SS'), 'never') AS stats_reset,
+       COALESCE(EXTRACT(EPOCH FROM (now() - stats_reset)), -1) AS window_seconds
+FROM pg_stat_database
+WHERE datname = current_database();
+```
+
+### `sqltune.stats_freshness`
+
+- id `91` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `names` | STRING |
+
+```sql
+SELECT schemaname, relname,
+       n_live_tup, n_dead_tup,
+       COALESCE(to_char(last_analyze, 'YYYY-MM-DD HH24:MI:SS'), 'never') AS last_analyze,
+       COALESCE(to_char(last_autoanalyze, 'YYYY-MM-DD HH24:MI:SS'), 'never') AS last_autoanalyze,
+       analyze_count, autoanalyze_count
+FROM pg_stat_user_tables
+WHERE relname IN ({{names}});
+```
+
+### `lockwait.chain`
+
+- id `92` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+无参数
+
+```sql
+SELECT w.sessionid       AS sessionid,
+       w.block_sessionid AS block_sessionid
+  FROM pg_thread_wait_status w
+ WHERE w.block_sessionid IS NOT NULL
+   AND w.block_sessionid <> 0
+   AND w.block_sessionid <> w.sessionid;
+```
+
+### `lockwait.pairs`
 
 - id `93` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
-无参数
+| 参数 | 类型 |
+|---|---|
+| `limit` | INTEGER |
 
 ```sql
-SELECT node_name, module, name, value
-  FROM gs_get_kernel_info();
-```
-
-### `vacuum.oldest_xmin`
-
-- id `94` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-无参数
-
-```sql
-SELECT 'long_xact' AS source,
-       CAST(pid AS text) AS identifier,
-       EXTRACT(EPOCH FROM (now()-xact_start)) AS xmin_age_s,
-       'usename=' || COALESCE(usename,'') || ' state=' || COALESCE(state,'') ||
-         ' query=' || COALESCE(substr(query,1,200),'') AS detail
-  FROM pg_stat_activity
- WHERE xact_start IS NOT NULL
-   AND state IN ('active','idle in transaction')
-   AND COALESCE(connection_info,'') <> ''
-   AND pid <> pg_backend_pid()
-UNION ALL
-SELECT 'prepared_xact' AS source,
-       gid AS identifier,
-       EXTRACT(EPOCH FROM (now()-prepared)) AS xmin_age_s,
-       'owner=' || COALESCE(owner,'') || ' database=' || COALESCE(database,'') AS detail
-  FROM pg_prepared_xacts
-UNION ALL
-SELECT 'replication_slot' AS source,
-       slot_name AS identifier,
-       CAST(NULL AS double precision) AS xmin_age_s,
-       'xmin=' || COALESCE(CAST(xmin AS text),'') ||
-         ' catalog_xmin=' || COALESCE(CAST(catalog_xmin AS text),'') ||
-         ' active=' || CAST(active AS text) AS detail
-  FROM pg_replication_slots
- WHERE xmin IS NOT NULL OR catalog_xmin IS NOT NULL
-ORDER BY xmin_age_s DESC NULLS FIRST;
+SELECT w.pid                         AS waiter_pid,
+       COALESCE(w.sessionid, 0)      AS waiter_sessionid,
+       w.mode                        AS waiter_mode,
+       h.pid                         AS holder_pid,
+       COALESCE(h.sessionid, 0)      AS holder_sessionid,
+       h.mode                        AS holder_mode,
+       w.locktype                    AS locktype,
+       COALESCE(n.nspname || '.' || c.relname, '')  AS lock_object,
+       COALESCE(w.locktag, '')       AS locktag,
+       round(EXTRACT(EPOCH FROM (now() - wa.query_start))::numeric, 1) AS waiter_wait_s,
+       COALESCE(wa.usename, '')      AS waiter_user,
+       COALESCE(wa.application_name, '') AS waiter_app,
+       COALESCE(substr(wa.query, 1, 300), '')       AS waiter_query,
+       COALESCE(ha.state, '')        AS holder_state,
+       COALESCE(ha.usename, '')      AS holder_user,
+       COALESCE(ha.application_name, '') AS holder_app,
+       round(EXTRACT(EPOCH FROM (now() - ha.xact_start))::numeric, 1) AS holder_xact_age_s,
+       COALESCE(substr(ha.query, 1, 300), '')       AS holder_query
+  FROM pg_locks w
+  JOIN pg_locks h
+    ON h.locktag = w.locktag AND h.granted AND h.pid <> w.pid
+  LEFT JOIN pg_class c     ON c.oid = w.relation
+  LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
+  LEFT JOIN pg_stat_activity wa ON wa.pid = w.pid
+  LEFT JOIN pg_stat_activity ha ON ha.pid = h.pid
+ WHERE w.granted = false
+ ORDER BY waiter_wait_s DESC NULLS FIRST -- 未知时长（见上）排最前，不许沉底
+ LIMIT {{limit}};
 ```
 
 ### `waitevent.events`
@@ -1660,259 +1619,404 @@ SELECT e.stat_name AS stat_name,
  ORDER BY delta_us DESC;
 ```
 
-### `wdr.cache`
+### `vacuum.autovac_settings`
 
 - id `97` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `b` | INTEGER |
-| `e` | INTEGER |
-| `top` | INTEGER |
-
-```sql
-WITH b AS (SELECT db_name, snap_schemaname, snap_relname,
-                  (COALESCE(snap_heap_blks_read,0)+COALESCE(snap_idx_blks_read,0)) AS phys,
-                  (COALESCE(snap_heap_blks_hit,0)+COALESCE(snap_idx_blks_hit,0))   AS logi
-             FROM snapshot.snap_summary_statio_all_tables WHERE snapshot_id={{b}}),
-     e AS (SELECT db_name, snap_schemaname, snap_relname,
-                  (COALESCE(snap_heap_blks_read,0)+COALESCE(snap_idx_blks_read,0)) AS phys,
-                  (COALESCE(snap_heap_blks_hit,0)+COALESCE(snap_idx_blks_hit,0))   AS logi
-             FROM snapshot.snap_summary_statio_all_tables WHERE snapshot_id={{e}})
-SELECT e.snap_relname, (e.phys-b.phys) AS phys_read, (e.logi-b.logi) AS logical_read
-FROM e JOIN b USING (db_name, snap_schemaname, snap_relname)
-WHERE (e.phys-b.phys) > 0
-ORDER BY phys_read DESC LIMIT {{top}};
-```
-
-### `wdr.checkpoint`
-
-- id `98` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `b` | INTEGER |
-| `e` | INTEGER |
-
-```sql
-WITH b AS (SELECT snap_node_name, snap_checkpoints_timed AS timed, snap_checkpoints_req AS req
-             FROM snapshot.snap_global_bgwriter_stat WHERE snapshot_id={{b}}),
-     e AS (SELECT snap_node_name, snap_checkpoints_timed AS timed, snap_checkpoints_req AS req
-             FROM snapshot.snap_global_bgwriter_stat WHERE snapshot_id={{e}})
-SELECT COALESCE(SUM(e.timed-b.timed),0) AS checkpoints_timed,
-       COALESCE(SUM(e.req-b.req),0)     AS checkpoints_req
-FROM e JOIN b USING (snap_node_name);
-```
-
-### `wdr.db_stat`
-
-- id `99` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `b` | INTEGER |
-| `e` | INTEGER |
-
-```sql
-WITH b AS (SELECT snap_datname, snap_xact_commit, snap_xact_rollback, snap_deadlocks,
-                  snap_temp_bytes, snap_blks_hit, snap_blks_read
-             FROM snapshot.snap_summary_stat_database WHERE snapshot_id={{b}}),
-     e AS (SELECT snap_datname, snap_xact_commit, snap_xact_rollback, snap_deadlocks,
-                  snap_temp_bytes, snap_blks_hit, snap_blks_read
-             FROM snapshot.snap_summary_stat_database WHERE snapshot_id={{e}})
-SELECT COALESCE(SUM(e.snap_xact_commit-b.snap_xact_commit),0)     AS xact_commit,
-       COALESCE(SUM(e.snap_xact_rollback-b.snap_xact_rollback),0) AS xact_rollback,
-       COALESCE(SUM(e.snap_deadlocks-b.snap_deadlocks),0)         AS deadlocks,
-       COALESCE(SUM(e.snap_temp_bytes-b.snap_temp_bytes),0)       AS temp_bytes,
-       COALESCE(SUM(e.snap_blks_hit-b.snap_blks_hit),0)           AS blks_hit,
-       COALESCE(SUM(e.snap_blks_read-b.snap_blks_read),0)         AS blks_read
-FROM e JOIN b USING (snap_datname);
-```
-
-### `wdr.db_summary`
-
-- id `100` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `b` | INTEGER |
-| `e` | INTEGER |
-
-```sql
-WITH b AS (SELECT snap_datname, snap_xact_commit, snap_blks_read, snap_blks_hit
-             FROM snapshot.snap_summary_stat_database WHERE snapshot_id={{b}}),
-     e AS (SELECT snap_datname, snap_xact_commit, snap_blks_read, snap_blks_hit
-             FROM snapshot.snap_summary_stat_database WHERE snapshot_id={{e}})
-SELECT COALESCE(SUM(e.snap_xact_commit-b.snap_xact_commit),0) AS xact_commit,
-       COALESCE(SUM(e.snap_blks_read-b.snap_blks_read),0)     AS blks_read,
-       COALESCE(SUM(e.snap_blks_hit-b.snap_blks_hit),0)       AS blks_hit
-FROM e JOIN b USING (snap_datname);
-```
-
-### `wdr.file_io`
-
-- id `101` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `b` | INTEGER |
-| `e` | INTEGER |
-| `top` | INTEGER |
-
-```sql
-WITH b AS (SELECT snap_filenum, snap_dbid, snap_spcid, snap_phyrds AS reads, snap_phywrts AS writes
-             FROM snapshot.snap_summary_file_iostat WHERE snapshot_id={{b}}),
-     e AS (SELECT snap_filenum, snap_dbid, snap_spcid, snap_phyrds AS reads, snap_phywrts AS writes
-             FROM snapshot.snap_summary_file_iostat WHERE snapshot_id={{e}})
-SELECT ('db'||e.snap_dbid||'/spc'||e.snap_spcid||'/f'||e.snap_filenum) AS filename,
-       (e.reads-b.reads)   AS reads,
-       (e.writes-b.writes) AS writes
-FROM e JOIN b USING (snap_filenum, snap_dbid, snap_spcid)
-WHERE (e.reads-b.reads) > 0 OR (e.writes-b.writes) > 0
-ORDER BY reads DESC LIMIT {{top}};
-```
-
-### `wdr.load_profile`
-
-- id `102` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `b` | INTEGER |
-| `e` | INTEGER |
-
-```sql
-WITH b AS (SELECT snap_unique_sql_id AS sid, sum(snap_total_elapse_time) AS t, sum(snap_cpu_time) AS c
-             FROM snapshot.snap_summary_statement WHERE snapshot_id={{b}} GROUP BY snap_unique_sql_id),
-     e AS (SELECT snap_unique_sql_id AS sid, sum(snap_total_elapse_time) AS t, sum(snap_cpu_time) AS c
-             FROM snapshot.snap_summary_statement WHERE snapshot_id={{e}} GROUP BY snap_unique_sql_id)
-SELECT COALESCE(SUM(e.t-b.t),0)  AS db_time_us,
-       COALESCE(SUM(e.c-b.c),0)  AS cpu_time_us
-FROM e JOIN b USING (sid);
-```
-
-### `wdr.native_report`
-
-- id `103` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
-
-| 参数 | 类型 |
-|---|---|
-| `begin` | INTEGER |
-| `end` | INTEGER |
-| `scope` | STRING |
-| `node` | STRING |
-
-```sql
-SELECT generate_wdr_report({{begin}}, {{end}}, 'all', '{{scope}}', '{{node}}') AS report_line;
-```
-
-### `wdr.node_name`
-
-- id `104` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
 ```sql
-SHOW pgxc_node_name;
+SELECT name, setting
+  FROM pg_settings
+ WHERE name LIKE 'autovacuum%' OR name LIKE 'vacuum_cost%'
+ ORDER BY name;
 ```
 
-### `wdr.snapshots`
+### `vacuum.autovac_workers`
 
-- id `105` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `98` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+无参数
+
+```sql
+SELECT pid,
+       COALESCE(sessionid,0) AS sessionid,
+       EXTRACT(EPOCH FROM (now()-xact_start)) AS xact_age_s,
+       COALESCE(query,'') AS query
+  FROM pg_stat_activity
+ WHERE query LIKE 'autovacuum:%';
+```
+
+### `vacuum.dead_tuples`
+
+- id `99` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
 | `limit` | INTEGER |
 
 ```sql
-SELECT snapshot_id,
-       to_char(start_ts,'YYYY-MM-DD HH24:MI') AS start_ts,
-       to_char(end_ts,'YYYY-MM-DD HH24:MI')   AS end_ts,
-       round(EXTRACT(EPOCH FROM (end_ts-start_ts))/60)::bigint AS dur_min
-FROM snapshot.snapshot ORDER BY snapshot_id DESC LIMIT {{limit}};
+SELECT n.nspname AS schema,
+       t.relname AS "table",
+       t.n_live_tup AS n_live_tup,
+       t.n_dead_tup AS n_dead_tup,
+       c.reltuples AS reltuples,
+       pg_total_relation_size(c.oid) AS table_bytes,
+       EXTRACT(EPOCH FROM (now()-t.last_autovacuum)) AS last_autovacuum_age_s,
+       EXTRACT(EPOCH FROM (now()-t.last_vacuum)) AS last_vacuum_age_s,
+       t.vacuum_count AS vacuum_count,
+       t.autovacuum_count AS autovacuum_count,
+       CASE WHEN 'autovacuum_enabled=false' = ANY(c.reloptions) THEN false ELSE true END AS autovac_enabled,
+       COALESCE(array_to_string(c.reloptions, ','), '') AS reloptions
+  FROM pg_stat_user_tables t
+  JOIN pg_class c ON c.oid = t.relid
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname NOT IN ('pg_catalog','information_schema','snapshot','dbe_perf','dbe_pldeveloper','cstore')
+ ORDER BY t.n_dead_tup DESC
+ LIMIT {{limit}};
 ```
 
-### `wdr.top_sql`
+### `vacuum.oldest_xmin`
 
-- id `106` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+- id `100` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+无参数
+
+```sql
+SELECT 'long_xact' AS source,
+       CAST(pid AS text) AS identifier,
+       EXTRACT(EPOCH FROM (now()-xact_start)) AS xmin_age_s,
+       'usename=' || COALESCE(usename,'') || ' state=' || COALESCE(state,'') ||
+         ' query=' || COALESCE(substr(query,1,200),'') AS detail
+  FROM pg_stat_activity
+ WHERE xact_start IS NOT NULL
+   AND state IN ('active','idle in transaction')
+   AND COALESCE(connection_info,'') <> ''
+   AND pid <> pg_backend_pid()
+UNION ALL
+SELECT 'prepared_xact' AS source,
+       gid AS identifier,
+       EXTRACT(EPOCH FROM (now()-prepared)) AS xmin_age_s,
+       'owner=' || COALESCE(owner,'') || ' database=' || COALESCE(database,'') AS detail
+  FROM pg_prepared_xacts
+UNION ALL
+SELECT 'replication_slot' AS source,
+       slot_name AS identifier,
+       CAST(NULL AS double precision) AS xmin_age_s,
+       'xmin=' || COALESCE(CAST(xmin AS text),'') ||
+         ' catalog_xmin=' || COALESCE(CAST(catalog_xmin AS text),'') ||
+         ' active=' || CAST(active AS text) AS detail
+  FROM pg_replication_slots
+ WHERE xmin IS NOT NULL OR catalog_xmin IS NOT NULL
+ORDER BY xmin_age_s DESC NULLS FIRST;
+```
+
+### `explain.active_pid`
+
+- id `101` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
-| `b` | INTEGER |
-| `e` | INTEGER |
-| `top` | INTEGER |
+| `sql_id` | INTEGER |
 
 ```sql
-WITH b AS (SELECT snap_unique_sql_id AS sid, max(snap_query) AS query,
-                  sum(snap_n_calls) AS calls, sum(snap_total_elapse_time) AS elapsed, sum(snap_cpu_time) AS cpu,
-                  sum(COALESCE(snap_sort_spill_size,0)+COALESCE(snap_hash_spill_size,0)) AS spill,
-                  sum(snap_n_blocks_fetched-snap_n_blocks_hit) AS phys
-             FROM snapshot.snap_summary_statement WHERE snapshot_id={{b}} GROUP BY snap_unique_sql_id),
-     e AS (SELECT snap_unique_sql_id AS sid, max(snap_query) AS query,
-                  sum(snap_n_calls) AS calls, sum(snap_total_elapse_time) AS elapsed, sum(snap_cpu_time) AS cpu,
-                  sum(COALESCE(snap_sort_spill_size,0)+COALESCE(snap_hash_spill_size,0)) AS spill,
-                  sum(snap_n_blocks_fetched-snap_n_blocks_hit) AS phys
-             FROM snapshot.snap_summary_statement WHERE snapshot_id={{e}} GROUP BY snap_unique_sql_id)
-SELECT e.sid, e.query,
-       (e.calls-b.calls)       AS calls,
-       (e.elapsed-b.elapsed)   AS elapsed_us,
-       (e.cpu-b.cpu)           AS cpu_us,
-       (e.spill-b.spill)       AS spill_kb,
-       (e.phys-b.phys)         AS phys_blocks
-FROM e JOIN b USING (sid)
-WHERE (e.elapsed-b.elapsed) > 0
-ORDER BY elapsed_us DESC LIMIT {{top}};
+SELECT pid, unique_sql_id, query, query_start
+  FROM pg_stat_activity
+ WHERE unique_sql_id = {{sql_id}}
+   AND state = 'active'
+   AND pid <> pg_backend_pid()
+ ORDER BY query_start
+ LIMIT 1;
 ```
 
-### `wdr.waits`
+### `explain.kernel_funcs`
+
+- id `102` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+无参数
+
+```sql
+SELECT 'version' AS item, version() AS detail
+UNION ALL
+SELECT 'func:' || p.proname AS item, pg_get_function_arguments(p.oid) AS detail
+  FROM pg_proc p
+ WHERE p.proname IN ('gs_get_explain', 'gs_get_kernel_info');
+```
+
+### `explain.runtime_plan`
+
+- id `103` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `pid` | INTEGER |
+
+```sql
+SELECT gs_get_explain({{pid}}::bigint) AS plan;
+```
+
+### `explain.session_by_pid`
+
+- id `104` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `pid` | INTEGER |
+
+```sql
+SELECT pid, unique_sql_id, query, query_start, state
+  FROM pg_stat_activity
+ WHERE pid = {{pid}}
+ LIMIT 1;
+```
+
+### `sqltune.column_types`
+
+- id `105` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `tables` | STRING |
+| `columns` | STRING |
+
+```sql
+SELECT n.nspname AS schema_name, c.relname AS table_name,
+       a.attname, format_type(a.atttypid, NULL) AS type_name
+FROM pg_attribute a
+JOIN pg_class c ON c.oid = a.attrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relname IN ({{tables}})
+  AND a.attname IN ({{columns}})
+  AND a.attnum > 0 AND NOT a.attisdropped
+  AND c.relkind IN ('r','v','p','m')
+  AND n.nspname NOT IN ('pg_catalog','information_schema');
+```
+
+### `vacuum.kernel_info`
+
+- id `106` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+无参数
+
+```sql
+SELECT node_name, module, name, value
+  FROM gs_get_kernel_info();
+```
+
+### `explain.runtime_plan_int4`
 
 - id `107` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
-| `b` | INTEGER |
-| `e` | INTEGER |
-| `top` | INTEGER |
+| `pid` | INTEGER |
 
 ```sql
-WITH b AS (SELECT snap_type AS wait_class, snap_event AS event, sum(snap_wait) AS waits, sum(snap_total_wait_time) AS wt
-             FROM snapshot.snap_global_wait_events WHERE snapshot_id={{b}} GROUP BY snap_type, snap_event),
-     e AS (SELECT snap_type AS wait_class, snap_event AS event, sum(snap_wait) AS waits, sum(snap_total_wait_time) AS wt
-             FROM snapshot.snap_global_wait_events WHERE snapshot_id={{e}} GROUP BY snap_type, snap_event)
-SELECT e.wait_class,
-       SUM(e.waits-b.waits) AS waits,
-       SUM(e.wt-b.wt)       AS wait_us
-FROM e JOIN b USING (wait_class, event)
-WHERE upper(e.wait_class) NOT IN ('STATUS','NONE')
-GROUP BY e.wait_class
-HAVING SUM(e.wt-b.wt) > 0
-ORDER BY wait_us DESC LIMIT {{top}};
+SELECT gs_get_explain({{pid}}::integer) AS plan;
 ```
 
-### `wdr.wdr_enabled`
+### `explain.multi_stmt_probe`
 
 - id `108` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 无参数
 
 ```sql
-SHOW enable_wdr_snapshot;
+SET search_path TO public; SELECT 1 AS ok;
 ```
 
-### `wdr.window`
+### `explain.plan_text_analyze_schema`
 
 - id `109` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
 
 | 参数 | 类型 |
 |---|---|
-| `begin` | INTEGER |
-| `end` | INTEGER |
+| `schema` | STRING |
+| `sql` | STRING |
 
 ```sql
-SELECT to_char(b.start_ts,'YYYY-MM-DD HH24:MI') AS b_start,
-       to_char(e.start_ts,'YYYY-MM-DD HH24:MI') AS e_start,
-       round(EXTRACT(EPOCH FROM (e.start_ts-b.start_ts))/60)::bigint AS dur
-FROM (SELECT start_ts FROM snapshot.snapshot WHERE snapshot_id={{begin}}) b,
-     (SELECT start_ts FROM snapshot.snapshot WHERE snapshot_id={{end}}) e;
+SET search_path TO "{{schema}}", public; EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
+```
+
+### `explain.plan_text_schema`
+
+- id `110` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `schema` | STRING |
+| `sql` | STRING |
+
+```sql
+SET search_path TO "{{schema}}", public; EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
+```
+
+### `proctune.plan_text_analyze_schema`
+
+- id `111` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `schema` | STRING |
+| `sql` | STRING |
+
+```sql
+SET search_path TO "{{schema}}", public; EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
+```
+
+### `proctune.plan_text_schema`
+
+- id `112` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `schema` | STRING |
+| `sql` | STRING |
+
+```sql
+SET search_path TO "{{schema}}", public; EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
+```
+
+### `sqltune.plan_json_schema`
+
+- id `113` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `schema` | STRING |
+| `sql` | STRING |
+
+```sql
+SET search_path TO "{{schema}}", public; EXPLAIN (ANALYZE false, BUFFERS false, FORMAT JSON) {{sql}}
+```
+
+### `sqltune.plan_text_analyze_schema`
+
+- id `114` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `schema` | STRING |
+| `sql` | STRING |
+
+```sql
+SET search_path TO "{{schema}}", public; EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
+```
+
+### `sqltune.plan_text_schema`
+
+- id `115` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `schema` | STRING |
+| `sql` | STRING |
+
+```sql
+SET search_path TO "{{schema}}", public; EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
+```
+
+### `procinfo.locate_context`
+
+- id `116` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+无参数
+
+```sql
+SELECT current_database() AS db, current_user AS usr,
+       (SELECT string_agg(datname, ', ' ORDER BY datname) FROM pg_database WHERE NOT datistemplate) AS databases;
+```
+
+### `procinfo.locate_schema`
+
+- id `117` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `schema` | STRING |
+
+```sql
+SELECT n.nspname, pg_catalog.has_schema_privilege(n.oid, 'USAGE') AS usage
+FROM pg_namespace n
+WHERE n.nspname = '{{schema}}';
+```
+
+### `procinfo.locate_search`
+
+- id `118` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `name` | STRING |
+| `package` | STRING |
+
+```sql
+SELECT 'proc' AS kind, n.nspname, COALESCE(k.pkgname, '') AS pkgname, p.proname
+FROM pg_proc p
+LEFT JOIN pg_namespace n ON n.oid = p.pronamespace
+LEFT JOIN gs_package k ON k.oid = p.propackageid
+WHERE p.proname ILIKE '%{{name}}%'
+  AND (n.nspname IS NULL OR (n.nspname NOT LIKE 'pg_%' AND n.nspname NOT LIKE 'dbe_%'
+       AND n.nspname NOT IN ('information_schema', 'pkg_service', 'pkg_util', 'sqladvisor', 'db4ai',
+                             'snapshot', 'blockchain', 'cstore', 'pmk', 'coverage')))
+UNION ALL
+SELECT 'package' AS kind, n.nspname, k.pkgname, '' AS proname
+FROM gs_package k
+LEFT JOIN pg_namespace n ON n.oid = k.pkgnamespace
+WHERE COALESCE(length('{{package}}'), 0) > 0 AND k.pkgname ILIKE '%{{package}}%'
+ORDER BY 1, 2, 3, 4
+LIMIT 40;
+```
+
+### `proctune.locate_context`
+
+- id `119` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+无参数
+
+```sql
+SELECT current_database() AS db, current_user AS usr,
+       (SELECT string_agg(datname, ', ' ORDER BY datname) FROM pg_database WHERE NOT datistemplate) AS databases;
+```
+
+### `proctune.locate_schema`
+
+- id `120` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `schema` | STRING |
+
+```sql
+SELECT n.nspname, pg_catalog.has_schema_privilege(n.oid, 'USAGE') AS usage
+FROM pg_namespace n
+WHERE n.nspname = '{{schema}}';
+```
+
+### `proctune.locate_search`
+
+- id `121` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `name` | STRING |
+| `package` | STRING |
+
+```sql
+SELECT 'proc' AS kind, n.nspname, COALESCE(k.pkgname, '') AS pkgname, p.proname
+FROM pg_proc p
+LEFT JOIN pg_namespace n ON n.oid = p.pronamespace
+LEFT JOIN gs_package k ON k.oid = p.propackageid
+WHERE p.proname ILIKE '%{{name}}%'
+  AND (n.nspname IS NULL OR (n.nspname NOT LIKE 'pg_%' AND n.nspname NOT LIKE 'dbe_%'
+       AND n.nspname NOT IN ('information_schema', 'pkg_service', 'pkg_util', 'sqladvisor', 'db4ai',
+                             'snapshot', 'blockchain', 'cstore', 'pmk', 'coverage')))
+UNION ALL
+SELECT 'package' AS kind, n.nspname, k.pkgname, '' AS proname
+FROM gs_package k
+LEFT JOIN pg_namespace n ON n.oid = k.pkgnamespace
+WHERE COALESCE(length('{{package}}'), 0) > 0 AND k.pkgname ILIKE '%{{package}}%'
+ORDER BY 1, 2, 3, 4
+LIMIT 40;
 ```
 
