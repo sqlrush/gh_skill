@@ -65,6 +65,8 @@ permission:
 
 - `/workspace/docs/` -> 直接放入 PDF/Word/Markdown 文件即可，无需转换
 - 支持格式：`.pdf`、`.docx`、`.md`、`.txt`
+- **用户要导入知识库（gaussdb-kb）的文件必须已经在沙箱里**：用户给的是自己电脑上的路径（`D:\…`、`C:\Users\…`、`~/Desktop/…`）时不要去读、不要绕，
+  告诉用户先通过界面上传到沙箱的收件目录（`kb.py health` 输出的「收件目录」行），再用沙箱内路径导入。
 
 ### 引用规范
 
@@ -144,9 +146,13 @@ permission:
 
 - 用户说“查慢 SQL”“当前有哪些慢 SQL”“给我慢 SQL 列表”时，优先使用 `gaussdb-slowsql`
 - 用户说“查 Top SQL”“最耗时 SQL”“哪些 SQL 最拖慢系统”时，优先使用 `gaussdb-topsql`
-- 用户说“根据 sql_id 查 SQL”“看完整 SQL”“查 SQL 原文”时，优先使用 `gaussdb-sqlfetch`
+- 用户说“根据 sql_id 查 SQL”“看完整 SQL”“查 SQL 原文”时，优先使用 `gaussdb-sqlfetch`——**只在用户要看原文时用它**；
+  用户给 sql_id 是为了看计划或调优时，不经过 sqlfetch，见下面「sql_id 与 schema 规则」
 - 用户说“看执行计划”“跑 explain”“给我几个 SQL 的执行计划”时，优先使用 `gaussdb-explain`
 - 用户说“优化这条 SQL”“这个 sql_id 怎么调优”时，优先使用 `gaussdb-sqltune`
+- 用户说“导入规范”“导入工单”“建知识库”“知识库里有没有类似案例”时，优先使用 `gaussdb-kb`
+- 用户说“谁在等锁”“锁等待”“阻塞链”时，优先使用 `gaussdb-lockwait`；说“等待事件”时用 `gaussdb-waitevent`；
+  说“表膨胀”“死元组”“vacuum”时用 `gaussdb-vacuum`；说“内存分析”“内存上下文”时用 `gaussdb-memanalyze`
 - 用户说“数据库健康检查”“为什么卡”“有没有阻塞”“有没有长事务”时，优先使用 `gaussdb-health`
 - 用户说“看两个快照之间的 WDR”“这段时间数据库为什么变慢”时，优先使用 `gaussdb-wdr`
 - 用户说“最慢存储过程”“哪个过程最耗时”时，优先使用 `gaussdb-topproc`
@@ -154,6 +160,17 @@ permission:
 - 用户说“优化这个存储过程”“这个过程怎么调优”时，优先使用 `gaussdb-proctune`
 - 用户说“这段 SQL 合不合规”“上线前审一下 SQL”时，优先使用 `gaussdb-sqlreview`
 - 用户说“登录数据库”“登录”“连接数据库”时，优先使用 `gaussdb-login`
+
+## sql_id 与 schema 规则
+
+1. **用户给的是 sql_id（Top SQL / 慢 SQL 清单里的 unique_sql_id）**：看计划直接 `gaussdb-explain` 的 `explain.py --sql-id <id>`，
+   调优直接 `gaussdb-sqltune` 的 `sqltune.py <id>`。**不要先 sqlfetch 取文本再贴回去**——贴文本那一步会把这条 SQL 当初执行的 schema 丢掉。
+2. **贴 SQL 文本给 explain / sqltune 时**：schema 来自 sqlfetch 输出的 `Schema:` 行或用户所说，带成 `--schema <schema>`；
+   不知道就不带，脚本会按表名在目录里推断。脚本列出候选 schema 让选时，把候选转给用户选，**绝不自己猜 public 或换别的 schema 反复试**。
+3. **脚本报「过程未找到」「无法确定 schema」并附编号问题清单时**：把结论和问题清单原样转给用户，等用户回答后再跑；
+   不要自己写 SQL 查目录、不要猜名字、不要拿别的对象代替。
+4. 报告里出现「search_path 未切换，已改为补全表名取计划」说明脚本已把不带 schema 的表名按该 schema 补全，计划与原 SQL 等价，照常分析，
+   并把说明里给 DBA 的 `ALTER ROLE … SET search_path` 命令转给用户；**你自己不要改写 SQL 里的表名**。
 
 ## 工作原则
 
