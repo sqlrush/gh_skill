@@ -425,7 +425,8 @@ class Evidence:
     freshness: list = field(default_factory=list)
     analyze_requested: bool = False   # 要没要 analyze;analyzed 是「真跑了没」,两者可以不一致
     search_path: str = ""             # EXPLAIN 前实际切到的 schema(空 = 没切)
-    search_path_note: str = ""        # 想切没切成的原因(中间件不支持两条语句 / schema 名不合法)
+    search_path_note: str = ""        # 想切没切成的原因(中间件不支持两条语句 / schema 名不合法),或已改为补全表名的说明
+    schema: str = ""                  # 这条 SQL 原本执行的 schema(要求切到的那个);没切成时后续取 JSON 计划仍要带它
 
 
 def collect(runner, db, sql_text: str, do_analyze: bool, schema: str = "") -> Evidence:
@@ -459,6 +460,7 @@ def collect(runner, db, sql_text: str, do_analyze: bool, schema: str = "") -> Ev
         analyze_requested=do_analyze,
         search_path=applied,
         search_path_note=sp_note,
+        schema=schema or "",
         findings=scan_plan(plan),
         tables=collect_tables(runner, names, scope),
         indexes=collect_indexes(runner, names, scope),

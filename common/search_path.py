@@ -72,12 +72,16 @@ def explain_plan(runner, base_script: str, sql: str, schema: str) -> Tuple[str, 
     if ok:
         rows = runner.run(base_script + SCHEMA_SUFFIX, {"sql": sql, "schema": schema})
         return _join(rows), schema, ""
-    note = fallback_note(schema, reason)
+    # 切不成(客户 09-09 早截图:执行器跑不了两条语句):先把 SQL 里不带 schema 的表名补全再走单语句模板——
+    # 不依赖执行器、不依赖 DBA;补全后解析到同一张表,计划与原 SQL 等价。没有可补的才原样退回。
+    from common import sqlqualify           # 延迟导入:sqlqualify 反过来引用本模块的 valid_schema
+    qualified, changed = sqlqualify.qualify_tables(sql, schema)
+    note = qualified_note(schema, changed, reason) if changed else fallback_note(schema, reason)
     try:
-        rows = runner.run(base_script, {"sql": sql})
+        rows = runner.run(base_script, {"sql": qualified if changed else sql})
     except Exception as exc:               # noqa: BLE001
-        # 退回单语句模板后 EXPLAIN 又失败(多半就是表不在 search_path 里):这时没有报告可以放说明,
-        # 把原因和 DBA 命令直接跟在报错后面——用户看到的就是这一段。
+        # 退回单语句模板后 EXPLAIN 又失败:这时没有报告可以放说明,把原因和 DBA 命令直接跟在报错后面——
+        # 用户看到的就是这一段。
         try:
             wrapped = type(exc)("%s\n补充:%s" % (exc, note))
         except Exception:                  # noqa: BLE001 —— 异常类构造签名特殊时保留原报错
@@ -89,20 +93,32 @@ def explain_plan(runner, base_script: str, sql: str, schema: str) -> Tuple[str, 
 _MISSING_SCRIPT_MARKS = ("不存在", "未注册", "not found", "no such", "unknown", "不在白名单", "does not exist")
 
 
-def fallback_note(schema: str, reason: str) -> str:
-    """没切成 search_path 时给用户看的话:先说清是哪种原因,再给可照做的处理办法。
-
-    两种原因的处理不同,所以要分开说:
-      · 探测脚本没灌进白名单 —— 发布问题,按交付文档补灌本次新增的脚本即可,不需要 DBA;
-      · 中间件确实跑不了两条语句 —— 执行器的限制,只能由 DBA 给执行账号设 search_path。
-    两种情况下 DBA 那条命令都能用,所以都给;备选是把 SQL 里的表名写全。
-    """
+def _cause(reason: str) -> str:
+    """没切成的原因分两种说:探测脚本没灌白名单(发布问题,补灌即可)/ 执行器跑不了两条语句(限制)。"""
     low = (reason or "").lower()
     if any(m.lower() in low for m in _MISSING_SCRIPT_MARKS):
-        cause = ("探测脚本 %s 未注册到白名单或调用失败(%s)——请先按交付文档 08 把本次新增的白名单脚本"
-                 "(含 *_schema 模板与探测脚本)灌入 script_config" % (PROBE_SCRIPT, reason))
-    else:
-        cause = "中间件不支持一条脚本跑两条语句(%s)" % (reason or "探测脚本 %s 未通过" % PROBE_SCRIPT)
+        return ("探测脚本 %s 未注册到白名单或调用失败(%s)——请先按交付文档 08 把本次新增的白名单脚本"
+                "(含 *_schema 模板与探测脚本)灌入 script_config" % (PROBE_SCRIPT, reason))
+    return "中间件不支持一条脚本跑两条语句(%s)" % (reason or "探测脚本 %s 未通过" % PROBE_SCRIPT)
+
+
+def qualified_note(schema: str, changed, reason: str) -> str:
+    """切不成 search_path、改为补全表名后取计划时的说明:说清没切的原因、补了哪些名字、计划等价,根治仍是 DBA 那条命令。"""
+    names = "、".join("%s.%s" % (schema, n) for n in changed)
+    return (
+        "search_path 未切换到 %s:%s。已把 SQL 里不带 schema 的表名按该 schema 补全后取计划(%s),"
+        "解析到同一张表,计划与原 SQL 等价。根治办法:由 DBA 给中间件执行账号在该库上设置 search_path,执行 "
+        "ALTER ROLE <中间件执行账号> IN DATABASE <业务库名> SET search_path = %s, public; (新连接生效,不用重启)。"
+        % (schema, _cause(reason), names, schema)
+    )
+
+
+def fallback_note(schema: str, reason: str) -> str:
+    """没切成 search_path、SQL 里又没有可补全的表名时给用户看的话:先说清是哪种原因,再给可照做的处理办法。
+
+    两种情况下 DBA 那条命令都能用,所以都给;备选是把 SQL 里的表名写全。
+    """
+    cause = _cause(reason)
     return (
         "未能把 search_path 切到 %s:%s。表名不带 schema 时 EXPLAIN 会报对象不存在。处理办法二选一:"
         "① 由 DBA 给中间件执行账号在该库上设置 search_path,执行 "
@@ -122,4 +138,4 @@ def set_search_path(db, schema: str) -> str:
 
 
 __all__ = ["IDENT_RE", "PROBE_SCRIPT", "SCHEMA_SUFFIX", "valid_schema", "reset_probe_cache",
-           "multi_statement_ok", "explain_plan", "set_search_path", "fallback_note"]
+           "multi_statement_ok", "explain_plan", "set_search_path", "fallback_note", "qualified_note"]

@@ -548,7 +548,8 @@ python3 $SKILLS/gaussdb-sqlfetch/scripts/sqlfetch.py -c og-prod -- -9876543210
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `-c` / `--conn` | str（必填） | — | 连接名 |
-| `--sql-stdin` | flag（必填） | — | 从 stdin 读取 SQL 文本（必须指定此参数） |
+| `--sql-stdin` | flag | — | 从 stdin 读取 SQL 文本；与 `--sql-id`、`--pid` 三选一 |
+| `--sql-id` | int（可为负） | — | 按 `unique_sql_id` 从 statement_history 取 SQL 原文与它当初执行的 schema（备机退回 dbe_perf.statement 时按执行账号推测）；表名不带 schema 也能出计划。依赖白名单脚本 `explain.from_history` / `explain.from_statement` |
 | `--analyze` | flag | 关闭 | 使用 `EXPLAIN ANALYZE`（直连原始会话时会真实执行 SQL，DML 自动包在回滚事务中；中间件路径的现场脚本按客户只读要求固定关闭 ANALYZE，此时拿到的是估算计划，报告会写明）|
 | `--schema` | string | 空 | SQL 原本执行时的 schema：EXPLAIN 前先切 search_path（表名不带 schema 时必需；按 sql_id 时默认取 statement_history 记录值） |
 | `--format` | `markdown`\|`json` | `markdown` | 输出格式 |
@@ -897,7 +898,7 @@ python3 $SKILLS/wdr/scripts/wdr.py render \
 | 命令被拒绝，输出「沙箱里有 N 个会话，不知道该用哪个」 | 多个用户共用同一个沙箱（同一个 `$GSDB_HOME`），各自登录过，而这条命令没带 `--session <句柄>`。skill 不猜用哪一条——猜错会在别人的库上跑诊断而输出看起来完全正常 | 带上 gaussdb-login 登录时输出的句柄（或环境变量 `GSDB_SESSION`）；本次对话没登录过就重新登录拿新句柄；`login.py --status` 可列出全部会话 |
 | procinfo / proctune 报「过程未找到 … 已代为排查」并列出编号问题 | 找不到时脚本自动查当前库与账号、schema 是否可见与有无 USAGE、近似名的过程与包，按结果判定是连错库、执行账号无权限（对象隔离 `ENABLE PRIVATE OBJECT` 会把无权限的 schema 从目录里藏起来）还是本身没有，并给出问题清单与 DBA 核对 SQL | 把问题清单原样转给用户回答；要换库就重新 login，要授权就由 DBA 执行报告里的 GRANT 后重跑。三条排查脚本 `locate_context` / `locate_schema` / `locate_search`（procinfo、proctune 各一份）须已灌入白名单，否则报告里标「未能排查」 |
 | procinfo / proctune 报「过程 … 在当前库的 pg_proc 里找不到」或「同名过程不止一个」 | 包（Package）内的过程要用三段名 `schema.package.proc`；同一 schema 下不同包里有同名过程时脚本不猜，列出候选让用户指定。包内过程同样登记在 pg_proc（propackageid → gs_package），不是 GaussDB 不支持 | 按慢 SQL 里 `call a.b.c(...)` 的写法原样传三段名；同名多个时用三段名指定 |
-| sqltune / explain 报 `relation "<表>" does not exist`（中间件路径为 HTTP 400），表名不带 schema | 业务 SQL 的表名靠应用账号的 search_path 解析，中间件执行账号的 search_path 是 `"$user", public`，解析不到 | sqltune 按 sql_id 时自动取 statement_history 的 schema_name（备机退回 dbe_perf.statement 时按 user_name 推测），EXPLAIN 前先 `SET search_path`；`--sql-stdin` 时传 `--schema <schema>`。报告 `Search path` 行写「未切换」说明中间件不支持一条脚本两条语句，此时由 DBA 给执行账号设 search_path |
+| sqltune / explain 报 `relation "<表>" does not exist`（中间件路径为 HTTP 400），表名不带 schema | 业务 SQL 的表名靠应用账号的 search_path 解析，中间件执行账号的 search_path 是 `"$user", public`，解析不到 | sqltune 按 sql_id 时自动取 statement_history 的 schema_name（备机退回 dbe_perf.statement 时按 user_name 推测），EXPLAIN 前先 `SET search_path`；`--sql-stdin` 时传 `--schema <schema>`（explain 也可直接 `--sql-id`）。中间件跑不了一条脚本两条语句时，脚本自动把 SQL 里不带 schema 的表名按该 schema 补全后取计划，报告 `Search path` 行写「未切换,已改为补全表名取计划」，计划与原 SQL 等价；根治仍是由 DBA 给执行账号设 search_path（`ALTER ROLE <执行账号> IN DATABASE <库> SET search_path = <schema>, public`） |
 
 ---
 

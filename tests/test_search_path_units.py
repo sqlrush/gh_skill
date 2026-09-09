@@ -132,3 +132,65 @@ def test_fallback_explain_failure_carries_the_note_in_the_error():
     msg = str(ei.value)
     assert 'relation "orders" does not exist' in msg and "补充" in msg
     assert "白名单" in msg and "ALTER ROLE" in msg and "SET search_path = app_trade, public" in msg
+
+
+# ---------------------------------------------------------------- 切不成 search_path → 脚本自己补全表名(客户 09-09 早截图)
+
+class _QualRunner(FakeRunner):
+    """记下单语句模板收到的 SQL;可指定「原文失败、补全后成功」。"""
+
+    def __init__(self, fail_unqualified=False, **kw):
+        super().__init__(**kw)
+        self.fail_unqualified = fail_unqualified
+
+    def run(self, script, values=None):
+        if script != sp.PROBE_SCRIPT and self.fail_unqualified and "gmag." not in (values or {}).get("sql", ""):
+            self.calls.append((script, dict(values or {})))
+            raise QueryError('执行脚本失败：ERROR: relation "batch_job_status" does not exist')
+        return super().run(script, values)
+
+
+def test_unsupported_two_statements_qualifies_table_names_instead():
+    """执行器跑不了两条语句:不再把原 SQL 原样发过去等 400,先把不带 schema 的表名补全再走单语句模板。"""
+    r = _QualRunner(probe_ok=False)
+    plan, applied, note = sp.explain_plan(r, "sqltune.plan_text", "SELECT COUNT(1) FROM batch_job_status WHERE x = 1", "gmag")
+    assert plan == "Seq Scan on orders"
+    assert r.calls[1] == ("sqltune.plan_text", {"sql": "SELECT COUNT(1) FROM gmag.batch_job_status WHERE x = 1"})
+    assert applied == ""                                   # search_path 确实没切,不假装
+    assert "补全" in note and "gmag.batch_job_status" in note and "两条语句" in note
+    assert "ALTER ROLE" in note and "SET search_path = gmag, public" in note
+
+
+def test_missing_probe_script_also_qualifies_and_says_which_cause():
+    r = _QualRunner(probe_exc="脚本 explain.multi_stmt_probe 不存在")
+    _, applied, note = sp.explain_plan(r, "explain.plan_text", "select * from t1 join t2 on t1.id = t2.id", "app")
+    assert applied == "" and r.calls[1][1]["sql"] == "select * from app.t1 join app.t2 on t1.id = t2.id"
+    assert "补全" in note and "白名单" in note and "explain.multi_stmt_probe" in note
+
+
+def test_nothing_to_qualify_keeps_the_old_fallback():
+    """SQL 里的表名本来就带 schema(或没有表):没什么可补,行为与之前一样——原文单语句模板 + 原因说明。"""
+    r = _QualRunner(probe_ok=False)
+    _, applied, note = sp.explain_plan(r, "explain.plan_text", "select * from other.t", "gmag")
+    assert applied == "" and r.calls[1][1]["sql"] == "select * from other.t"
+    assert "补全" not in note and "ALTER ROLE" in note
+
+
+def test_qualified_explain_failure_still_carries_the_note():
+    class _R(_QualRunner):
+        def run(self, script, values=None):
+            if script != sp.PROBE_SCRIPT:
+                raise QueryError('ERROR: relation "gmag.batch_job_status" does not exist')
+            return super().run(script, values)
+
+    with pytest.raises(QueryError) as ei:
+        sp.explain_plan(_R(probe_ok=False), "explain.plan_text", "select 1 from batch_job_status", "gmag")
+    msg = str(ei.value)
+    assert "补充" in msg and "补全" in msg and "ALTER ROLE" in msg
+
+
+def test_two_statement_path_still_preferred_when_it_works():
+    r = _QualRunner(probe_ok=True)
+    _, applied, note = sp.explain_plan(r, "explain.plan_text", "select * from t", "gmag")
+    assert applied == "gmag" and note == ""
+    assert r.calls[1] == ("explain.plan_text_schema", {"sql": "select * from t", "schema": "gmag"})

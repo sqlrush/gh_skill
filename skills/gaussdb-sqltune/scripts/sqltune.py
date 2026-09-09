@@ -190,7 +190,8 @@ def _derivation_report(runner, db, sql_text: str, ev) -> str:
         return header + "未进行：%s\n" % exc
     try:
         raw = (explain_json(db, sql_text) if db is not None
-               else explain_json_via_script(runner, sql_text, schema=getattr(ev, "search_path", "")))
+               else explain_json_via_script(runner, sql_text,
+                                            schema=getattr(ev, "search_path", "") or getattr(ev, "schema", "")))
         root = plantree.parse(raw)
     except Exception as exc:            # 取计划失败的形态太多，统一兜住
         return header + "未进行：拿不到 JSON 格式的执行计划 —— %s\n" % exc
@@ -391,7 +392,8 @@ def sqltune_report(tr: TuneResult) -> str:
     if getattr(ev, "search_path", ""):
         sb.append(f"- Search path: 已切到 `{ev.search_path}`,EXPLAIN 按该 schema 解析不带前缀的表名")
     elif getattr(ev, "search_path_note", ""):
-        sb.append(f"- Search path: 未切换 —— {ev.search_path_note}")
+        sb.append(("- Search path: 未切换,已改为补全表名取计划 —— " if "补全" in ev.search_path_note
+                   else "- Search path: 未切换 —— ") + ev.search_path_note)
     if len(sb) > 1:
         sb.append("")
     out = "\n".join(sb) + "\n"

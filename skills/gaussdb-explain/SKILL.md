@@ -1,6 +1,6 @@
 ---
 name: gaussdb-explain
-version: 2.2.0
+version: 2.3.0
 description: "通过内置脚本查看、运行、对比 OpenGauss/GaussDB SQL 的执行计划。用户只是想看 explain、执行计划、plan、cost、节点路径，包括“给我这条 SQL 的执行计划”“给我几个 SQL 的执行计划”“跑 explain”“看 plan”等请求。触发后运行 scripts/explain.py，返回真实 plan 和通俗易懂的节点解读；如果用户要继续做慢 SQL 根因分析、索引/改写建议、收益验证或完整调优，不要停在本 skill，应优先转给 gaussdb-sqltune。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -64,13 +64,25 @@ metadata:
 
 ## 标准工作流
 
-1. 如果用户提供了一条 SQL，执行：
+1. 如果用户给的是 **sql_id**（Top SQL / 慢 SQL 清单 / sqlfetch 里的 unique_sql_id），**直接按 id 取**，不要先 sqlfetch 再把文本贴回来：
+
+   ```bash
+   python3 {baseDir}/scripts/explain.py -c <conn> --sql-id <unique_sql_id>
+   ```
+
+   脚本会取到 SQL 原文和它当初执行的 schema（statement_history 记录值；备机退回 dbe_perf.statement 时按执行账号推测），
+   表名不带 schema 也能出计划。「来源:」行会写 `sql_id=…;schema=…`。文本被库截断时脚本会拒绝并让你改走 `--sql-stdin`。
+
+1b. 如果用户提供的是一条 SQL 文本，执行：
 
    ```bash
    python3 {baseDir}/scripts/explain.py -c <conn> --sql-stdin <<'SQL'
    <the SQL>
    SQL
    ```
+
+   **SQL 文本来自 sqlfetch 的输出时，把它打印的 `Schema:` 那一行原样带成 `--schema <schema>`**（见 2c）；
+   表名不带 schema 又不知道 schema 时问用户，**绝不自己猜 public 或别的 schema 去试**。
 
 2. 如果用户明确要求 `EXPLAIN ANALYZE`，执行：
 
@@ -102,8 +114,10 @@ metadata:
    SQL
    ```
 
-   脚本会先 `SET search_path` 再 EXPLAIN，「来源:」行带 `search_path=<schema>` 才算生效；报告里若有「search_path 未切换」说明，
-   原样转给用户（多半是中间件不支持一条脚本跑两条语句，要由 DBA 给执行账号设 search_path），**不要自己把表名改写成 schema.表**。
+   脚本会先 `SET search_path` 再 EXPLAIN，「来源:」行带 `search_path=<schema>` 表示切换生效；中间件跑不了两条语句时，
+   **脚本自己把 SQL 里不带 schema 的表名按该 schema 补全后取计划**，计划下方会有「已把 SQL 里不带 schema 的表名按该 schema 补全」
+   说明——计划与原 SQL 等价，照常分析，并把说明里的根治办法（DBA 给执行账号设 search_path 的 `ALTER ROLE` 命令）转给用户。
+   **你不要自己动手改写表名**，也不要换别的 schema 反复试；两条路都没成功时把脚本原话转给用户。
 
 3. 如果一次要看多条 SQL：
    - 每条 SQL 分别跑一次, 不允许多条SQL合成一段直接执行。

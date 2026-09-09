@@ -57,12 +57,14 @@ _GROUPS = {
         "sqlreview/from_history.yaml",
         "proctune/sql_from_history.yaml",
         "sqltune/from_history.yaml",
+        "explain/from_history.yaml",
     ],
     "从 statement 视图取 SQL 原文": [
         "sqlfetch/from_statement.yaml",
         "sqlreview/from_statement.yaml",
         "proctune/sql_from_statement.yaml",
         "sqltune/from_statement.yaml",
+        "explain/from_statement.yaml",
     ],
     "存储过程定义": [
         "procinfo/proc_def.yaml",

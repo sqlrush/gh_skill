@@ -36,6 +36,7 @@ from common.grmp.statement import (  # noqa: E402
     ensure_explainable,
 )
 import render  # noqa: E402
+import sqlfetch  # noqa: E402  —— --sql-id:按 unique_sql_id 取 SQL 原文与 schema(explain.from_history / explain.from_statement)
 
 # --pid 路径依赖的白名单脚本(走中间件必须先注册;交付闸按脚本名全串在 skills/ 里检索,故写全):
 #   explain.kernel_funcs   探测 version() 与 gs_get_explain / gs_get_kernel_info 是否存在
@@ -46,6 +47,8 @@ import render  # noqa: E402
 #   explain.multi_stmt_probe          探测中间件能否一条脚本跑两条语句
 #   explain.plan_text_schema          SET search_path TO "{{schema}}", public; EXPLAIN … {{sql}}
 #   explain.plan_text_analyze_schema  同上,analyze 名下的那份(现场 ANALYZE 固定关闭)
+# --sql-id 路径依赖的白名单脚本(scripts/sqlfetch.py,与 sqltune 的同体):
+#   explain.from_history / explain.from_statement
 #
 # 2026-09 现场四类报错之一就是脚本直接调 gs_get_explain 报 does not exist:openGauss 从来没有它,
 # GaussDB 缺失时也可能是 catalog 未升级 / 逐库不一致 / 实参类型不符。所以先探测再用,
@@ -249,6 +252,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                     help="EXPLAIN ANALYZE（真执行该 SQL；只受理只读语句）")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
     ap.add_argument("--timeout", type=int, default=None)
+    ap.add_argument("--sql-id", default=None,
+                    help="按 unique_sql_id 从 statement_history 取 SQL 原文与它当初执行的 schema(表名不带 schema 时不用再问 schema)")
     ap.add_argument("--schema", default="",
                     help="SQL 原本执行时的 schema:EXPLAIN 前先切 search_path(表名不带 schema 时必需)")
     args = ap.parse_args(argv)
@@ -257,12 +262,53 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"error: --schema {args.schema!r} 不是合法的 schema 标识符(字母或下划线开头,只含字母数字下划线$)",
               file=sys.stderr)
         return 2
-    if args.pid is None and not args.sql_stdin:
-        ap.error("需要 --sql-stdin 或 --pid 二选一")
-    if args.pid is not None and args.sql_stdin:
-        ap.error("--sql-stdin 与 --pid 不能同时给")
+    given = [n for n, v in (("--sql-stdin", args.sql_stdin), ("--pid", args.pid is not None),
+                            ("--sql-id", args.sql_id is not None)) if v]
+    if not given:
+        ap.error("需要 --sql-stdin、--sql-id 或 --pid 三选一")
+    if len(given) > 1:
+        ap.error("%s 不能同时给" % " 与 ".join(given))
 
-    if args.pid is not None:
+    fetch_notes: tuple = ()
+    fetch_source = ""
+    schema = args.schema
+    if args.sql_id is not None:
+        # 客户 09-09 早截图:模型按 sqlfetch → explain 的流程贴文本,schema 在贴文本那一步丢了 → 400。
+        # 按 id 取时 statement_history 的 schema_name 一起带回来,表名不带 schema 也能出计划。
+        try:
+            runner = access.for_conn(args.conn, timeout=args.timeout)
+            fr = sqlfetch.sql_fetch(runner, args.sql_id)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        except (common.ConfigError, common.CredentialError, common.DBError,
+                access.AccessError, access.QueryError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        if fr.truncated:
+            print(f"error: sql id {args.sql_id} 的 SQL 文本被 openGauss 截断({fr.truncated_reason}),"
+                  f"库里没有完整文本;请向用户索要完整 SQL 后用 --sql-stdin(并带 --schema {fr.schema or '<schema>'})",
+                  file=sys.stderr)
+            return 2
+        if fr.normalized:
+            # statement_history 没这条(备机 / 没记 / 无权限)时退回 dbe_perf.statement,拿到的是带 ? 的归一化文本——
+            # EXPLAIN 直接语法错。占位符按列类型合成值是 gaussdb-sqltune 的活,本 skill 不复制那套机器,如实指路。
+            why = f"(statement_history 不可用:{fr.degraded_reason})" if fr.degraded_reason else "(statement_history 里没有这条,只有 dbe_perf.statement 的归一化文本)"
+            print(f"error: sql id {args.sql_id} 取到的是归一化文本,带 {fr.placeholders} 个占位符{why},EXPLAIN 需要真实值。"
+                  f"两个办法:① 用 gaussdb-sqltune 按这个 id 调优,它会按列类型合成占位符值并出计划;"
+                  f"② 向用户要带真实值的 SQL 原文后用 --sql-stdin --schema {fr.schema or '<schema>'} 重跑。",
+                  file=sys.stderr)
+            return 2
+        sql_text = fr.sql
+        if not schema and fr.schema and sp.valid_schema(fr.schema):
+            schema = fr.schema
+        label = {"statement_history": "statement_history 记录值", "user_name": "按执行账号 user_name 推测"}.get(
+            getattr(fr, "schema_source", ""), "")
+        fetch_source = f"sql_id={args.sql_id}({fr.source})" + (
+            f";schema={fr.schema}({label})" if fr.schema and not args.schema else "")
+        fetch_notes = ((f"statement_history 不可用,退到 dbe_perf.statement:{fr.degraded_reason}",)
+                       if fr.degraded_reason else ())
+    elif args.pid is not None:
         try:
             runner = access.for_conn(args.conn, timeout=args.timeout)
             sql_text, plan, source, notes = explain_by_pid(runner, args.pid, args.analyze, args.schema)
@@ -278,9 +324,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 2
         return _emit(args, sql_text, plan, source, notes)
 
-    sql_text = sys.stdin.read()
-    if not sql_text.strip():
-        ap.error("empty SQL on stdin")
+    if args.sql_id is None:
+        sql_text = sys.stdin.read()
+        if not sql_text.strip():
+            ap.error("empty SQL on stdin")
 
     # 语句形态校验 —— **纯文本检查，放在连库之前**。
     #
@@ -302,8 +349,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
 
     try:
-        runner = access.for_conn(args.conn, timeout=args.timeout)
-        plan, applied, sp_note = explain_plan_via_script(runner, sql_text, args.analyze, args.schema)
+        if args.sql_id is None:
+            runner = access.for_conn(args.conn, timeout=args.timeout)
+        plan, applied, sp_note = explain_plan_via_script(runner, sql_text, args.analyze, schema)
     # access.QueryError 必须在列 —— 它是本项目归一化的「取数失败」类型，
     # runner.run() 在 SQL 本身执行失败时抛的就是它（打错字、表不存在、
     # 类型不匹配）。漏掉它的后果不是少一条错误信息，而是**直接吐 Traceback**：
@@ -314,8 +362,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     script = "explain.plan_text_analyze" if args.analyze else "explain.plan_text"
-    source = f"EXPLAIN 模板({script})" + (f";search_path={applied}" if applied else "")
-    return _emit(args, sql_text, plan, source, (sp_note,) if sp_note else ())
+    source = f"EXPLAIN 模板({script})" + (f";search_path={applied}" if applied else "") + (
+        f";{fetch_source}" if fetch_source else "")
+    return _emit(args, sql_text, plan, source, ((sp_note,) if sp_note else ()) + fetch_notes)
 
 
 def _emit(args, sql_text: str, plan: str, source: str, notes: tuple) -> int:

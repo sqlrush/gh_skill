@@ -358,3 +358,73 @@ def test_schema_option_rejects_a_non_identifier_cleanly(monkeypatch, capsys):
     assert explain_mod.main(["--sql-stdin", "--schema", "app;drop"]) == 2
     err = capsys.readouterr().err
     assert "schema" in err and "Traceback" not in err
+
+
+# ---------------------------------------------------------------- --sql-id(客户 09-09 早截图:贴文本那条路 schema 会丢)
+
+class _IdRunner(_Runner):
+    """from_history 给出 SQL 与它当初执行的 schema;探测脚本说两条语句不行;单语句模板记下收到的 SQL。"""
+
+    def __init__(self):
+        self.calls = []
+
+    def run(self, script, values=None):
+        self.calls.append((script, dict(values or {})))
+        if script == "explain.from_history":
+            return [{"schema_name": "gmag", "query": "SELECT COUNT(1) FROM batch_job_status WHERE work_status IN (1, 2, 3)"}]
+        if script == "explain.multi_stmt_probe":
+            return []
+        return super().run(script, values)
+
+
+def test_sql_id_fetches_text_and_carries_the_recorded_schema(monkeypatch, capsys):
+    from common import search_path as sp
+    sp.reset_probe_cache()
+    r = _IdRunner()
+    monkeypatch.setattr(explain_mod.access, "for_conn", lambda *a, **k: r)
+    assert explain_mod.main(["--sql-id", "1568852919"]) == 0, capsys.readouterr().err
+    out = capsys.readouterr().out
+    assert ("explain.from_history", {"sid": 1568852919}) in r.calls
+    plan_calls = [c for c in r.calls if c[0] == "explain.plan_text"]
+    assert plan_calls and plan_calls[0][1]["sql"] == "SELECT COUNT(1) FROM gmag.batch_job_status WHERE work_status IN (1, 2, 3)"
+    assert "1568852919" in out and "gmag" in out and "补全" in out and "Seq Scan" in out
+    assert "statement_history" in out        # 来源行写明 schema 从哪来
+
+
+def test_sql_id_and_stdin_are_exclusive(capsys):
+    with pytest.raises(SystemExit):
+        explain_mod.main(["--sql-id", "1", "--sql-stdin"])
+
+
+def test_sql_id_must_be_an_integer(monkeypatch, capsys):
+    monkeypatch.setattr(explain_mod.access, "for_conn", lambda *a, **k: _IdRunner())
+    assert explain_mod.main(["--sql-id", "abc"]) == 2
+    assert "sql id" in capsys.readouterr().err.lower()
+
+
+def test_sql_id_not_found_is_a_clean_error(monkeypatch, capsys):
+    class _Empty(_IdRunner):
+        def run(self, script, values=None):
+            if script in ("explain.from_history", "explain.from_statement"):
+                return []
+            return super().run(script, values)
+    monkeypatch.setattr(explain_mod.access, "for_conn", lambda *a, **k: _Empty())
+    assert explain_mod.main(["--sql-id", "42"]) == 2
+    err = capsys.readouterr().err
+    assert "not found" in err and "Traceback" not in err
+
+
+def test_sql_id_with_normalized_text_points_to_sqltune(monkeypatch, capsys):
+    """og5 / 备机上 statement_history 没这条时退回 dbe_perf.statement,文本带 ? 占位符——EXPLAIN 会语法错。
+    explain 不做占位符合成(那是 sqltune 的活),要明确拒绝并指路,不能把语法错甩给用户。"""
+    class _Norm(_IdRunner):
+        def run(self, script, values=None):
+            if script == "explain.from_history":
+                return []
+            if script == "explain.from_statement":
+                return [{"user_name": "kf_app", "query": "select count(*) from kf_orders where status = ? and amount > ?"}]
+            return super().run(script, values)
+    monkeypatch.setattr(explain_mod.access, "for_conn", lambda *a, **k: _Norm())
+    assert explain_mod.main(["--sql-id", "7"]) == 2
+    err = capsys.readouterr().err
+    assert "归一化" in err and "sqltune" in err and "--sql-stdin --schema kf_app" in err and "Traceback" not in err

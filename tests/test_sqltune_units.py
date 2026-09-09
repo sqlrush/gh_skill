@@ -401,8 +401,10 @@ def test_collect_falls_back_to_the_plain_template_when_two_statements_are_refuse
     sp.reset_probe_cache()
     r = _SchemaRunner(probe_ok=False)
     ev = evidence.collect(r, None, "select * from orders", False, schema="app_trade")
-    assert ("sqltune.plan_text", {"sql": "select * from orders"}) in r.calls
-    assert ev.search_path == "" and "app_trade" in ev.search_path_note
+    # 2026-09-09 起:两语句跑不了不再把原文原样发过去等 400,脚本自己把表名按 schema 补全后走单语句模板
+    assert ("sqltune.plan_text", {"sql": "select * from app_trade.orders"}) in r.calls
+    assert ev.search_path == "" and "app_trade" in ev.search_path_note and "补全" in ev.search_path_note
+    assert ev.schema == "app_trade"                       # 要求切到的 schema 留着,后面取 JSON 计划还要用
     assert ev.search_path_note in evidence.evidence_report(ev)
 
 
