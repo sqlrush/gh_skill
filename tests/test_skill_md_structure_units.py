@@ -74,26 +74,21 @@ _GLOBAL_REDLINES = (
 
 
 def test_global_redlines_live_in_agents_md():
-    """全局安全红线 2026-08 从 14 个 SKILL.md 集中进了 AGENTS.md。
+    """AGENTS.md 里的「禁止行为」红线一条都不能少。
 
-    集中的意义是只有一份可改：AGENTS.md 里这几条静默消失，或哪个
-    SKILL.md 里残留旧副本（两份会各自烂掉 —— 改了一处忘另一处，
-    模型读到的就是旧规则），都要在这里变红。
+    2026-08 曾把 14 个 SKILL.md 的公共红线集中到这里去重;2026-09-10 客户安全审查 diff SKILL.md 看到红线「被删了」
+    (安装脚本不拷 AGENTS.md,客户只换了 skill 目录)——于是改回**每份 SKILL.md 都带一份**,与 AGENTS.md 同一正文
+    (common/red_lines.md,tools/inject_red_lines.py 注入,tests/test_red_lines_units.py 保证逐字一致)。
+    这里只守 AGENTS.md 自己那几条不消失;副本一致性在 test_red_lines_units 里。
     """
     assert _AGENTS.exists(), "AGENTS.md 不存在 —— 全局安全红线没了载体"
     text = _AGENTS.read_text(encoding="utf-8")
     for phrase in _GLOBAL_REDLINES:
         n = text.count(phrase)
-        assert n == 1, (
-            "AGENTS.md 里「%s」出现 %d 次（应恰好 1 次）—— "
-            "0 次是红线被删了，2 次多半是批量编辑插重了" % (phrase, n))
-
-    leftovers = [p.parent.name for p in _SKILLS
-                 if "配置文件里绝不允许出现明文口令"
-                 in p.read_text(encoding="utf-8")]
-    assert not leftovers, (
-        "这些 SKILL.md 还残留着已集中到 AGENTS.md 的明文口令红线副本：%s"
-        % leftovers)
+        assert n >= 1, "AGENTS.md 里「%s」不见了" % phrase
+    copies = [p.parent.name for p in _SKILLS
+              if "配置文件里绝不允许出现明文口令" not in p.read_text(encoding="utf-8")]
+    assert not copies, "这些 SKILL.md 没有公共安全红线副本(跑 tools/inject_red_lines.py):%s" % copies
 
 
 @pytest.mark.parametrize("path", _SKILLS, ids=lambda p: p.parent.name)

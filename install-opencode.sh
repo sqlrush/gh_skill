@@ -11,7 +11,8 @@
 #
 # Usage:
 #   ./install-opencode.sh                 # install all skills globally
-#   ./install-opencode.sh --project DIR   # install into DIR/.opencode/skills
+#   ./install-opencode.sh --project DIR   # install into DIR/.opencode/skills AND DIR/AGENTS.md (global rules)
+#   ./install-opencode.sh --dest D --agents-md P   # custom skills dir + where AGENTS.md goes (omit = loud warning)
 #   ./install-opencode.sh sqltune slowsql # install only the named skills
 #   ./install-opencode.sh --dry-run       # show what would happen
 #   ./install-opencode.sh --versions      # show what is installed + snapshots
@@ -28,11 +29,14 @@ ROLLBACK_FROM=""
 SHOW_VERSIONS=0
 NO_BACKUP=0
 KEEP=5
+PROJECT_ROOT=""
+AGENTS_DEST=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --project) shift; DEST="${1:?--project needs a dir}/.opencode/skills" ;;
+    --project) shift; PROJECT_ROOT="${1:?--project needs a dir}"; DEST="$PROJECT_ROOT/.opencode/skills" ;;
     --dest)    shift; DEST="${1:?--dest needs a dir}" ;;
+    --agents-md) shift; AGENTS_DEST="${1:?--agents-md needs a path}" ;;
     --dry-run) DRY=1 ;;
     --versions|--list-versions) SHOW_VERSIONS=1 ;;
     --no-backup) NO_BACKUP=1 ;;
@@ -49,6 +53,10 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+# --project: AGENTS.md goes to the project root (opencode reads global rules there);
+# an explicit --agents-md wins.
+[ -n "$PROJECT_ROOT" ] && [ -z "$AGENTS_DEST" ] && AGENTS_DEST="$PROJECT_ROOT/AGENTS.md"
 
 run() { if [ "$DRY" = 1 ]; then echo "  [dry-run] $*"; else eval "$@"; fi; }
 want() { [ "${#ONLY[@]}" -eq 0 ] && return 0; for x in "${ONLY[@]}"; do [ "$x" = "$1" ] && return 0; done; return 1; }
@@ -226,6 +234,24 @@ PY
   count=$((count + 1))
 done
 
+# --- AGENTS.md: global rules (security red lines, sql_id / schema rules) ------
+# opencode reads it from the **project root**, not from skills/. Shipping the
+# skills without it is exactly how the 2026-09-10 "the red lines were deleted"
+# report happened, so either install it here (--project / --agents-md) or say
+# loudly that we did not.
+if [ -n "$AGENTS_DEST" ]; then
+  if [ -f "$AGENTS_DEST" ] && ! cmp -s "$SRC/AGENTS.md" "$AGENTS_DEST"; then
+    abak="${AGENTS_DEST}.bak.$(date +%Y%m%d-%H%M%S)"
+    echo "• backing up existing $AGENTS_DEST -> $abak"
+    run "cp -p \"$AGENTS_DEST\" \"$abak\""
+  fi
+  echo "• installing AGENTS.md -> $AGENTS_DEST"
+  run "cp \"$SRC/AGENTS.md\" \"$AGENTS_DEST\""
+else
+  echo "! AGENTS.md NOT installed (global rules incl. the security red lines)."
+  echo "  use --project <opencode project root> or --agents-md <path>, or copy $SRC/AGENTS.md to the project root yourself"
+fi
+
 # --- record provenance -------------------------------------------------------
 # So `--versions` can answer "what is live right now, and from which commit".
 # Without it, a snapshot is just an unlabelled directory.
@@ -255,5 +281,6 @@ echo "Next:"
 echo "  1) ensure deps:  python3 -m pip install -r \"$SRC/requirements.txt\""
 echo "  2) ensure a DB connection exists in ~/.gdaa (see docs/INSTALL-opencode.md)"
 echo "  3) in opencode, the skills appear via the native 'skill' tool"
+echo "  4) AGENTS.md must sit in the opencode project root (installed above only with --project / --agents-md)"
 echo
 echo "If this version misbehaves:  $0 --rollback"
