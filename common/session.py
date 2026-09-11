@@ -7,13 +7,16 @@ skill 找不到。不存密码：api 模式的令牌、gsql 模式的口令仍�
 **为什么按句柄分文件（2026-09-07 现场缺陷）**：客户多个用户共用一个沙箱、一个 GSDB_HOME。原先只有
 一个 session.yaml，谁最后登录所有人就连谁的库——退出码 0、不报错、报告抬头写着别人的库，静默串库。
 现在每次登录得到一个随机句柄，写 `sessions/<句柄>.yaml`；其余 skill 用 `--session <句柄>`（或环境变量
-GSDB_SESSION，health 派生的子 skill 靠它继承）指名要哪一份。沙箱里只有一个会话时不用句柄，单用户
-用法不变；**多个会话又没给句柄时拒绝执行并列出候选**——宁可多问一句，也不猜：猜错的后果是在别人的
-库上跑诊断，而输出看起来完全正常。
+GSDB_SESSION，health 派生的子 skill 靠它继承）指名要哪一份。
 
-闲置超过 TTL（默认 12 小时，GSDB_SESSION_TTL_HOURS 可调）的会话自动清理，否则用户走了以后沙箱里
-残留一堆会话，后来的人每条命令都被拦。旧的单文件 session.yaml 在没有任何句柄会话时仍可用（升级过渡）。
-文件权限 0600。
+**会话只属于创建它的对话（2026-09-11 现场反馈的越权）**：原先「只有一个会话时自动用它、多个会话时列出候选
+让用户挑」——用户 C 进来什么都不带就跑在 A 的库上，或者从候选里挑走 B 的句柄。现在没句柄就是没登录：
+不自动选、不列候选、不报数量，只回一句「本对话未登录」；句柄只能来自本对话里 login 的输出，或平台按用户
+注入的 GSDB_SESSION。同沙箱同 OS 用户下别人的会话文件在文件系统层面仍读得到——那要靠平台注入身份或一人一沙箱，
+这里堵的是「看得见、顺手用」两条。
+
+闲置超过 TTL（默认 12 小时，GSDB_SESSION_TTL_HOURS 可调）的会话自动清理。旧的单文件 session.yaml 不再认
+（它也是谁都能用的口子），登录时顺手删掉。文件权限 0600。
 """
 from __future__ import annotations
 
@@ -36,7 +39,10 @@ ENV_TTL = "GSDB_SESSION_TTL_HOURS"
 DEFAULT_TTL_HOURS = 12
 HANDLE_RE = re.compile(r"^[a-z0-9]{4,16}$")
 _ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"   # 去掉 0/o、1/l/i 这些肉眼易混的字符
-_HANDLE_LEN = 5
+_HANDLE_LEN = 12                                 # 31^12 ≈ 8e17,猜不到;句柄就是这个对话访问那个库的凭证
+
+NOT_LOGGED_IN = ("本对话未登录。请先运行 gaussdb-login 登录要访问的库，之后每条命令带上它输出的 "
+                 "`--session <句柄>`（平台也可以按用户设置环境变量 GSDB_SESSION）。")
 
 # 会话文件里允许出现的键。多余的键一律拒绝 —— 手工改这个文件时写错一个键名
 # （比如把 data_ip 写成 dataip），静默忽略的话会连到错误的实例上去。
@@ -175,6 +181,12 @@ def save(conn: Connection, handle: Optional[str] = None) -> str:
         "data_ip": conn.data_ip, "app": conn.app,
     }
     _write(path_for(handle), payload)
+    legacy = _legacy_path()                     # 旧版单文件:谁都能用的口子,见到就删
+    if legacy.exists():
+        try:
+            legacy.unlink()
+        except OSError:
+            pass
     return handle
 
 
@@ -202,73 +214,38 @@ def list_sessions(prune: bool = True) -> List[SessionInfo]:
     return sorted(out, key=lambda s: s.last_used, reverse=True)
 
 
-def _ambiguous(sessions: List[SessionInfo]) -> ConfigError:
-    lines = ["沙箱里有 %d 个会话，不知道该用哪个。请在命令里带上 `--session <句柄>`"
-             "（或设置环境变量 GSDB_SESSION）：" % len(sessions)]
-    for s in sessions:
-        lines.append("  %s  %s / %s  最后使用 %s" % (
-            s.handle, target_of(s.conn), s.conn.database,
-            time.strftime("%m-%d %H:%M", time.localtime(s.last_used))))
-    lines.append("不猜：猜错会在别人的库上跑诊断，而输出看起来完全正常。"
-                 "把这份清单转给用户确认要用哪个库，或让用户重新 gaussdb-login 拿一个新句柄。")
-    return ConfigError("\n".join(lines))
-
-
 def current() -> Optional[Connection]:
-    """当前会话选中的连接；没有则 None；分不清则抛 ConfigError（不猜）。"""
+    """本对话指名的会话（--session / GSDB_SESSION）；没指名就是 None——不自动选、不列候选、不认旧文件。"""
+    list_sessions()                         # 只为顺手清掉过期会话,结果一概不用
     handle = selected()
-    if handle:
-        path = path_for(handle)
-        if not path.exists():
-            raise ConfigError(
-                "会话句柄 %s 不存在或已过期（闲置超过 %d 小时会自动清理）。"
-                "重新运行 gaussdb-login 登录，并带上它输出的新句柄。"
-                % (handle, ttl_seconds() // 3600))
-        conn = _read(path)
-        _touch(path)
-        return conn
-    sessions = list_sessions()
-    if len(sessions) == 1:
-        _touch(sessions[0].path)
-        return sessions[0].conn
-    if not sessions:
-        legacy = _legacy_path()
-        return _read(legacy) if legacy.exists() else None
-    raise _ambiguous(sessions)
+    if not handle:
+        return None
+    path = path_for(handle)
+    if not path.exists():
+        raise ConfigError(
+            "会话句柄 %s 不存在或已过期（闲置超过 %d 小时会自动清理）。"
+            "重新运行 gaussdb-login 登录，并带上它输出的新句柄。"
+            % (handle, ttl_seconds() // 3600))
+    conn = _read(path)
+    _touch(path)
+    return conn
 
 
 def current_handle() -> Optional[str]:
-    """指名的句柄；没指名但沙箱里只有一个会话时就是它；其余 None。"""
-    handle = selected()
-    if handle:
-        return handle
-    sessions = list_sessions(prune=False)
-    return sessions[0].handle if len(sessions) == 1 else None
+    """本对话指名的句柄;没指名就是 None。"""
+    return selected() or None
 
 
 def clear(handle: Optional[str] = None) -> bool:
-    """退出一个会话。返回是否真的删了。没指名且沙箱里有多个会话时拒绝（不猜要退谁）。"""
+    """退出一个会话。返回是否真的删了。不指名一律拒绝——不指名退掉「唯一那个」,退的可能是别人的。"""
     handle = handle or selected()
-    if handle:
-        path = path_for(handle)
-        if path.exists():
-            path.unlink()
-            return True
-        return False
-    sessions = list_sessions()
-    if len(sessions) > 1:
-        raise ConfigError(
-            "沙箱里有 %d 个会话，退出哪一个要带 `--session <句柄>`；要全部清掉用 `--all`。"
-            % len(sessions))
-    removed = False
-    for s in sessions:
-        s.path.unlink()
-        removed = True
-    legacy = _legacy_path()
-    if legacy.exists():
-        legacy.unlink()
-        removed = True
-    return removed
+    if not handle:
+        raise ConfigError("退出会话要带 `--session <句柄>`（登录时输出的那一串）；运维清空沙箱里全部会话用 `--all`。")
+    path = path_for(handle)
+    if path.exists():
+        path.unlink()
+        return True
+    return False
 
 
 def clear_all() -> int:

@@ -536,4 +536,6 @@ def test_two_sessions_without_a_handle_is_a_clean_error_not_a_traceback(tmp_path
         os.environ.pop(session.ENV_HANDLE, None)
         session.use(None)
     err = capsys.readouterr().err
-    assert rc == 1 and "沙箱里有 2 个会话" in err and "report" in err and "Traceback" not in err
+    # 2026-09-11 起不列候选:只说「本对话未登录」,别人的库名、句柄一个字不透
+    assert rc == 1 and "本对话未登录" in err and "Traceback" not in err
+    assert "report" not in err and "core" not in err and "2 个" not in err

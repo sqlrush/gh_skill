@@ -207,20 +207,9 @@ def _handle_banner(handle: str, conn: Connection) -> str:
     """句柄要写在最前面、最醒目:模型只有把它带到后续每条命令上,同沙箱多用户才不会串库。"""
     return (
         "**会话句柄：`%s`**（%s / %s）\n\n"
-        "后续每条命令都带上 `--session %s`（或环境变量 `GSDB_SESSION=%s`）。"
-        "同一沙箱里还有别人的会话时，不带句柄的命令会被拒绝并列出候选。\n\n"
+        "本对话之后的每条命令都带上 `--session %s`（或环境变量 `GSDB_SESSION=%s`）。"
+        "不带句柄的命令会被当作未登录拒绝；换一个对话要重新登录。\n\n"
         % (handle, session.target_of(conn), conn.database, handle, handle))
-
-
-def _others_note(handle: str) -> str:
-    """沙箱里已有的其他会话:只提示,不动它们——那是别人的登录。"""
-    others = [s for s in session.list_sessions() if s.handle != handle]
-    if not others:
-        return ""
-    lines = ["> ⚠ 沙箱里还有 %d 个其他会话（未受影响，各用各的句柄）：" % len(others)]
-    for s in others:
-        lines.append("> - `%s`  %s / %s" % (s.handle, session.target_of(s.conn), s.conn.database))
-    return "\n".join(lines) + "\n"
 
 
 def _describe(conn: Connection, note: str, path, role: str = "", handle: str = "") -> str:
@@ -251,8 +240,6 @@ def _describe(conn: Connection, note: str, path, role: str = "", handle: str = "
     if role.startswith("备机"):
         out += STANDBY_NOTE
     out += "\n会话已写入 `%s`。\n\n" % path
-    if handle:
-        out += _others_note(handle)
 
     if conn.driver == "grmp":
         # 白名单决定了这个库上**哪些 skill 真的能用** —— 客户环境里各库注册的
@@ -267,7 +254,7 @@ def _describe(conn: Connection, note: str, path, role: str = "", handle: str = "
             out += "> 白名单取不到：%s\n" % exc
 
     if handle:
-        out += ("\n后续 skill 带 `--session %s` 就用这条连接；沙箱里只有这一个会话时也可以不带。"
+        out += ("\n后续 skill 带 `--session %s` 就用这条连接；不带句柄会被当作未登录拒绝。"
                 "gsql 模式下仍可用 `-c <连接名>` 临时换库。\n" % handle)
     else:
         out += ("\n后续 13 个 skill **不带 `-c` 就会用这条连接**；要临时换一个，"
@@ -279,22 +266,19 @@ def _describe(conn: Connection, note: str, path, role: str = "", handle: str = "
 
 
 def _status(handle: str) -> int:
-    """列出沙箱里的全部会话。哪一条会被「不带句柄的命令」用到，标出来。"""
+    """只看本对话的会话。不带句柄就是未登录——沙箱里别人的会话一个字不提(2026-09-11 客户反馈的越权)。"""
     import time
-    sessions = session.list_sessions()
-    if not sessions:
-        print("当前没有会话。运行 gaussdb-login 选一个数据库。")
+    handle = handle or session.selected() or ""
+    if not handle:
+        print("本对话未登录。运行 gaussdb-login 选一个数据库；登录后每条命令带上它输出的 `--session <句柄>`。")
         return 0
-    chosen = handle or session.selected() or (sessions[0].handle if len(sessions) == 1 else "")
-    rows = []
-    for s in sessions:
-        rows.append([s.handle, s.conn.app or "—",
-                     session.target_of(s.conn), s.conn.database,
-                     time.strftime("%m-%d %H:%M", time.localtime(s.last_used)),
-                     "← 不带句柄时用这条" if s.handle == chosen else ""])
-    print(render.table(["句柄", "应用", "目标", "数据库", "最后使用", ""], rows))
-    if len(sessions) > 1 and not chosen:
-        print("\n沙箱里有 %d 个会话：后续命令必须带 `--session <句柄>`，否则会被拒绝。" % len(sessions))
+    info = next((s for s in session.list_sessions() if s.handle == handle), None)
+    if info is None:
+        print("会话句柄 %s 不存在或已过期。重新运行 gaussdb-login 登录。" % handle)
+        return 2
+    print(render.table(["句柄", "应用", "目标", "数据库", "最后使用"],
+                       [[info.handle, info.conn.app or "—", session.target_of(info.conn), info.conn.database,
+                         time.strftime("%m-%d %H:%M", time.localtime(info.last_used))]]))
     return 0
 
 
@@ -306,11 +290,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--ip", help="api 模式：目标实例 IP（接口一的 dataIp）")
     ap.add_argument("--database", help="api 模式：要访问的数据库名")
     ap.add_argument("--list", action="store_true", help="只列出可选项，不登录")
-    ap.add_argument("--status", action="store_true", help="列出沙箱里的全部会话")
-    ap.add_argument("--logout", action="store_true", help="退出会话（多个会话时要带 --session，或 --all）")
+    ap.add_argument("--status", action="store_true", help="看本对话的会话（要带 --session；不带就是未登录）")
+    ap.add_argument("--logout", action="store_true", help="退出本对话的会话（要带 --session；运维清空全部用 --all）")
     ap.add_argument("--session", default="", metavar="句柄",
                     help="--logout / --status 针对的会话句柄（登录时输出的那一串）")
-    ap.add_argument("--all", action="store_true", help="配合 --logout：清掉沙箱里全部会话")
+    ap.add_argument("--all", action="store_true", help="配合 --logout：运维清空沙箱里全部会话（模型不要主动用）")
     ap.add_argument("--no-verify", action="store_true",
                     help="跳过连通性验证（不建议：失败会推迟到下一个 skill）")
     args = ap.parse_args(argv)

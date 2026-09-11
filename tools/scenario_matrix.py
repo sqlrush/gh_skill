@@ -214,12 +214,19 @@ def main() -> int:
         # 不带句柄的用例就会被「沙箱里有 2 个会话」拒掉——那是产品的正确行为,不是失败。
         # 矩阵模拟的是单用户换库,所以登录前先清掉本目录的会话。
         subprocess.run([PY, skill("login"), "--logout", "--all"], capture_output=True, text=True)
-        rc = subprocess.run([PY, skill("login"), "--app", APP, "--conn", conn],
-                            capture_output=True, text=True).returncode
-        if rc != 0:
+        login = subprocess.run([PY, skill("login"), "--app", APP, "--conn", conn],
+                               capture_output=True, text=True)
+        if login.returncode != 0:
             print("登录 %s/%s 失败，矩阵不跑 —— 否则 68 条会一起红，"
                   "看不出是环境问题还是代码问题。" % (APP, conn), file=sys.stderr)
             return 2
+        # 2026-09-11 起会话只属于本对话:不带句柄一律「本对话未登录」,不再有「唯一会话自动用」。
+        # 矩阵里后续用例靠环境变量继承句柄——这正是平台按用户注入 GSDB_SESSION 的那条路。
+        hit = re.search(r"--session ([a-z0-9]{4,16})", login.stdout)
+        if not hit:
+            print("登录输出里没有会话句柄，矩阵不跑。", file=sys.stderr)
+            return 2
+        os.environ["GSDB_SESSION"] = hit.group(1)
 
     sqlid = discover_sqlid()
     if not sqlid:

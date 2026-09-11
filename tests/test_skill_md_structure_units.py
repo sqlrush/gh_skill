@@ -133,3 +133,12 @@ def test_data_skills_tell_the_model_to_carry_the_session_handle():
             continue
         assert "--session" in text and "句柄" in text, path.name
         assert "不要自己挑" in text, path.name
+
+
+def test_data_skills_never_offer_other_sessions():
+    """客户 09-11:不带句柄时列候选 / 唯一会话自动选用 = 越权。SKILL.md 不能再有这两句。"""
+    for path in sorted(_ROOT.glob("skills/gaussdb-*/SKILL.md")):
+        text = path.read_text(encoding="utf-8")
+        assert "只有一个会话时" not in text, path.name
+        assert "转给用户确认要用哪个库" not in text, path.name
+        assert "列出候选会话" not in text, path.name

@@ -1,6 +1,6 @@
 ﻿---
 name: gaussdb-procinfo
-version: 2.2.1
+version: 2.2.2
 description: "通过内置脚本查看、拆解、解读 OpenGauss/GaussDB 存储过程的源码结构和热点分布。用户只是想看过程源码、看看过程里哪一段最重、查循环内 SQL、逐行 DML、动态 SQL、循环异常、嵌入语句等结构问题，或想先知道过程为什么慢但暂时不做收益验证时使用，包括“看下这个存储过程”“查过程源码”“这个过程为什么慢”“有没有循环里执行 SQL”“帮我看看这个过程卡在哪一段”等请求。触发后运行 scripts/procinfo.py，返回真实过程证据和通俗易懂的热点解读；如果用户要继续做可验证的优化、验证游标 SQL 改写或索引收益，不要停在本 skill，应优先转给 gaussdb-proctune。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -43,7 +43,7 @@ metadata:
    `python3 {baseDir}/../gaussdb-login/scripts/login.py --status`。
    没有会话就先调 **gaussdb-login**：它读 `$GSDB_HOME/config.yaml`的首行 `connection_mode`，是 `gsql` 就把可选连接列成菜单让用户挑，是 `api` 就引导用户给出要访问的数据库。
    登录之后本 skill **不需要传 `-c`** —— 省略时自动用登录选定的那条连接；只有要临时换一个库时才显式传 `-c <连接名>`。
-   **api 模式下每条命令都要带 `--session <句柄>`**：句柄是 gaussdb-login 登录成功时输出的那一串（也可放在环境变量 `GSDB_SESSION` 里）。同一沙箱可能有别人的会话，脚本分不清时会拒绝执行并列出候选会话；这时把清单转给用户确认要用哪个库，或让用户重新登录，**不要自己挑一个**。沙箱里只有一个会话时可以不带。
+   **api 模式下每条命令都要带 `--session <句柄>`**：句柄是 gaussdb-login 在**本对话里**登录成功时输出的那一串（平台也可能按用户注入环境变量 `GSDB_SESSION`）。不带句柄的命令会被拒绝并提示「本对话未登录」——这时让用户先 gaussdb-login 登录，**不要自己挑一个**、不要猜、不要去看会话目录；别人的会话对本对话不可见，换一个对话要重新登录。
    **不要自己去读 config.yaml 挑名字**：不同应用下可能有同名连接，猜错会在另一个库上做诊断，而输出看起来完全正常。口令在 `{baseDir}/../common/credentials/*.enc`，由脚本解密，**你不要去读/解密它**。
 2. **采集证据——一条命令。**
 

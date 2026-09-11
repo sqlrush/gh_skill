@@ -1,6 +1,6 @@
 ---
 name: gaussdb-explain
-version: 2.4.1
+version: 2.4.2
 description: "通过内置脚本查看、运行、对比 OpenGauss/GaussDB SQL 的执行计划。用户只是想看 explain、执行计划、plan、cost、节点路径，包括“给我这条 SQL 的执行计划”“给我几个 SQL 的执行计划”“跑 explain”“看 plan”等请求。触发后运行 scripts/explain.py，返回真实 plan 和通俗易懂的节点解读；如果用户要继续做慢 SQL 根因分析、索引/改写建议、收益验证或完整调优，不要停在本 skill，应优先转给 gaussdb-sqltune。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -50,7 +50,7 @@ metadata:
    `python3 {baseDir}/../gaussdb-login/scripts/login.py --status`。
    没有会话就先调 **gaussdb-login**：它读 `$GSDB_HOME/config.yaml`的首行 `connection_mode`，是 `gsql` 就把可选连接列成菜单让用户挑，是 `api` 就引导用户给出要访问的数据库。
    登录之后本 skill **不需要传 `-c`** —— 省略时自动用登录选定的那条连接；只有要临时换一个库时才显式传 `-c <连接名>`。
-   **api 模式下每条命令都要带 `--session <句柄>`**：句柄是 gaussdb-login 登录成功时输出的那一串（也可放在环境变量 `GSDB_SESSION` 里）。同一沙箱可能有别人的会话，脚本分不清时会拒绝执行并列出候选会话；这时把清单转给用户确认要用哪个库，或让用户重新登录，**不要自己挑一个**。沙箱里只有一个会话时可以不带。
+   **api 模式下每条命令都要带 `--session <句柄>`**：句柄是 gaussdb-login 在**本对话里**登录成功时输出的那一串（平台也可能按用户注入环境变量 `GSDB_SESSION`）。不带句柄的命令会被拒绝并提示「本对话未登录」——这时让用户先 gaussdb-login 登录，**不要自己挑一个**、不要猜、不要去看会话目录；别人的会话对本对话不可见，换一个对话要重新登录。
    **不要自己去读 config.yaml 挑名字**：不同应用下可能有同名连接，猜错会在另一个库上做诊断，而输出看起来完全正常。口令在 `{baseDir}/../common/credentials/*.enc`，由脚本解密，**你不要去读/解密它**。
 5. 如果用户没有提供连接名，但当前只有一个连接：
    直接使用该连接。

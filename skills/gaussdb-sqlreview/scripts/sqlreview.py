@@ -143,8 +143,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         if live is None:
-            print(f"error: {chosen[0]} 需要连接：先运行 gaussdb-login 建立会话，"
-                  f"或用 -c/--conn 指定连接名", file=sys.stderr)
+            print(f"error: {chosen[0]} 需要连接。{session.NOT_LOGGED_IN}gsql 模式也可用 -c/--conn 指定连接名。", file=sys.stderr)
             return 1
 
     # --- DB-free sources -------------------------------------------------

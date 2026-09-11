@@ -163,9 +163,12 @@ def test_session_roundtrip(home):
     from common import config, session
     write_config(home, {"db_connections": {"app1": [dict(_CONN, name="c1")]}})
     conn = config.find("c1")
-    session.save(conn)
+    h = session.save(conn)
+    assert session.current() is None                  # 没句柄就是没登录(2026-09-11 越权修法)
+    session.use(h)
     live = session.current()
     assert live.name == "c1" and live.app == "app1"
+    session.use(None)
 
 
 def test_resolve_prefers_explicit_name(home):
@@ -179,8 +182,12 @@ def test_resolve_prefers_explicit_name(home):
 def test_resolve_falls_back_to_session(home):
     from common import config, session
     write_config(home, {"db_connections": {"app1": [dict(_CONN, name="c1")]}})
-    session.save(config.find("c1"))
-    assert config.resolve().name == "c1"
+    h = session.save(config.find("c1"))
+    session.use(h)
+    try:
+        assert config.resolve().name == "c1"
+    finally:
+        session.use(None)
 
 
 def test_resolve_without_session_says_what_to_do(home):
@@ -202,30 +209,42 @@ def test_session_connection_not_in_config_still_resolves(home):
     live = config.Connection(name="10-0-0-9", type="gaussdb", host="h",
                              port=8769, database="10.0.0.9", user="grmp",
                              driver="grmp", data_ip="10.0.0.9", app="api")
-    session.save(live)
-    assert config.resolve("10-0-0-9").data_ip == "10.0.0.9"
-    assert config.resolve().data_ip == "10.0.0.9"
+    h = session.save(live)
+    session.use(h)
+    try:
+        assert config.resolve("10-0-0-9").data_ip == "10.0.0.9"
+        assert config.resolve().data_ip == "10.0.0.9"
+    finally:
+        session.use(None)
 
 
 def test_session_with_unknown_key_refuses(home):
     """手工改会话文件时写错键名（data_ip 写成 dataip），静默忽略会连错实例。"""
     from common import config, session
-    (home / "session.yaml").write_text(
+    write_config(home, {"db_connections": {"app1": [dict(_CONN, name="c1")]}})
+    h = session.save(config.find("c1"))
+    session.path_for(h).write_text(
         yaml.safe_dump({"name": "c1", "type": "opengauss", "host": "h",
                         "port": 5432, "database": "db", "user": "u",
                         "dataip": "10.0.0.9"}), encoding="utf-8")
-    with pytest.raises(config.ConfigError) as ei:
-        session.current()
-    assert "dataip" in str(ei.value)
+    session.use(h)
+    try:
+        with pytest.raises(config.ConfigError) as ei:
+            session.current()
+        assert "dataip" in str(ei.value)
+    finally:
+        session.use(None)
 
 
 def test_clear_session(home):
     from common import config, session
     write_config(home, {"db_connections": {"app1": [dict(_CONN, name="c1")]}})
-    session.save(config.find("c1"))
-    assert session.clear() is True
+    h = session.save(config.find("c1"))
+    with pytest.raises(config.ConfigError):            # 退出也要指名
+        session.clear()
+    assert session.clear(h) is True
     assert session.current() is None
-    assert session.clear() is False
+    assert session.clear(h) is False
 
 
 # --- 内联密文 ----------------------------------------------------------------
@@ -289,9 +308,13 @@ def test_resolved_name_falls_back_to_the_session(home):
     """
     from common import config, session
     write_config(home, {"db_connections": {"app1": [dict(_CONN, name="c1")]}})
-    session.save(config.find("c1"))
-    assert config.resolved_name() == "app1/c1"
-    assert config.resolved_name("") == "app1/c1"
+    h = session.save(config.find("c1"))
+    session.use(h)
+    try:
+        assert config.resolved_name() == "app1/c1"
+        assert config.resolved_name("") == "app1/c1"
+    finally:
+        session.use(None)
 
 
 def test_resolved_name_is_app_qualified(home):

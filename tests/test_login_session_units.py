@@ -54,24 +54,39 @@ def test_login_prints_handle_and_how_to_pass_it(api_home, capsys):
     assert "--session " + info.handle in out
 
 
-def test_second_login_keeps_the_first_and_warns(api_home, capsys):
-    """串库的根源就是第二次登录覆盖第一次。"""
+def test_second_login_keeps_the_first_and_says_nothing_about_it(api_home, capsys):
+    """串库的根源是第二次登录覆盖第一次——各存各的;越权的根源是横幅把别人的会话列出来——一个字不提。"""
     _login("10.0.0.9", "core")
     capsys.readouterr()
+    h_core = session.list_sessions()[0].handle
     _login("10.0.0.20", "report")
     out = capsys.readouterr().out
     assert {s.conn.database for s in session.list_sessions()} == {"core", "report"}
-    assert "其他会话" in out and "core" in out
+    assert "其他会话" not in out and "core" not in out and h_core not in out
 
 
-def test_status_lists_every_session(api_home, capsys):
+def test_status_without_handle_reveals_nothing(api_home, capsys):
+    """用户 C 新对话第一步就是 --status:不能把 A、B 的句柄、IP、库名摆出来。"""
     _login("10.0.0.9", "core")
     _login("10.0.0.20", "report")
     capsys.readouterr()
-    assert login.main(["--status"]) == 0
+    login.main(["--status"])
     out = capsys.readouterr().out
-    handles = {s.handle for s in session.list_sessions()}
-    assert all(h in out for h in handles) and "core" in out and "report" in out
+    assert "本对话未登录" in out
+    for secret in [s.handle for s in session.list_sessions()] + ["core", "report", "10.0.0.9", "10.0.0.20"]:
+        assert secret not in out, secret
+
+
+def test_status_with_handle_shows_only_that_session(api_home, capsys):
+    _login("10.0.0.9", "core")
+    _login("10.0.0.20", "report")
+    capsys.readouterr()
+    h_core = next(s.handle for s in session.list_sessions() if s.conn.database == "core")
+    h_rep = next(s.handle for s in session.list_sessions() if s.conn.database == "report")
+    assert login.main(["--status", "--session", h_core]) == 0
+    out = capsys.readouterr().out
+    assert h_core in out and "core" in out
+    assert h_rep not in out and "report" not in out
 
 
 def test_logout_by_handle_removes_only_that_session(api_home, capsys):
@@ -82,12 +97,13 @@ def test_logout_by_handle_removes_only_that_session(api_home, capsys):
     assert [s.conn.database for s in session.list_sessions()] == ["report"]
 
 
-def test_logout_without_handle_refuses_when_ambiguous_and_all_clears(api_home, capsys):
+def test_logout_without_handle_refuses_even_with_one_session_and_all_clears(api_home, capsys):
     _login("10.0.0.9", "core")
-    _login("10.0.0.20", "report")
     capsys.readouterr()
     assert login.main(["--logout"]) != 0
     assert "--session" in capsys.readouterr().err
-    assert len(session.list_sessions()) == 2
+    assert len(session.list_sessions()) == 1
+    _login("10.0.0.20", "report")
+    capsys.readouterr()
     assert login.main(["--logout", "--all"]) == 0
     assert session.list_sessions() == []

@@ -1,6 +1,6 @@
 ﻿---
 name: gaussdb-topsql
-version: 2.0.2
+version: 2.0.3
 description: "通过内置脚本对 OpenGauss/GaussDB 的 Top SQL 做多维排名。用户要按总耗时、平均耗时、调用次数、逻辑读、返回行数等维度查看资源消耗榜、热点 SQL 排行榜或系统负载主导语句时使用，包括“给我最耗时的 SQL”“查 top sql”“找最耗资源的 SQL”“看 SQL 排行榜”“按平均耗时排行”“按调用次数排行”“按逻辑读排行”“哪些 SQL 最拖慢系统”等请求。触发后运行 scripts/topsql.py，输出真实的多维排名结果，不要只解释 Top SQL 的概念。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -45,7 +45,7 @@ metadata:
    `python3 {baseDir}/../gaussdb-login/scripts/login.py --status`。
    没有会话就先调 **gaussdb-login**：它读 `$GSDB_HOME/config.yaml`的首行 `connection_mode`，是 `gsql` 就把可选连接列成菜单让用户挑，是 `api` 就引导用户给出要访问的数据库。
    登录之后本 skill **不需要传 `-c`** —— 省略时自动用登录选定的那条连接；只有要临时换一个库时才显式传 `-c <连接名>`。
-   **api 模式下每条命令都要带 `--session <句柄>`**：句柄是 gaussdb-login 登录成功时输出的那一串（也可放在环境变量 `GSDB_SESSION` 里）。同一沙箱可能有别人的会话，脚本分不清时会拒绝执行并列出候选会话；这时把清单转给用户确认要用哪个库，或让用户重新登录，**不要自己挑一个**。沙箱里只有一个会话时可以不带。
+   **api 模式下每条命令都要带 `--session <句柄>`**：句柄是 gaussdb-login 在**本对话里**登录成功时输出的那一串（平台也可能按用户注入环境变量 `GSDB_SESSION`）。不带句柄的命令会被拒绝并提示「本对话未登录」——这时让用户先 gaussdb-login 登录，**不要自己挑一个**、不要猜、不要去看会话目录；别人的会话对本对话不可见，换一个对话要重新登录。
    **不要自己去读 config.yaml 挑名字**：不同应用下可能有同名连接，猜错会在另一个库上做诊断，而输出看起来完全正常。口令在 `{baseDir}/../common/credentials/*.enc`，由脚本解密，**你不要去读/解密它**。
 5. 如果用户没有提供连接名，但当前只有一个连接：
    直接使用该连接。

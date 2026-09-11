@@ -375,7 +375,5 @@ def resolve(name: Optional[str] = None) -> Connection:
     live = _session.current()
     if live is not None:
         return live
-    raise ConfigError(
-        "没有指定连接，也没有已建立的会话。\n"
-        "先运行 gaussdb-login 选一个数据库，或用 `-c <连接名>` 显式指定。"
-    )
+    # 不列沙箱里有哪些会话、有几个:那是别人的登录(2026-09-11 客户反馈的越权)。
+    raise ConfigError(_session.NOT_LOGGED_IN + "gsql 模式也可用 `-c <连接名>` 显式指定。")

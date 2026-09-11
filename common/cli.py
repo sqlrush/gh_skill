@@ -16,7 +16,7 @@ from . import session
 from .config import ConfigError
 
 HELP = ("会话句柄（gaussdb-login 登录成功时输出的那一串）。同一沙箱可能有多个用户的会话，"
-        "不带句柄而沙箱里又不止一个会话时脚本会拒绝执行并列出候选；也可用环境变量 GSDB_SESSION。")
+        "不带句柄一律按未登录拒绝，不列别人的会话；也可用环境变量 GSDB_SESSION。")
 
 
 def add_session_arg(parser: argparse.ArgumentParser) -> None:

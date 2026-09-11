@@ -50,21 +50,24 @@ def test_each_login_gets_its_own_file(home):
     assert oct(session.path_for(h1).stat().st_mode & 0o777) == "0o600"
 
 
-def test_single_session_is_used_without_a_handle(home):
+def test_no_handle_means_not_logged_in_even_with_one_session(home):
+    """客户 09-11 反馈的越权:A 登录后 C 进来什么都不带就直接跑在 A 的库上。会话只属于创建它的对话,没句柄就是没登录。"""
     session.save(_conn("10.0.0.9", "core"))
-    assert session.current().database == "core"
+    assert session.current() is None and session.current_handle() is None
 
 
-def test_two_sessions_without_a_handle_refuse_and_list_both(home):
-    """安全底线:今天是猜最后一个,猜错没人知道;改后是拒绝执行、把候选摆出来。"""
+def test_no_handle_never_reveals_other_sessions(home):
+    """越权的根子:不带句柄时把别人的句柄、IP、库名列出来让人挑。现在一律「本对话未登录」,一个字都不透露。"""
+    from common import config
     h1 = session.save(_conn("10.0.0.9", "core"))
     h2 = session.save(_conn("10.0.0.20", "report"))
+    assert session.current() is None
     with pytest.raises(ConfigError) as ei:
-        session.current()
+        config.resolve("")
     msg = str(ei.value)
-    assert h1 in msg and h2 in msg
-    assert "10.0.0.9" in msg and "core" in msg and "10.0.0.20" in msg and "report" in msg
-    assert "--session" in msg
+    assert "本对话未登录" in msg and "gaussdb-login" in msg and "--session" in msg
+    for secret in (h1, h2, "10.0.0.9", "10.0.0.20", "core", "report", "2 个"):
+        assert secret not in msg, secret
 
 
 def test_handle_selects_the_right_session(home):
@@ -100,7 +103,8 @@ def test_expired_sessions_are_ignored_and_removed(home):
     h_old = session.save(_conn("10.0.0.9", "core"))
     stale = time.time() - (session.ttl_seconds() + 3600)
     os.utime(session.path_for(h_old), (stale, stale))
-    session.save(_conn("10.0.0.20", "report"))
+    h_new = session.save(_conn("10.0.0.20", "report"))
+    session.use(h_new)
     assert session.current().database == "report"
     assert not session.path_for(h_old).exists()
 
@@ -109,19 +113,23 @@ def test_reading_touches_last_used(home):
     h = session.save(_conn("10.0.0.9", "core"))
     old = time.time() - 3600
     os.utime(session.path_for(h), (old, old))
+    session.use(h)
     session.current()
     assert session.path_for(h).stat().st_mtime > old + 1800
 
 
-def test_legacy_single_file_still_works_until_a_handle_session_exists(home):
+def test_legacy_single_file_is_ignored_and_removed_on_next_login(home):
+    """旧版单文件 session.yaml 也是「谁都能用」的口子:不再认,登录时顺手删。"""
     legacy = _conn("10.0.0.9", "legacy")
     (home / "session.yaml").write_text(yaml.safe_dump({
         "name": legacy.name, "type": legacy.type, "host": legacy.host, "port": legacy.port,
         "database": legacy.database, "user": legacy.user, "sslmode": "", "driver": "grmp",
         "data_ip": legacy.data_ip, "app": "api"}), encoding="utf-8")
-    assert session.current().database == "legacy"
-    session.save(_conn("10.0.0.20", "core"))
-    assert session.current().database == "core"       # 有了句柄会话,旧文件不再参与
+    assert session.current() is None
+    h = session.save(_conn("10.0.0.20", "core"))
+    assert not (home / "session.yaml").exists()
+    session.use(h)
+    assert session.current().database == "core"
 
 
 def test_list_and_clear_by_handle(home):
@@ -136,13 +144,19 @@ def test_list_and_clear_by_handle(home):
     assert session.clear(h2) is True and session.list_sessions() == []
 
 
-def test_clear_without_handle_refuses_when_ambiguous(home):
+def test_clear_without_handle_always_refuses(home):
+    """退出也要指名:不带句柄退掉「唯一那个」,退的可能是别人的。"""
     h1 = session.save(_conn("10.0.0.9", "core"))
-    session.save(_conn("10.0.0.20", "report"))
     with pytest.raises(ConfigError):
         session.clear()
-    session.clear(h1)
-    assert session.clear() is True                     # 只剩一个时不用句柄
+    assert session.clear(h1) is True
+    session.save(_conn("10.0.0.20", "report"))
+    assert session.clear_all() == 1
+
+
+def test_handles_are_twelve_random_chars(home):
+    hs = {session.new_handle() for _ in range(50)}
+    assert len(hs) == 50 and all(len(h) == 12 and session.HANDLE_RE.match(h) for h in hs)
 
 
 def test_unknown_keys_in_a_session_file_are_still_refused(home):
