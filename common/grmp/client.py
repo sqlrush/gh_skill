@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -100,10 +101,13 @@ class GrmpClient:
             # 现场 SQL 在备机上执行失败被包成 HTTP 400,只 catch URLError 时用户看到的是
             # 「HTTP Error 400: 」后面一片空白,排查被带到参数名方向去了两天。
             raise GrmpError(with_hint(
-                "请求 %s 失败：HTTP %s %s%s" % (path, exc.code, exc.reason, _error_body(exc))
+                "请求 %s 失败：HTTP %s %s%s（中间件 %s）"
+                % (path, exc.code, exc.reason, _error_body(exc), self.base_url)
             )) from exc
-        except urllib.error.URLError as exc:
-            raise GrmpError("请求 %s 失败：%s" % (path, exc)) from exc
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
+            # 连不上、被对端断开、超时、DNS 解析失败——都在这里变成带地址的一句话。
+            # 地址必须写出来:中间件换地址后老会话打旧地址(09-14 现场),排查第一眼要看的就是它。
+            raise GrmpError("请求 %s 失败：%s（中间件 %s）" % (path, exc, self.base_url)) from exc
         try:
             parsed = json.loads(body)
         except ValueError as exc:
