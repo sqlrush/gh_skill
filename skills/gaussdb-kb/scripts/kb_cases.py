@@ -26,6 +26,8 @@ import yaml
 from common.kb import cases as kbcases
 from common.kb import graphfiles as gf
 from common.kb import ingest as kbingest
+from common.kb import lock as kblock
+from common.kb.atomic import write_text_atomic
 from common.kb import store_graph as sg
 from common.kb import text as kbtext
 
@@ -561,6 +563,12 @@ def _case_markdown(cid: str, case: Dict[str, Any], source: str, entered_by: str)
 
 
 def cmd_apply(args: argparse.Namespace, kb: pathlib.Path) -> int:
+    """落盘期间持知识库写锁:cases/、graph/*.yaml、canonical.yaml 是多个导入者共享的文件。"""
+    with kblock.hold(kb):
+        return _apply_locked(args, kb)
+
+
+def _apply_locked(args: argparse.Namespace, kb: pathlib.Path) -> int:
     inbox = kb / "inbox" / args.slug
     review_path = inbox / "review.json"
     if not review_path.is_file():
@@ -614,9 +622,8 @@ def cmd_apply(args: argparse.Namespace, kb: pathlib.Path) -> int:
                 if p["name"] not in canonical[p["into"]]:
                     canonical[p["into"]].append(p["name"])
                 alias_map[kbtext.normalize(p["name"])] = p["into"]
-        (kb / "cases").mkdir(parents=True, exist_ok=True)
         path = kb / "cases" / f"{cid}.md"
-        path.write_text(_case_markdown(cid, case, slot["case"][1]["source"], entered_by), encoding="utf-8")
+        write_text_atomic(path, _case_markdown(cid, case, slot["case"][1]["source"], entered_by))
         written_cases.append(cid)
         item_file = slot["case"][1]["item_file"]
         conf = kbcases.CONCLUSION_CONFIDENCE.get(str(case.get("conclusion")), 0.3)
@@ -647,14 +654,11 @@ def cmd_apply(args: argparse.Namespace, kb: pathlib.Path) -> int:
             pass
 
     if canonical:
-        aliases_path.parent.mkdir(parents=True, exist_ok=True)
-        aliases_path.write_text(yaml.safe_dump(canonical, allow_unicode=True, sort_keys=True), encoding="utf-8")
+        write_text_atomic(aliases_path, yaml.safe_dump(canonical, allow_unicode=True, sort_keys=True))
     if triples_out:
         gpath = kb / "graph" / f"{args.slug}.yaml"
-        gpath.parent.mkdir(parents=True, exist_ok=True)
         existing = yaml.safe_load(gpath.read_text(encoding="utf-8")) if gpath.is_file() else []
-        gpath.write_text(yaml.safe_dump((existing or []) + triples_out, allow_unicode=True, sort_keys=False),
-                         encoding="utf-8")
+        write_text_atomic(gpath, yaml.safe_dump((existing or []) + triples_out, allow_unicode=True, sort_keys=False))
     _write_json(inbox / "decisions.applied.json", {str(k): v for k, v in dec.items()})
     for p in (inbox / "review.json", inbox / "review.md", inbox / "candidates.json"):
         if p.exists():
