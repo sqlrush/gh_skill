@@ -59,6 +59,9 @@ for _anc in _HERE.parents:                       # common/(仓库根,或装好�
         sys.path.insert(0, str(_anc))
         break
 
+from common.kb import lock as kblock  # noqa: E402
+from common.kb.atomic import write_text_atomic  # noqa: E402
+
 KB_SUBDIRS = ("errata", "rules", "guides", "archive", "sources", "inbox")
 RULE_ID_RE = re.compile(r"^GS-[A-Z]{2,4}-\d{3}$")
 SEVERITIES = frozenset({"error", "warn", "info"})
@@ -642,11 +645,12 @@ def cmd_index(args: argparse.Namespace) -> int:
     lines += ["", "定位方式:先按本索引选文件,再 `grep -rn \"<关键词>\" <kb>/{errata,rules,guides}/`"
               "(archive/ 不在其中,是有意为之)。", ""]
 
-    (kb / "INDEX.md").write_text("\n".join(lines), encoding="utf-8")
+    # 三份清单是 runtime 每次检索都读的入口:先写临时文件再改名,读的一方永远拿到完整文件
+    write_text_atomic(kb / "INDEX.md", "\n".join(lines))
     listing = render_rules_listing(kb)
-    (kb / "RULES.md").write_text(listing, encoding="utf-8")
+    write_text_atomic(kb / "RULES.md", listing)
     cases_listing = render_cases_listing(kb)
-    (kb / "CASES.md").write_text(cases_listing, encoding="utf-8")
+    write_text_atomic(kb / "CASES.md", cases_listing)
     case_total = sum(1 for ln in cases_listing.splitlines() if ln.startswith("- `"))
     print(f"INDEX.md 已重建:{kb / 'INDEX.md'}({len(lines)} 行);"
           f"RULES.md 已重建:{kb / 'RULES.md'}({rule_total} 条现行条款);"
@@ -1161,25 +1165,34 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def cmd_ingest_any(args: argparse.Namespace) -> int:
-    """按 --kind(或后缀)分流:工单 → kb_cases;规范 → 原条款化路径。"""
+    """按 --kind(或后缀)分流:工单 → kb_cases;规范 → 原条款化路径。整个导入持知识库写锁。"""
     import kb_cases
+    kb = resolve_kb_dir(args.kb)
+    kb.mkdir(parents=True, exist_ok=True)
     kind = args.kind or ("tickets" if pathlib.Path(args.file).suffix.lower() in (".xlsx", ".csv") else "spec")
-    if kind == "tickets":
-        kb = resolve_kb_dir(args.kb)
-        ensure_kb_skeleton(kb)
-        return kb_cases.cmd_ingest_tickets(args, kb)
-    return cmd_ingest(args)
+    with kblock.hold(kb):
+        if kind == "tickets":
+            ensure_kb_skeleton(kb)
+            return kb_cases.cmd_ingest_tickets(args, kb)
+        return cmd_ingest(args)
 
 
 def cmd_index_all(args: argparse.Namespace) -> int:
-    """文件级索引(INDEX.md/RULES.md)永远做;配了存储再写高斯/PG 与 Neo4j。"""
+    """文件级索引(INDEX.md/RULES.md)永远做;配了存储再写高斯/PG 与 Neo4j。整个索引持知识库写锁。"""
+    kb = resolve_kb_dir(args.kb)
+    if not kb.is_dir():
+        raise KbError(f"KB 目录不存在:{kb}(先运行 ingest 或手工创建)")
+    with kblock.hold(kb):
+        return _index_all_locked(args, kb)
+
+
+def _index_all_locked(args: argparse.Namespace, kb: pathlib.Path) -> int:
     import kb_store
     from common.kb import config as kbconfig
 
     rc = cmd_index(args)
     if rc != 0:
         return rc
-    kb = resolve_kb_dir(args.kb)
     cfg = kbconfig.load(kb)
     if cfg.store.pg is None:
         print("存储        : kb.yaml 未配置 store.pg——文件模式:已重建 INDEX.md / RULES.md / CASES.md,"
@@ -1204,6 +1217,9 @@ def main(argv: list[str] | None = None) -> int:
     from common.kb import config as kbconfig
     try:
         return args.func(args)
+    except kblock.KbLocked as exc:
+        print(f"错误:{exc}", file=sys.stderr)   # 别人正在写:退出码 2(有活没干完),不是 1(坏了)
+        return 2
     except (KbError, kb_store.StoreCmdError, kb_cases.CaseCmdError, kb_cite.CiteCmdError,
             kbconfig.KbConfigError) as exc:
         print(f"错误:{exc}", file=sys.stderr)

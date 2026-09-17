@@ -85,3 +85,31 @@ def test_state_dir_defaults_to_the_container_path(monkeypatch):
     monkeypatch.delenv("GSDB_HOME", raising=False)
     monkeypatch.delenv("GDAA_HOME", raising=False)
     assert state_dir() == pathlib.Path("/workspace/.opencode/skills/common")
+
+
+def test_ensure_dir_explains_when_default_dir_is_not_writable(tmp_path, monkeypatch):
+    """镜像只读、GSDB_HOME 又没设时,要的是一句话,不是 PermissionError 堆栈。"""
+    import os
+    if os.geteuid() == 0:
+        pytest.skip("root 不受目录权限约束")
+    from common import config
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    ro.chmod(0o500)
+    monkeypatch.delenv("GSDB_HOME", raising=False)
+    monkeypatch.delenv("GDAA_HOME", raising=False)
+    monkeypatch.setattr(config, "_DEFAULT_STATE_DIR", ro / "state")
+    try:
+        with pytest.raises(ConfigError) as exc:
+            config.ensure_dir()
+    finally:
+        ro.chmod(0o700)
+    msg = str(exc.value)
+    assert "GSDB_HOME" in msg and str(ro / "state") in msg
+
+
+def test_ensure_dir_uses_gsdb_home_when_set(tmp_path, monkeypatch):
+    from common import config
+    monkeypatch.setenv("GSDB_HOME", str(tmp_path / "home"))
+    assert config.ensure_dir() == tmp_path / "home"
+    assert (tmp_path / "home").is_dir()

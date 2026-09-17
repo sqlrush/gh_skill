@@ -19,6 +19,8 @@ from common.kb import indexer, query as kbquery, render
 from common.kb import store_graph as sg
 from common.kb import store_pg as spg
 from common.kb.embed import Embedder, EmbedError
+from common.kb import lock as kblock
+from common.kb.atomic import write_text_atomic
 
 
 class StoreCmdError(Exception):
@@ -248,11 +250,11 @@ def cmd_health(args: argparse.Namespace) -> int:
 def cmd_feedback(args: argparse.Namespace) -> int:
     kb = kbconfig.resolve_kb_dir(args.kb)
     path = kb / "eval" / "feedback.yaml"
-    path.parent.mkdir(parents=True, exist_ok=True)
     entry = {"id": args.id, "verdict": "useful" if args.useful else "irrelevant",
              "at": datetime.date.today().isoformat(), "note": args.note or ""}
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write("- " + json.dumps(entry, ensure_ascii=False) + "\n")
+    with kblock.hold(kb):                       # 追加也是写共享文件:持锁,整文件原子替换
+        old = path.read_text(encoding="utf-8") if path.is_file() else ""
+        write_text_atomic(path, old + "- " + json.dumps(entry, ensure_ascii=False) + "\n")
     print(f"已记录:{entry['id']} → {entry['verdict']}(采纳率加权在下次 index 后生效)")
     return 0
 
