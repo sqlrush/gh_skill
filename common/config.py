@@ -155,29 +155,28 @@ def validate(conn: Connection) -> None:
         )
 
 
-def state_dir() -> pathlib.Path:
+# 没设 GSDB_HOME 时的落点。现场沙箱是 skills 安装目录里的 common/;进镜像后这里是只读的,
+# 所以 ensure_dir() 建不出目录时必须说清「设 GSDB_HOME」,不能让 PermissionError 直接冒出来。
+_DEFAULT_STATE_DIR = pathlib.Path("/workspace/.opencode/skills/common")
 
+
+def state_dir() -> pathlib.Path:
     base = os.environ.get("GSDB_HOME") or os.environ.get("GDAA_HOME")
     if base:
         return pathlib.Path(base)
-    return pathlib.Path("/workspace/.opencode/skills/common")
-
-#    base = os.environ.get("GSDB_HOME")
-#    if base:
-#        return pathlib.Path(base)
-#    else:
-#        os.environ["GSDB_HOME"]="/workspace/.config/opencode/skills/common"
-
-    #return pathlib.Path.home() / ".gdaa"
-#    return "/workspace/.config/opencode/skills/common"
-
+    return _DEFAULT_STATE_DIR
 
 
 def ensure_dir() -> pathlib.Path:
     """Return the state directory, creating it with 0700 if absent."""
     base = state_dir()
-    base.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(base, 0o700)
+    try:
+        base.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(base, 0o700)
+    except OSError as exc:
+        raise ConfigError(
+            "状态目录 %s 无法创建或写入(%s)。请设置环境变量 GSDB_HOME 指向一个可写目录"
+            "(容器里应指向持久卷,例如 /nas/me/gdaa)。" % (base, exc.strerror or exc)) from exc
     return base
 
 
