@@ -168,3 +168,41 @@ def test_unknown_keys_in_a_session_file_are_still_refused(home):
     with pytest.raises(ConfigError) as ei:
         session.current()
     assert "dataip" in str(ei.value)
+
+
+def _api_config(home_dir: pathlib.Path, host: str, port: int = 8080) -> None:
+    (home_dir / "config.yaml").write_text(
+        "connection_mode: api\napi_connection:\n  - host: %s\n    port: %d\n" % (host, port),
+        encoding="utf-8")
+
+
+def test_grmp_session_takes_middleware_address_from_current_config(home, monkeypatch):
+    """会话文件是登录那一刻的快照;中间件换了地址,老对话的句柄要打到新地址(09-14 现场问题)。"""
+    _api_config(home, "old-grmp.internal")
+    conn = Connection(name="a", type="gaussdb", host="old-grmp.internal", port=8080,
+                      database="db1", user="grmp", driver="grmp", data_ip="10.0.0.5", app="api")
+    handle = session.save(conn)
+    _api_config(home, "new-grmp.internal", 9090)
+    monkeypatch.delenv("GRMP_API_HOST", raising=False)
+    session.use(handle)
+    got = session.current()
+    assert got.host == "new-grmp.internal" and got.port == 9090
+    assert got.data_ip == "10.0.0.5" and got.database == "db1"
+
+
+def test_grmp_session_prefers_env_host_over_config(home, monkeypatch):
+    _api_config(home, "cfg-grmp.internal")
+    conn = Connection(name="a", type="gaussdb", host="x", port=8080,
+                      database="db1", user="grmp", driver="grmp", data_ip="10.0.0.5", app="api")
+    handle = session.save(conn)
+    monkeypatch.setenv("GRMP_API_HOST", "env-grmp.internal")
+    session.use(handle)
+    assert session.current().host == "env-grmp.internal"
+
+
+def test_gsql_session_keeps_its_own_host(home, monkeypatch):
+    conn = Connection(name="og", type="opengauss", host="db-host", port=5432,
+                      database="db1", user="u", driver="gsql")
+    handle = session.save(conn)
+    session.use(handle)
+    assert session.current().host == "db-host" and session.current().port == 5432

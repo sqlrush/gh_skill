@@ -25,12 +25,12 @@ import pathlib
 import re
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import List, Optional
 
 import yaml
 
-from .config import Connection, ConfigError, ensure_dir, state_dir, validate
+from .config import Connection, ConfigError, api_endpoint, ensure_dir, state_dir, validate
 
 _DIRNAME = "sessions"
 _LEGACY_FILENAME = "session.yaml"
@@ -145,6 +145,15 @@ def _read(path: pathlib.Path) -> Connection:
         data_ip=raw.get("data_ip", "") or "",
         app=raw.get("app", "") or "",
     )
+    if conn.driver == "grmp":
+        # 会话文件只是登录那一刻的快照。中间件地址属于环境配置,不属于会话:
+        # 地址变更后老句柄仍要能用,所以每次读会话都从当前配置取(环境变量 > config.yaml)。
+        try:
+            ep = api_endpoint()
+        except ConfigError:
+            ep = None                         # 没配 api_connection 的老环境:保留文件里的值
+        if ep is not None:
+            conn = replace(conn, host=ep.resolve_host(), port=ep.port)
     validate(conn)
     return conn
 
