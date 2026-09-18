@@ -17,7 +17,7 @@ import pathlib
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from . import config as kbconfig
 from . import store_files as sf
@@ -141,10 +141,36 @@ _GENERIC_WORDS = frozenset({
 
 def is_strong_token(tok: str) -> bool:
     """能单独证明相关性的 token:标识符/代码(带 _ . :)或 ≥6 字符的词,且不是英文泛词;
-    二元组、数字、单位、pg_stat 拆出来的 stat/user 之类都不算。"""
+    二元组、数字、单位、pg_stat 拆出来的 stat/user 之类都不算。中文二元组单个不算,
+    但连成 ≥4 字的短语算——那在 cjk_phrase_hits 里数。"""
     if tok.isdigit() or tok in _GENERIC_WORDS:
         return False
     return any(ch in tok for ch in "_.:") or len(tok) >= 6
+
+
+_PHRASE_MIN_BIGRAMS = 3      # 首尾相接的 3 个二元组 = 一个 ≥4 字的中文短语
+
+
+def _is_cjk_bigram(tok: str) -> bool:
+    return len(tok) == 2 and tok[0] >= "㐀"
+
+
+def cjk_phrase_hits(query_tokens: Sequence[str], have: Set[str]) -> int:
+    """查询里首尾相接(前一个的尾字 = 后一个的首字)、且都落在正文里的二元组串,每串 ≥3 个算一个短语命中。
+    没有标识符的中文提问(「有没有空闲事务持锁阻塞会话的案例」)只有二元组,单个永远够不上强 token,
+    文件模式又没有向量兜底,以前这种提问对任何案例都是「无相似案例」;连成 ≥4 字的短语足以证明相关,
+    而散落的「等待」「占」连不成串,照旧挡在门外。"""
+    hits, run, prev = 0, 0, ""
+    for tok in query_tokens:
+        matched = _is_cjk_bigram(tok) and tok in have
+        if matched and (run == 0 or prev[1] == tok[0]):
+            run += 1
+        else:
+            if run >= _PHRASE_MIN_BIGRAMS:
+                hits += 1
+            run = 1 if matched else 0
+        prev = tok
+    return hits + (1 if run >= _PHRASE_MIN_BIGRAMS else 0)
 
 
 @dataclass(frozen=True)
@@ -161,7 +187,7 @@ def relevance(query_tokens: Sequence[str], text: str) -> Relevance:
         return Relevance(0, 0, 0.0)
     have = set(kbtext.tokenize(text))
     matched = [t for t in q if t in have]
-    strong = sum(1 for t in matched if is_strong_token(t))
+    strong = sum(1 for t in matched if is_strong_token(t)) + cjk_phrase_hits(q, have)
     return Relevance(strong, len(matched), len(matched) / len(q))
 
 
