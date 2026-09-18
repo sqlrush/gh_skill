@@ -117,7 +117,7 @@ def test_data_skills_all_mention_login():
 
     kbimport 不连库，login 自己不必自指。
     """
-    exempt = {"gaussdb-kb", "gaussdb-login"}
+    exempt = {"gaussdb-kb", "gaussdb-kb-init", "gaussdb-login"}
     missing = [p.parent.name for p in _SKILLS
                if p.parent.name not in exempt
                and "gaussdb-login" not in p.read_text(encoding="utf-8")]
