@@ -71,6 +71,7 @@ class GrmpClient:
         token: str,
         data_ip: str,
         timeout: int = DEFAULT_TIMEOUT,
+        signer: Optional[Any] = None,
     ):
         if not token:
             raise GrmpError("缺少 auth 令牌")
@@ -78,19 +79,28 @@ class GrmpClient:
         self.data_ip = data_ip
         self._token = token
         self._timeout = timeout
+        self._signer = signer          # common.grmp.signing.RequestSigner;None = 中间件未开签名校验
         self._ids: Optional[Dict[str, str]] = None
 
+    @property
+    def signer(self) -> Optional[Any]:
+        return self._signer
+
     # -- 传输 -------------------------------------------------------------
+
+    def _headers(self, path: str) -> Dict[str, str]:
+        # 头名是 auth，不是 Authorization，且无 Bearer 前缀
+        headers = {"auth": self._token, "Content-Type": "application/json"}
+        if self._signer is not None:
+            # 2026-09-18 起中间件还校验 Appkey / Timestamp / Signature(认应用、防重放、防改路径),每次请求现算
+            headers.update(self._signer.headers(path))
+        return headers
 
     def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         request = urllib.request.Request(
             self.base_url + path,
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
-                # 头名是 auth，不是 Authorization，且无 Bearer 前缀
-                "auth": self._token,
-                "Content-Type": "application/json",
-            },
+            headers=self._headers(path),
             method="POST",
         )
         try:

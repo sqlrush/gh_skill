@@ -17,7 +17,8 @@ import sys
 from dataclasses import replace
 from typing import Any, Optional
 
-from .config import Connection, find, resolve
+from .config import ConfigError, Connection, api_endpoint_if_configured, find, resolve
+from .grmp import signing
 from .grmp.client import GrmpClient, GrmpRunner
 from .grmp.errors import QueryError
 from .grmp.registry import Registry
@@ -261,11 +262,18 @@ def runner_for(
             raise AccessError(
                 "连接 %s 使用 grmp 驱动，但未配置 data_ip。" % conn.name
             )
+        # 2026-09-18 中间件加固:配了 Appkey 就带签名头;没配就只带 auth。缺私钥 / 参数不对在这里
+        # 就报清楚——拖到第一次请求会表现成中间件鉴权失败,排查方向又被带到中间件那边去。
+        try:
+            sign_settings = signing.settings_from(os.environ, api_endpoint_if_configured())
+        except ConfigError as exc:
+            raise AccessError("连接 %s 使用 grmp 驱动，签名配置有误：%s" % (conn.name, exc)) from exc
         return GrmpRunner(
             GrmpClient(
                 base_url=_base_url(conn),
                 token=token,
                 data_ip=conn.data_ip,
+                signer=signing.RequestSigner(sign_settings) if sign_settings else None,
             )
         )
     raise AccessError("连接 %s 的 driver %r 不受支持" % (conn.name, driver))
