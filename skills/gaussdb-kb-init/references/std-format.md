@@ -79,3 +79,20 @@ redacted: 0
 `render` 除了 `std/*.md`,还会产出 `out/<批次>-tickets.md`:同样的内容,但每单一块、块间用 `---` 分隔、
 **块内不带 frontmatter**。因为 `kb.py ingest` 处理 md 时按 `\n---\n` 切多单,块里再带 frontmatter
 会被从中间劈开,变成「半份元数据 + 半份正文」两单。交给导入 skill 的是这个文件。
+
+## 导入侧怎么认这些已定字段
+
+`out/<批次>-tickets.md` 的块里，`- id:` / `- source:` / `- system:` / `- occurred_at:` 不是给人看的注释，
+导入 skill 会认它们（`common/kb/ingest.py::std_meta`，判定条件是 `system` 与 `occurred_at` 同时存在）：
+
+| std 块里的 | 进 item frontmatter 后 | 作用 |
+|---|---|---|
+| `- id:` | `item_id` | 保住客户的原始工单号（否则会被换成 `<批次>-N`，客户拿它跟 ITSM 交叉引用就断了） |
+| `- source:` | `source` | **案例最终的出处**。必须指回客户原件；我们的中间文件记在 `ingested_from` 里 |
+| `- system:` / `- occurred_at:` / `- severity:` / `- conclusion:` | 同名字段 | `propose` 据此预填工作单的 `known`，`review` 据此核对候选 |
+
+**核对是硬闸门**：候选里这四个字段与标准化文档不一致时，`review` 报 `[error]` 并把两个值都写出来，
+要么改候选照抄，要么先改标准化文档再重跑。理由是「两处说法不一」必须当场暴露——静默采用候选那一版，
+知识库与交给客户的标准化文档就此分叉，而两边都还看起来正常。
+
+普通材料（客户直接丢进来的 md / 表格）没有这些字段，一切照旧，不会因此多出任何检查。

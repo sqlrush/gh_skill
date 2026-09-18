@@ -69,6 +69,9 @@ python3 {baseDir}/scripts/kb.py health
    **然后重跑 `propose`**——工作单会带上策略与由它翻成的抽取约束,你填候选时必须遵守。之后同类材料不再问。
    不要替用户定策略,也不要在没有工作单的情况下自己编候选。
 3. **抽取(你的核心工作)**:`propose` 出的 `inbox/<slug>/work/NNN.json` 每单一份:原文 + `candidate_template` + 已知实体。
+   工作单里 `known` 非空,说明这批材料先经 `gaussdb-kb-init` 标准化过(时间 / 系统 / 级别 / 结论已定):
+   **case 里这几个字段照抄 known**,不要重新判断一遍——不一致 `review` 会报 `[error]` 并列出两个值。
+   确实认为 known 写错了,回到标准化文档改完重跑,不要在候选里偷偷改成另一个值。
    逐单阅读,按模板写 `inbox/<slug>/candidates.json`(JSON 数组)。硬性要求:
    - 每个 `quotes` / `entities[].quote` / `edges[].quote` 都必须是**原文里逐字出现的片段**(review 会逐条核对,对不上整项作废);
    - `quotes.现场` 必填;`conclusion: 已确认` 时 `quotes.primary_factor` 必填——原文没写明根因就写 `推测`,不要编一句当已确认;

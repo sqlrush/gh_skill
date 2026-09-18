@@ -30,7 +30,9 @@ STD_VERSION = 1
 SECTIONS: Tuple[str, ...] = ("现场", "判断", "处置", "复发标志")
 # frontmatter 里的两个必填要素(用户口径的「时间、系统」)
 REQUIRED_META: Tuple[str, ...] = ("occurred_at", "system")
-CONCLUSIONS: Tuple[str, ...] = ("已确认", "推测")
+# 与导入侧 common/kb/cases.CONCLUSION_CONFIDENCE 一致。两边取值口径必须相同:
+# 这边只让写两种、导入侧认三种的话,模型在候选里改成第三种就会被当成「与标准化文档不一致」拦下。
+CONCLUSIONS: Tuple[str, ...] = ("已确认", "推测", "待验证")
 DEFAULT_CONCLUSION = "推测"          # 拿不准时站在保守一侧
 
 # 「原文没写」的合法写法。模型只能在这几个里选,不能自由发挥成「无」「暂无」——
