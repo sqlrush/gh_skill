@@ -14,7 +14,7 @@ from typing import Sequence
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
-from grmp_middleware.grmp_mock import instances as inst  # noqa: E402
+from grmp_middleware.grmp_mock import instances as inst, signature  # noqa: E402
 from grmp_middleware.grmp_mock.executor import (  # noqa: E402
     DEFAULT_MAX_RESULT_ROWS,
     DEFAULT_STATEMENT_TIMEOUT_SECONDS,
@@ -90,7 +90,25 @@ def main(argv: Sequence[str] = None) -> int:
         "--standby", action="store_true",
         help="模拟备机：读 statement_history 的脚本回 HTTP 400 + unlogged 报错，health.overview 的 in_recovery 置 t",
     )
+    # 2026-09-18 中间件加固:给了 --appkey 就在 auth 之外校验 Appkey / Timestamp / Signature
+    parser.add_argument("--appkey", default="", help="登记的调用方应用名;给了即开启签名校验")
+    parser.add_argument("--sm2-public-key", default="", help="该 Appkey 的 SM2 公钥:hex(X‖Y)或 @文件(PEM)")
+    parser.add_argument("--sign-user-id", default=None, help="SM2 签名的 userId,默认国标 1234567812345678;OpenSSL 默认是空串")
+    parser.add_argument("--sign-timestamp", default="ms", choices=("ms", "s"))
+    parser.add_argument("--sign-format", default="raw", choices=("raw", "der"))
+    parser.add_argument("--sign-encoding", default="hex", choices=("hex", "base64"))
+    parser.add_argument("--sign-payload", default="{path}+{timestamp}", help="签名原文模板,只认 {path} 与 {timestamp}")
+    parser.add_argument("--sign-window", type=int, default=signature.DEFAULT_WINDOW_SECONDS, help="Timestamp 允许偏差(秒)")
     args = parser.parse_args(argv)
+
+    policy = None
+    if args.appkey:
+        if not args.sm2_public_key:
+            print("开启签名校验(--appkey)必须同时给 --sm2-public-key", file=sys.stderr)
+            return 2
+        policy = signature.policy_from_args(
+            args.appkey, args.sm2_public_key, args.sign_user_id, args.sign_timestamp,
+            args.sign_format, args.sign_encoding, args.sign_payload, args.sign_window)
 
     token = os.environ.get("GRMP_AUTH_TOKEN")
     if not token:
@@ -116,7 +134,12 @@ def main(argv: Sequence[str] = None) -> int:
         max_result_rows=args.max_result_rows,
         statement_timeout=args.statement_timeout,
         standby=args.standby,
+        signature=policy,
     )
+    if policy is not None:
+        print("签名校验:开启(Appkey=%s, userId=%r, %s/%s/%s, 窗口 ±%ds)" % (
+            policy.appkey, policy.user_id.decode("utf-8"), policy.timestamp_unit, policy.signature_format,
+            policy.signature_encoding, policy.window_seconds), file=sys.stderr, flush=True)
 
     # 走 stderr 且立刻 flush：横幅是安全警告，重定向到文件时 stdout 会被
     # 块缓冲，进程若被 kill 掉，警告就一个字都不会落盘 —— 等于没有。

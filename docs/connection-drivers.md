@@ -35,7 +35,21 @@ api_connection:
     host_env: GRMP_API_HOST      # 推荐；也支持内联 host:，但环境变量优先
     port: 80
     token_env: GRMP_AUTH_TOKEN   # 推荐；也支持内联 token:，但环境变量优先
+    # 2026-09-18 起中间件在 auth 之外还校验 Appkey / Timestamp / Signature(SM2 签名)。
+    # appkey 为空 = 不签名(中间件未开校验时照旧)。私钥永远不写这里。
+    appkey: gaussdb-agent        # 与中间件约定的应用名;环境变量 GRMP_APPKEY 优先
+    sign:
+      credential: grmp-sm2       # 私钥存放的凭据名:python3 -m common.credential_cli set grmp-sm2(贴 64 位 hex 或 PEM)
+      # key_env: GRMP_SM2_PRIVATE_KEY   环境变量优先于凭据文件(容器里由 Secret 注入)
+      # 下面四项按中间件的口径改,默认 = 国标 / Java BouncyCastle 的常见形态:
+      # user_id: "1234567812345678"     SM2 签名的 userId;OpenSSL 默认是空串 ""
+      # timestamp: ms                   ms | s
+      # format: raw                     raw(r‖s 64 字节)| der(ASN.1,Java 默认)
+      # encoding: hex                   hex | base64
+      # payload: "{path}+{timestamp}"   签名原文,只认这两个占位符;path 是请求路径(上下文根)
 ```
+
+签名相关的环境变量(都优先于配置文件):`GRMP_APPKEY`、`GRMP_SM2_PRIVATE_KEY`、`GRMP_SIGN_USER_ID`、`GRMP_SIGN_TIMESTAMP`、`GRMP_SIGN_FORMAT`、`GRMP_SIGN_ENCODING`、`GRMP_SIGN_PAYLOAD`。配了 appkey 却拿不到私钥、或某个旋钮的值不认识,**在建连接时就报错**,不会拖到中间件回鉴权失败。本地对照:`grmp_middleware.grmp_mock --appkey <名> --sm2-public-key <hex 或 @pem 文件>`(还有 `--sign-*` 同名旋钮),skill 侧配一样的值,对不上在本地先暴露。
 
 > **旧的平铺 `connections:` 列表仍然可用**，与 `db_connections` 合并解析，
 > 只是没有应用分组。不强制迁移。

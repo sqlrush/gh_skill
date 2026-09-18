@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 import re
 import pathlib
-from dataclasses import dataclass, replace
-from typing import Optional
+from dataclasses import dataclass, field, replace
+from typing import Any, Mapping, Optional
 
 import yaml
 
@@ -73,6 +73,12 @@ class ApiEndpoint:
     host_env: str = "GRMP_API_HOST"
     token: str = ""             # 内联令牌（客户配置格式如此）
     token_env: str = "GRMP_AUTH_TOKEN"
+    # 2026-09-18 中间件加固:请求头再带 Appkey / Timestamp / Signature。appkey 为空 = 不签名。
+    # sign 里是签名细节(credential / key_env / user_id / timestamp / format / encoding / payload),
+    # 解释在 common/grmp/signing.py;私钥永远不放这里。
+    appkey: str = ""
+    appkey_env: str = "GRMP_APPKEY"
+    sign: Mapping[str, Any] = field(default_factory=dict)
 
     def resolve_token(self) -> str:
         """取令牌：环境变量优先于配置文件里的内联值。
@@ -234,13 +240,24 @@ def api_endpoint() -> ApiEndpoint:
     if port < 1 or port > 65535:
         raise ConfigError("api_connection.port %d 越界" % port)
 
+    sign = item.get("sign") or {}
+    if not isinstance(sign, dict):
+        raise ConfigError("api_connection.sign 应为映射(credential / user_id / timestamp / format / encoding / payload)")
     return ApiEndpoint(
-        host=host, 
+        host=host,
         port=port,
         host_env=str(item.get("host_env", "") or "GRMP_API_HOST"),
         token=str(item.get("token", "") or ""),
         token_env=str(item.get("token_env", "") or "GRMP_AUTH_TOKEN"),
+        appkey=str(item.get("appkey", "") or "").strip(),
+        appkey_env=str(item.get("appkey_env", "") or "GRMP_APPKEY"),
+        sign={str(k): ("" if v is None else v) for k, v in sign.items()},
     )
+
+
+def api_endpoint_if_configured() -> Optional[ApiEndpoint]:
+    """配置里有 api_connection 才解析;没有返回 None(签名等设置这时全靠环境变量)。"""
+    return api_endpoint() if _read_raw().get("api_connection") else None
 
 
 def _connection_from(item: dict, app: str = "") -> Connection:

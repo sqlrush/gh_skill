@@ -20,6 +20,7 @@ from .executor import (
     ExecError,
 )
 from .instances import InstanceMap
+from .signature import SignaturePolicy
 from common.grmp.placeholder import ParamError
 from common.grmp.settings import Settings
 from .store import ScriptStore
@@ -71,11 +72,14 @@ class App:
         max_result_rows: int = DEFAULT_MAX_RESULT_ROWS,
         statement_timeout: int = DEFAULT_STATEMENT_TIMEOUT_SECONDS,
         standby: bool = False,
+        signature: Optional[SignaturePolicy] = None,
     ):
         self._store = store
         self._instances = instances
         self._token = token
         self._settings = settings
+        # 2026-09-18 中间件加固:给了策略就在 auth 之外再校验 Appkey / Timestamp / Signature
+        self._signature = signature
         self._open_db = open_db or _default_open_db
         self._max_result_rows = max_result_rows
         self._statement_timeout = statement_timeout
@@ -101,6 +105,11 @@ class App:
         error = self._check_auth(headers)
         if error is not None:
             return 200, error
+        if self._signature is not None:
+            reason = self._signature.check(route, headers)
+            if reason is not None:
+                return 200, envelope.error(
+                    "签名校验失败：%s（本实现约定：客户环境此场景的响应形态未知）" % reason)
 
         if route == INVOKE_PATH:
             return self._invoke_operation(body)
