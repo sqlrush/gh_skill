@@ -237,6 +237,18 @@ def test_relevance_counts_strong_tokens_and_coverage():
         assert not query.is_strong_token(weak), weak
 
 
+def test_relevance_counts_a_matched_cjk_phrase_as_strong():
+    """纯中文提问没有标识符:连续 ≥3 个二元组首尾相接、都落在正文里(= 一个 ≥4 字的中文短语)算 1 个强 token。
+    散落的「等待」「会话」连不成短语,照旧不算——门槛防的就是它们;3 字短语只有 2 个二元组,也不够。"""
+    from common.kb import text as kbtext
+    r = query.relevance(kbtext.query_tokens("空闲事务持锁阻塞会话"),
+                        "S2 空闲事务持锁阻塞60余会话 idle in transaction 40 分钟")
+    assert r.strong == 1 and r.matched >= 6
+    scattered = query.relevance(["等待", "锁阻", "会话"], "锁等待超过 30 秒,阻塞 12 个会话")
+    assert scattered.strong == 0 and scattered.matched == 2
+    assert query.relevance(["序列", "列取"], "序列取号").strong == 0
+
+
 def test_search_without_graph_has_no_paths_but_still_cases(tmp_path):
     sess = _session(tmp_path, _rich_pg(), None, None)
     refs = sess.search("k", "l", "autovacuum 次数异常高")
@@ -306,6 +318,17 @@ def test_open_without_store_falls_back_to_file_mode(tmp_path):
         assert [c.short_id for c in refs.clauses] == ["GS-VAC-002"]
         assert refs.cases[0].sections["处置"].startswith("针对小表")
         assert len(refs.paths) == 1 and refs.paths[0].action.startswith("表级调大") and refs.paths[0].cases == (CASE_ID,)
+    finally:
+        sess.close()
+
+
+def test_file_mode_finds_case_by_pure_chinese_question(tmp_path):
+    """用户用现象语言问「有没有偶现单条更新慢的案例」,一个标识符都没有。文件模式没有向量兜底,
+    以前这种提问过不了强 token 门槛,永远「无相似案例」,模型只能自己 grep cases/(2026-09-18 在 Pod 里真跑抓到的)。"""
+    sess = query.KbSession.open(_file_kb(tmp_path))
+    try:
+        refs = sess.search("k", "l", "有没有偶现单条更新慢的案例")
+        assert [c.short_id for c in refs.cases] == [CASE_ID]
     finally:
         sess.close()
 
