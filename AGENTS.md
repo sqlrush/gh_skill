@@ -179,6 +179,7 @@ permission:
 - 用户说“优化这条 SQL”“这个 sql_id 怎么调优”时，优先使用 `gaussdb-sqltune`
 <!-- ▼▼▼ skills-v12.7.1 新增（补上原来漏掉的 5 个 skill 的匹配）▼▼▼ -->
 - 用户说“导入规范”“导入工单”“建知识库”“知识库里有没有类似案例”时，优先使用 `gaussdb-kb`
+- 用户拿来的材料格式杂（word / pdf / txt / 照片截图 / 表格混在一起），说“这些工单怎么入库”“先把格式整理一下”“照片里的工单怎么导进去”时，先用 `gaussdb-kb-init` 统一成六要素 md（时间、系统、现场、判断、处置、复发标志），再交给 `gaussdb-kb` 入库
 - 用户说“谁在等锁”“锁等待”“阻塞链”时，优先使用 `gaussdb-lockwait`；说“等待事件”时用 `gaussdb-waitevent`；
   说“表膨胀”“死元组”“vacuum”时用 `gaussdb-vacuum`；说“内存分析”“内存上下文”时用 `gaussdb-memanalyze`
 <!-- ▲▲▲ skills-v12.7.1 新增 ▲▲▲ -->

@@ -1,4 +1,4 @@
-"""公共安全红线:一份正文(common/red_lines.md),17 个 SKILL.md 与 AGENTS.md 各带一份逐字相同的副本。
+"""公共安全红线:一份正文(common/red_lines.md),18 个 SKILL.md 与 AGENTS.md 各带一份逐字相同的副本。
 
 事故(客户 2026-09-10 截图):09-02 的重构把 14 个 SKILL.md 里的公共红线抽到了仓库根 AGENTS.md,而安装脚本不拷 AGENTS.md
 ——客户只换了 skill 目录,安全审查一 diff,红线整段「被删了」。银行客户要的是每个 skill 文件里看得见,不是仓库里去重。
@@ -28,7 +28,7 @@ def test_canonical_text_has_the_six_clauses_the_customer_signed_off():
 
 
 def test_every_skill_has_its_own_script_named_in_the_last_clause():
-    assert len(_SKILLS) == 17
+    assert len(_SKILLS) == 18
     for path in _SKILLS:
         script = rl.main_script(path.parent)
         assert (path.parent / "scripts" / script).is_file(), "%s 的主脚本 %s 不存在" % (path.parent.name, script)

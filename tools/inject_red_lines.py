@@ -5,7 +5,7 @@
 所以正文只有一份,副本由本工具注入、由 tests/test_red_lines_units.py 保证逐字一致。
 
 用法:
-    python3 tools/inject_red_lines.py            # 注入 / 刷新 17 个 SKILL.md 与 AGENTS.md
+    python3 tools/inject_red_lines.py            # 注入 / 刷新 18 个 SKILL.md 与 AGENTS.md
     python3 tools/inject_red_lines.py --check    # 只核对,不一致退出 1(单测与交付前用)
 """
 from __future__ import annotations
@@ -30,9 +30,12 @@ def canonical_text(root: pathlib.Path = ROOT) -> str:
     return (root / CANON).read_text(encoding="utf-8").strip("\n")
 
 
+# 目录名推不出主脚本名的 skill 在这里点名。
+_MAIN_SCRIPT_OVERRIDES = {"gaussdb-kb-init": "kb_init.py"}
+
 def main_script(skill_dir: pathlib.Path) -> str:
     """gaussdb-sqlfetch → sqlfetch.py。每个 skill 的主脚本就叫这个名字(tests 里核过存在)。"""
-    return skill_dir.name.split("-", 1)[-1] + ".py"
+    return _MAIN_SCRIPT_OVERRIDES.get(skill_dir.name) or skill_dir.name.split("-", 1)[-1] + ".py"
 
 
 def render(script: str, root: pathlib.Path = ROOT) -> str:
