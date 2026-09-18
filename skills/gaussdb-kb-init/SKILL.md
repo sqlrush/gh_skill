@@ -113,6 +113,10 @@ python3 {baseDir}/../gaussdb-kb/scripts/kb.py ingest <out/批次-tickets.md> --k
 
 之后照 `gaussdb-kb` 的导入流程走:`propose` → 填候选 → `review` 出**选择列表交用户确认** → `apply` → `validate` + `index`。
 
+导入侧认得本 skill 定下来的字段:原始工单号、**指回客户原件的出处**、时间 / 系统 / 级别 / 结论都会带进工单,
+`propose` 的工作单里以 `known` 给出。填候选时**照抄 known**,不要重新判断一遍——两边不一致 `review` 会报
+`[error]` 并把两个值都写出来(详见 `{baseDir}/references/std-format.md`)。确实认为 known 错了,回来改标准化文档再重跑。
+
 **本 skill 不入库、不写 `cases/`、不碰向量库与图库。** 标准化只管形式;什么能进知识库,由导入 skill 的选择列表让用户定。
 不要因为格式已经统一就跳过那道闸门。
 

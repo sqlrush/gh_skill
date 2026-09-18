@@ -196,15 +196,49 @@ def rows_to_items(headers: Sequence[str], rows: Sequence[Sequence[str]], mapping
 
 # ---------------------------------------------------------------- 文本材料
 
+# gaussdb-kb-init 产出的标准化块:已定字段写成 `- key: value`(不能带 frontmatter —— 结束的 ---
+# 会被本模块的分隔符从中间劈开)。认 std 的条件是**同时**有 system 与 occurred_at,这两个正是
+# kb-init 的必填项;只有 `- id:` 而没有它们的是普通 md,不按 std 认 —— 认错了出处会被那一行顶替。
+_META_LINE = re.compile(r"^-\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(\S.*?)\s*$")
+_STD_REQUIRED = ("system", "occurred_at")
+
+
+def std_meta(block: str) -> Dict[str, str]:
+    """标准化块里的已定字段;不是标准化块就返回 {}。只看第一个 `## ` 之前的元数据行。"""
+    meta: Dict[str, str] = {}
+    for line in block.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            break
+        m = _META_LINE.match(stripped)
+        if m:
+            meta[m.group(1)] = m.group(2)
+    return meta if all(meta.get(k) for k in _STD_REQUIRED) else {}
+
+
 def split_text_items(text: str, locator_prefix: str, stem: str) -> List[Item]:
-    """md/txt:用 `\\n---\\n` 分隔多单;没有分隔符就是一单。标题取首个非空行。"""
+    """md/txt:用 `\\n---\\n` 分隔多单;没有分隔符就是一单。标题取首个非空行。
+
+    标准化(std)块另按它自己的已定字段走:id 用原始工单号、出处指回**客户原件**,
+    我们的中间定位记进 `ingested_from`。否则案例的 source 会指向中间文件,追溯链断在自己手里。
+    """
     blocks = [b.strip() for b in re.split(r"\n-{3,}\n", text) if b.strip()]
     items: List[Item] = []
     for k, block in enumerate(blocks, 1):
         first = next((ln.strip().lstrip("#").strip() for ln in block.splitlines() if ln.strip()), stem)
-        tid = stem if len(blocks) == 1 else f"{stem}-{k}"
-        items.append(Item(id=tid, title=first[:80], text=block + "\n",
-                          locator=f"{locator_prefix}#item={k}" if len(blocks) > 1 else locator_prefix))
+        default_locator = f"{locator_prefix}#item={k}" if len(blocks) > 1 else locator_prefix
+        meta = std_meta(block)
+        if meta:
+            fields = {key: val for key, val in meta.items() if key not in ("id", "source")}
+            # 机器生成的文件总带块号:出问题时要能说清是中间文件的第几块
+            fields["ingested_from"] = f"{locator_prefix}#item={k}"
+            fields["_std"] = "1"
+            items.append(Item(id=meta.get("id") or default_locator, title=first[:80],
+                              text=block + "\n", locator=meta.get("source") or default_locator,
+                              fields=fields))
+            continue
+        items.append(Item(id=stem if len(blocks) == 1 else f"{stem}-{k}", title=first[:80],
+                          text=block + "\n", locator=default_locator))
     return items
 
 
@@ -227,6 +261,8 @@ def redact(text: str) -> Tuple[str, int]:
 # ---------------------------------------------------------------- 落盘
 
 _SAFE_ID = re.compile(r"[^0-9A-Za-z一-鿿_.-]+")
+# 标准化块里允许进 item frontmatter 的键(其余留在正文里)
+_STD_FRONT_KEYS = ("system", "occurred_at", "severity", "conclusion", "ingested_from")
 
 
 def write_items(items_dir: pathlib.Path, items: Sequence[Item], source_name: str,
@@ -239,6 +275,10 @@ def write_items(items_dir: pathlib.Path, items: Sequence[Item], source_name: str
         body, n = redact(it.text) if do_redact else (it.text, 0)
         front = {"item_id": it.id, "title": it.title, "source": it.locator, "source_file": source_name,
                  "redacted": n}
+        if (it.fields or {}).get("_std"):
+            # 标准化材料:把 kb-init 已定的字段带进 frontmatter,导入侧据此预填工作单并核对候选。
+            # 只搬这个白名单——表格那条路的 fields 是整行原始列,不能往 frontmatter 里倒。
+            front.update({k: it.fields[k] for k in _STD_FRONT_KEYS if it.fields.get(k)})
         text = "---\n" + "\n".join(f"{k}: {json.dumps(v, ensure_ascii=False)}" for k, v in front.items()) + "\n---\n\n" + body
         path = items_dir / f"{safe}.md"
         path.write_text(text, encoding="utf-8")

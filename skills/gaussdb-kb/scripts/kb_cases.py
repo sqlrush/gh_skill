@@ -297,17 +297,43 @@ def cmd_propose(args: argparse.Namespace, kb: pathlib.Path) -> int:
     ]
     for n, path in enumerate(batch, 1):
         text = path.read_text(encoding="utf-8")
+        settled = _settled_fields(path)
+        rules = base_rules + strategy_rules(strategy)
+        if settled:
+            # 材料已经过 gaussdb-kb-init 标准化:时间 / 系统 / 级别 / 结论都定过了。让模型照抄,
+            # 只做语义部分——重抽一遍会与标准化文档分叉,而没有任何东西会发现(review 现在会拦)。
+            rules = rules + ["case 里的 %s 以 known 为准(材料已标准化过),照抄不要另起一套;"
+                             "确实认为 known 写错了,先改标准化文档再重跑,不要在候选里偷偷改"
+                             % "、".join(settled)]
         _write_json(work_dir / f"{n:03d}.json", {
             "item_id": _item_id(path), "file": str(path.relative_to(kb)), "text": text,
             "candidate_template": CANDIDATE_TEMPLATE, "known_entities": known,
+            "known": settled,                           # 标准化材料的已定字段;普通材料为 {}
             "strategy": strategy,                       # 用户确认过的转化策略(首次为空:先确认再填候选)
-            "rules": base_rules + strategy_rules(strategy),
+            "rules": rules,
         })
     print(f"工作单       : {work_dir.relative_to(kb)}/(本批 {len(batch)} 单,剩余 {max(0, len(pending) - len(batch))} 单)")
     print(f"候选输出到   : {cand_path.relative_to(kb)}(JSON 数组,每单一个对象,形状见工作单 candidate_template)")
     print("转化策略     : " + " · ".join(f"{k}={v[:18]}" for k, v in strategy.items()))
     print(f"Next: 逐单阅读工作单填写候选 → python3 kb.py review {args.slug}")
     return 0 if batch else 2
+
+
+# 标准化(gaussdb-kb-init)材料在 item frontmatter 里带这几个已定字段。判定「是否标准化过」
+# 用 system + occurred_at 同时存在 —— 与 ingest 认 std 块的条件同一套,不另立一个标记。
+_SETTLED_FIELDS = ("occurred_at", "system", "severity", "conclusion")
+
+
+def _settled_fields(item_path: pathlib.Path) -> Dict[str, str]:
+    """item frontmatter 里由标准化文档定下来的字段;不是标准化材料就返回 {}。"""
+    try:
+        meta, _, _ = kbcases.split_frontmatter(item_path.read_text(encoding="utf-8"))
+    except OSError:
+        return {}
+    meta = meta or {}
+    if not (str(meta.get("system") or "").strip() and str(meta.get("occurred_at") or "").strip()):
+        return {}
+    return {k: str(meta[k]).strip() for k in _SETTLED_FIELDS if str(meta.get(k) or "").strip()}
 
 
 def _item_id(path: pathlib.Path) -> str:
@@ -387,6 +413,14 @@ def review_candidates(kb: pathlib.Path, slug: str, candidates: List[Dict[str, An
                 errors.append(f"候选 {item_id}:小节「{s}」为空")
         if str(case.get("conclusion") or "") not in kbcases.CONCLUSION_CONFIDENCE:
             errors.append(f"候选 {item_id}:conclusion 必须是 已确认/推测/待验证")
+        # 材料经 gaussdb-kb-init 标准化过的:候选与标准化文档说法不一,当场点名。
+        # 静默采用候选那一版,知识库与交给客户的标准化文档就此分叉,而两边都还「看起来正常」。
+        for fld, settled in _settled_fields(item_path).items():
+            got = str(case.get(fld) or "").strip()
+            if got and got != settled:
+                errors.append(
+                    f"候选 {item_id}:{fld} 与标准化文档不一致(标准化 {settled} / 候选 {got})"
+                    f"——两者必须一致:改候选照抄,或先改标准化文档(kb_init render)再重跑")
         quotes = cand.get("quotes") or {}
         if not str(quotes.get("现场") or "").strip():
             errors.append(f"候选 {item_id}:quotes.现场 缺失——「现场」小节必须附原文摘录")
