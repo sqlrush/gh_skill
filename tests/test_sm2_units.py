@@ -138,3 +138,34 @@ def test_base64_and_hex_text_encodings():
     assert sm2.to_text(raw, "base64") == base64.b64encode(raw).decode()
     with pytest.raises(sm2.Sm2Error):
         sm2.to_text(raw, "octal")
+
+
+# ---------------------------------------------------------------- 快路径与慢路径必须一致
+
+def test_fixed_base_table_agrees_with_the_general_scalar_mul():
+    """签名热路径走固定基点 comb 表,验签的 t·P 走通用标量乘。两条路算 k·G 必须给出同一个点——
+    表建错了不会报错,只会签出一个谁也验不过的签名。"""
+    import random
+    random.seed(20260919)
+    for k in [1, 2, sm2.N - 1, _STD_K] + [random.randrange(1, sm2.N) for _ in range(12)]:
+        assert sm2._mul_g(k) == sm2._mul(k, (sm2.GX, sm2.GY)), hex(k)
+
+
+def test_public_key_and_za_are_computed_once_per_key(monkeypatch):
+    """ZA 只依赖私钥与 userId,与消息无关。每次签名重算 = 白做一次标量乘(原来就是这么慢的)。"""
+    sm2._signer_za.cache_clear()
+    calls = []
+    real = sm2._mul_g
+    monkeypatch.setattr(sm2, "_mul_g", lambda k: (calls.append(k), real(k))[1])
+    d = _STD_D
+    for i in range(5):
+        sm2.sign(d, b"message-%d" % i)
+    # 5 次签名 = 5 次 k·G + 1 次 d·G(算公钥,只在第一次)
+    assert len(calls) == 6, calls
+    sm2._signer_za.cache_clear()
+
+
+def test_scalar_mul_handles_the_degenerate_scalars():
+    assert sm2._mul_g(0) is None and sm2._mul_g(sm2.N) is None
+    assert sm2._mul(5, None) is None
+    assert sm2._mul_g(1) == (sm2.GX, sm2.GY)
