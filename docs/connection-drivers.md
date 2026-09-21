@@ -31,7 +31,7 @@ db_connections:
 connection_mode: api
 
 api_connection:
-  - host: ucmp-grmp-web-d.sdc.cs.icbc
+  - host: grmp-web.example.internal
     host_env: GRMP_API_HOST      # 推荐；也支持内联 host:，但环境变量优先
     port: 80
     token_env: GRMP_AUTH_TOKEN   # 推荐；也支持内联 token:，但环境变量优先

@@ -132,7 +132,7 @@ if [ "${SKIP_CFG:-0}" = "0" ]; then
   ask "选哪种" "1"; MODE_SEL="$REPLY_VAL"
 
   if [ "${MODE_SEL:-1}" = "2" ]; then
-    ask "中间件 host" "ucmp-grmp-web-d.sdc.cs.icbc"; API_HOST="$REPLY_VAL"
+    ask "中间件 host" "grmp-web.example.internal"; API_HOST="$REPLY_VAL"
     ask "中间件 host_dev" "GRMP_API_HOST"; HOST_ENV="$REPLY_VAL"
     ask "中间件 port" "80"; API_PORT="$REPLY_VAL"
     ask "令牌环境变量名" "GRMP_AUTH_TOKEN"; TOK_ENV="$REPLY_VAL"

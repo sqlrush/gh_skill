@@ -42,7 +42,7 @@ META = {"source": "工单导出-2025Q3.csv#row=2", "source_file": "工单导出-
 
 def _std_file(tmp_path, pairs=None):
     text = initstd.render_ingest_file(pairs or [(DRAFT, META)])
-    path = tmp_path / "工行案例-tickets.md"
+    path = tmp_path / "示例案例-tickets.md"
     path.write_text(text, encoding="utf-8")
     return path
 
@@ -51,14 +51,14 @@ def _std_file(tmp_path, pairs=None):
 
 def test_split_lifts_the_original_ticket_id_and_source_from_a_std_block(tmp_path):
     items = kbingest.split_text_items(_std_file(tmp_path).read_text(encoding="utf-8"),
-                                      "工行案例-tickets.md", "工行案例-tickets")
+                                      "示例案例-tickets.md", "示例案例-tickets")
     assert len(items) == 1
     it = items[0]
-    assert it.id == "ITSM-2025-000910"                       # 不是 工行案例-tickets
+    assert it.id == "ITSM-2025-000910"                       # 不是 示例案例-tickets
     assert it.locator == "工单导出-2025Q3.csv#row=2"          # 不是我们的中间文件
     assert it.fields["system"] == "CBST" and it.fields["occurred_at"] == "2025-09-10"
     assert it.fields["severity"] == "S2" and it.fields["conclusion"] == "已确认"
-    assert it.fields["ingested_from"] == "工行案例-tickets.md#item=1"   # 中间环节仍可追
+    assert it.fields["ingested_from"] == "示例案例-tickets.md#item=1"   # 中间环节仍可追
 
 
 def test_split_keeps_each_block_distinct_when_several_std_tickets_share_a_file(tmp_path):
@@ -91,13 +91,13 @@ def test_a_block_missing_the_required_std_keys_is_not_treated_as_std(tmp_path):
 
 def test_written_item_cites_the_customers_file_not_our_intermediate_one(tmp_path):
     items = kbingest.split_text_items(_std_file(tmp_path).read_text(encoding="utf-8"),
-                                      "工行案例-tickets.md", "工行案例-tickets")
-    paths = kbingest.write_items(tmp_path / "items", items, "工行案例-tickets.md")
+                                      "示例案例-tickets.md", "示例案例-tickets")
+    paths = kbingest.write_items(tmp_path / "items", items, "示例案例-tickets.md")
     assert paths[0].name == "ITSM-2025-000910.md"
     meta, _, _ = __import__("common.kb.cases", fromlist=["x"]).split_frontmatter(
         paths[0].read_text(encoding="utf-8"))
     assert meta["source"] == "工单导出-2025Q3.csv#row=2"
-    assert meta["ingested_from"] == "工行案例-tickets.md#item=1"
+    assert meta["ingested_from"] == "示例案例-tickets.md#item=1"
     assert meta["system"] == "CBST" and meta["occurred_at"] == "2025-09-10"
     # 这一条就是缺陷本身:案例的 source 取自 item frontmatter
     assert kb_cases._source_of(paths[0]) == "工单导出-2025Q3.csv#row=2"
@@ -117,7 +117,7 @@ def _ingested(tmp_path):
     kb = _kb(tmp_path)
     src = _std_file(tmp_path)
     assert kbmain.main(["ingest", str(src), "--kind", "tickets", "--kb", str(kb)]) == 0
-    return kb, "工行案例-tickets"
+    return kb, "示例案例-tickets"
 
 
 def test_propose_hands_the_model_the_fields_kb_init_already_settled(tmp_path):

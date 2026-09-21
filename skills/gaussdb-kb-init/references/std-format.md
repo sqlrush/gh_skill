@@ -13,8 +13,8 @@ severity: "S2"
 conclusion: "已确认"
 objects: ["cbst.cosp_asyn_task_dtl"]
 signals: ["跑批时段 CPU>80%"]
-source: "【2026-01-08】工行CIIS CPU使用率高问题分析报告.docx"
-source_file: "【2026-01-08】工行CIIS CPU使用率高问题分析报告.docx"
+source: "【2026-01-08】某行CIIS CPU使用率高问题分析报告.docx"
+source_file: "【2026-01-08】某行CIIS CPU使用率高问题分析报告.docx"
 source_kind: "docx"
 extracted_by: "script"
 redacted: 0

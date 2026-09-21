@@ -126,9 +126,9 @@ def test_both_formats_merge(home):
 def test_api_endpoint_parsed(home):
     from common import config
     write_config(home, {"connection_mode": "api", "api_connection": [
-        {"host": "ucmp-grmp-app-d.sdc.cs.icbc", "port": 8080, "token": "t0"}]})
+        {"host": "grmp-app.example.internal", "port": 8080, "token": "t0"}]})
     ep = config.api_endpoint()
-    assert ep.host == "ucmp-grmp-app-d.sdc.cs.icbc" and ep.port == 8080
+    assert ep.host == "grmp-app.example.internal" and ep.port == 8080
 
 
 def test_env_token_wins_over_inline(home, monkeypatch):

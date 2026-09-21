@@ -26,8 +26,8 @@ DRAFT = {
     "处置": "应急查杀长事务语句；降低跑批 QPS 并发量。",
     "复发标志": "跑批时段 CPU > 80% 且存在 20 分钟以上长事务。",
 }
-META = {"source": "【2026-01-08】工行CIIS CPU使用率高问题分析报告.docx#p1",
-        "source_file": "【2026-01-08】工行CIIS CPU使用率高问题分析报告.docx",
+META = {"source": "【2026-01-08】某行CIIS CPU使用率高问题分析报告.docx#p1",
+        "source_file": "【2026-01-08】某行CIIS CPU使用率高问题分析报告.docx",
         "source_kind": "docx", "extracted_by": "script"}
 
 
