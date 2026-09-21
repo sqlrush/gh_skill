@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import datetime
+import os
 import pathlib
 import re
 import time
@@ -202,17 +203,51 @@ def identifiers_in(text: str) -> List[str]:
 
 # ---------------------------------------------------------------- session
 
+def store_user(store: kbconfig.PgStore) -> str:
+    """配了 user_env 就只认那个环境变量,否则用 kb.yaml 里的 user。
+
+    同一份共享 kb.yaml 要服务两种角色(runtime 只读 / kb-import 读写),用户名必须按 Pod 来。
+    配了却取不到时报错而不是回落——回落会拿错权限的用户去连库,连上了才是麻烦。
+    """
+    if not store.user_env:
+        return store.user
+    user = os.environ.get(store.user_env) or ""
+    if not user:
+        raise kbconfig.KbConfigError(
+            f"kb.yaml 配了 store.pg.user_env: {store.user_env}，但这个环境变量是空的。"
+            f"容器部署由平台按角色注入它(runtime 只读用户 / kb-import 读写用户)；"
+            f"要改回用 kb.yaml 里的 user，从 kb.yaml 里删掉 user_env 这一项。")
+    return user
+
+
+def store_password(store: kbconfig.PgStore, lookup: Callable[[str], str]) -> str:
+    """配了 password_env 就只认那个环境变量,否则走加密凭据。
+
+    **配了却取不到时报错,不回落到凭据文件。** 容器里那份凭据根本不存在,回落只会
+    报成「没有 kb-pg 的凭据」,把人往「凭据没存」的方向带,而真毛病是 Secret 没挂上。
+    """
+    if not store.password_env:
+        return lookup(store.credential)
+    pw = os.environ.get(store.password_env) or ""
+    if not pw:
+        raise kbconfig.KbConfigError(
+            f"kb.yaml 配了 store.pg.password_env: {store.password_env}，"
+            f"但这个环境变量是空的。容器部署由平台以 Secret 注入它；"
+            f"要改回用加密凭据，从 kb.yaml 里删掉 password_env 这一项。")
+    return pw
+
+
 def open_pg(cfg: kbconfig.KbConfig, lookup: Callable[[str], str]) -> Tuple[Optional[spg.PgStore], str]:
     """(高斯/PG 连接, 连不上的原因)。没配 / 取不到口令 / 连不上 / 还没索引 都不抛,原因带回去。"""
     if cfg.store.pg is None:
         return None, "kb.yaml 未配置 store.pg(向量/词法存储)"
     try:
-        pw = lookup(cfg.store.pg.credential)
+        pw = store_password(cfg.store.pg, lookup)
     except Exception as exc:
         return None, f"取不到存储口令 {cfg.store.pg.credential}:{exc}"
     try:
         pg = spg.PgStore.connect(cfg.store.pg.host, cfg.store.pg.port, cfg.store.pg.database,
-                                 cfg.store.pg.user, pw, dims=cfg.embeddings.dims,
+                                 store_user(cfg.store.pg), pw, dims=cfg.embeddings.dims,
                                  sslmode=cfg.store.pg.sslmode)
     except spg.PgStoreError as exc:
         return None, str(exc)

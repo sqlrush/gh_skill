@@ -47,8 +47,15 @@ def open_pg(cfg: kbconfig.KbConfig) -> spg.PgStore:
     if cfg.store.pg is None:
         raise StoreCmdError("kb.yaml 未配置 store.pg(高斯/PG 向量存储)。参考 references/storage-setup.md")
     p = cfg.store.pg
+    # 与检索侧同一条取口令 / 取用户名的路(password_env / user_env 优先):两边各写一份的话,
+    # 容器里会出现「查得通、写不进」,而写侧报的是「取不到凭据」,跟真毛病(Secret 没挂)对不上。
     try:
-        return spg.PgStore.connect(p.host, p.port, p.database, p.user, _password(p.credential),
+        pw = kbquery.store_password(p, _password)
+        user = kbquery.store_user(p)
+    except kbconfig.KbConfigError as exc:
+        raise StoreCmdError(str(exc))
+    try:
+        return spg.PgStore.connect(p.host, p.port, p.database, user, pw,
                                    dims=cfg.embeddings.dims, sslmode=p.sslmode)
     except spg.PgStoreError as exc:
         raise StoreCmdError(str(exc))

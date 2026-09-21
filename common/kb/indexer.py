@@ -308,6 +308,10 @@ def run_index(kb: pathlib.Path, pg: spg.PgStore, graph: Optional[sg.GraphStore],
     caps = pg.rebuild() if rebuild else pg.setup()
     if rebuild:
         caps = pg.capabilities()
+    # 换了 embedding 模型而不重建 → 拒绝。同维度换模型是静默失效:库里混着两套向量空间,
+    # 相似度失去意义,而覆盖率仍显示 100%。放在取数之前,失败得早一点。
+    if caps.vector and embedder is not None:
+        pg.check_embed_model(embedder.model, rebuild)
     cases, case_findings = kbcases.load_cases(kb)
     warnings += [m for lvl, m in case_findings if lvl == "error"]
     triples, tri_findings = gf.load_triples(kb, case_ids=[c.id for c in cases])

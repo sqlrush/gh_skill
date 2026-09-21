@@ -52,6 +52,7 @@ from common import procname  # noqa: E402
 from common.grmp.hints import ensure_hint  # noqa: E402
 import procanalyze as pa  # noqa: E402
 import render  # noqa: E402
+import sysprocs  # noqa: E402
 from evidence import Evidence, collect, collect_gucs, evidence_report  # noqa: E402
 from hypoindex import MIN_SPEEDUP, verify_indexes  # noqa: E402
 
@@ -129,8 +130,16 @@ class CursorTuneResult:
 
 def fetch_proc_def(runner, qualified: str) -> pa.ProcDef:
     """经统一入口取数。名字支持 schema.package.proc(包内过程);同名过程不止一个时拒绝,不猜
-    (common/procname.py)。走中间件还是直连由连接的 driver 决定，这里不感知。"""
+    (common/procname.py)。走中间件还是直连由连接的 driver 决定，这里不感知。
+
+    **系统自带的过程在这里就挡住**(2026-09-21 策略):判定用的是查回来的 `nspname`,
+    不是用户输入的那串 —— 用户可能不带 schema,由 search_path 解析到系统 schema 上去。
+    挡在这里,collect 与 tune-cursor 两条路各一次调用,都覆盖到。
+    """
     r = procname.lookup(runner, PROC_DEF_SCRIPT, qualified)
+    v = sysprocs.verdict(r["nspname"], r["proname"], str(r.get("package", "") or ""))
+    if v.is_system:
+        raise sysprocs.SystemProcSkipped(v)
     # 协议把 NULL 渲染成空串，原来那句 `x if x is not None else ""` 的效果由入口保证，这里不必再兜。
     d = pa.analyze(r["nspname"], r["proname"], r["lanname"], r["prosrc"], r["args"])
     return dataclasses.replace(d, package=str(r.get("package", "") or ""))
@@ -433,6 +442,14 @@ def main(argv: Optional[list[str]] = None) -> int:
             tr = tune_cursors(runner, db, args.proc, args.cursor, binds)
             out = _tune_json(tr) if args.format == "json" else cursor_tune_report(tr)
         print(out, end="" if args.format == "markdown" else "\n")
+        return 0
+    except sysprocs.SystemProcSkipped as exc:
+        # 策略性跳过是确定性结论,不是失败——exit 0,免得现场 agent 当错误反复重试。
+        # 与 sqltune 的系统表闸同一套收尾(skills/gaussdb-sqltune/scripts/systables.py)。
+        if args.format == "json":
+            print(json.dumps(sysprocs.skip_json(exc.verdict), ensure_ascii=False, indent=2))
+        else:
+            print(sysprocs.skip_report(exc.verdict), end="")
         return 0
     except procname.NotFound as exc:
         # 找不到不再只是一句 error:代为排查连的库 / 权限 / 本身在不在,给用户问题清单(stdout,模型原样转达)。

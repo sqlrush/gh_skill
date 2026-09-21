@@ -18,7 +18,7 @@ from dataclasses import replace
 from typing import Any, Optional
 
 from .config import ConfigError, Connection, api_endpoint_if_configured, find, resolve
-from .grmp import signing
+from .grmp import signing, userid
 from .grmp.client import GrmpClient, GrmpRunner
 from .grmp.errors import QueryError
 from .grmp.registry import Registry
@@ -268,12 +268,19 @@ def runner_for(
             sign_settings = signing.settings_from(os.environ, api_endpoint_if_configured())
         except ConfigError as exc:
             raise AccessError("连接 %s 使用 grmp 驱动，签名配置有误：%s" % (conn.name, exc)) from exc
+        # 2026-09-20 客户要中间件显式收工号。配了字段名却没有工号要在这里就报——
+        # 拖到第一次请求会发出一个空工号,中间件那边有调用无身份,我方还是退出码 0。
+        try:
+            user_id_settings = userid.settings_from(os.environ)
+        except ConfigError as exc:
+            raise AccessError("连接 %s 使用 grmp 驱动，工号配置有误：%s" % (conn.name, exc)) from exc
         return GrmpRunner(
             GrmpClient(
                 base_url=_base_url(conn),
                 token=token,
                 data_ip=conn.data_ip,
                 signer=signing.RequestSigner(sign_settings) if sign_settings else None,
+                user_id=user_id_settings,
             )
         )
     raise AccessError("连接 %s 的 driver %r 不受支持" % (conn.name, driver))

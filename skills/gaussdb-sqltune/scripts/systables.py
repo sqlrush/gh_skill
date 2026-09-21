@@ -14,14 +14,11 @@ from dataclasses import dataclass
 
 import evidence
 
-# openGauss/GaussDB 内置 schema(含 A 兼容与自带工具包)。schema 限定的引用
-# 只按这张表判——不在表里的 schema 一律视为用户对象,前缀不再参与判断。
-_SYSTEM_SCHEMAS = frozenset({
-    "pg_catalog", "information_schema", "sys",
-    "dbe_perf", "dbe_pldeveloper", "dbe_pldebugger", "dbe_sql_util",
-    "snapshot", "blockchain", "db4ai", "sqladvisor",
-    "pkg_service", "pkg_util", "cstore", "pmk",
-})
+from common import sysobjects
+
+# schema 限定的引用只按 common/sysobjects.py 那张表判——不在表里的 schema 一律视为
+# 用户对象,前缀不再参与判断。名单与 proctune 共用一份:原先这里是手写的,漏了
+# pg_toast / coverage / xmltype(2026-09-21 从真库对出来的)。
 
 # 未限定 schema 时:openGauss 系统表/系统视图统一以 pg_/gs_ 开头。
 _SYSTEM_NAME_PREFIXES = ("pg_", "gs_")
@@ -46,8 +43,7 @@ class SystemSQLSkipped(Exception):
 
 def _is_system_object(ref: str) -> bool:
     if "." in ref:
-        schema = ref[:ref.index(".")]
-        return schema in _SYSTEM_SCHEMAS
+        return sysobjects.is_system_schema(ref[:ref.index(".")])
     return ref.startswith(_SYSTEM_NAME_PREFIXES) or ref in _SYSTEM_NAMES
 
 

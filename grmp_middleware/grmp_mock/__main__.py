@@ -99,16 +99,21 @@ def main(argv: Sequence[str] = None) -> int:
     parser.add_argument("--sign-encoding", default="hex", choices=("hex", "base64"))
     parser.add_argument("--sign-payload", default="{path}+{timestamp}", help="签名原文模板,只认 {path} 与 {timestamp}")
     parser.add_argument("--sign-window", type=int, default=signature.DEFAULT_WINDOW_SECONDS, help="Timestamp 允许偏差(秒)")
+    parser.add_argument(
+        "--no-require-signature", action="store_true",
+        help="过渡期(客户 2026-09-20,密钥审批未下来):只校验 Appkey 与 Timestamp,不验签。此时不需要 --sm2-public-key")
     args = parser.parse_args(argv)
 
     policy = None
     if args.appkey:
-        if not args.sm2_public_key:
-            print("开启签名校验(--appkey)必须同时给 --sm2-public-key", file=sys.stderr)
+        if not args.sm2_public_key and not args.no_require_signature:
+            print("开启签名校验(--appkey)必须同时给 --sm2-public-key;"
+                  "若中间件当前只校验 Appkey 与 Timestamp,加 --no-require-signature", file=sys.stderr)
             return 2
         policy = signature.policy_from_args(
             args.appkey, args.sm2_public_key, args.sign_user_id, args.sign_timestamp,
-            args.sign_format, args.sign_encoding, args.sign_payload, args.sign_window)
+            args.sign_format, args.sign_encoding, args.sign_payload, args.sign_window,
+            require_signature=not args.no_require_signature)
 
     token = os.environ.get("GRMP_AUTH_TOKEN")
     if not token:

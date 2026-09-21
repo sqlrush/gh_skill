@@ -181,6 +181,14 @@ class PgStore:
     user: str
     credential: str
     sslmode: str = ""
+    # 容器化(2026-09-21):kb.yaml 在共享 NAS 上一份,而加密凭据是按用户的——口令改从这个
+    # 环境变量取(平台以 Secret 注入),就不用给每个用户各塞一份同样的凭据。
+    # 留空 = 照旧走 credential 加密文件,非容器部署不受影响。
+    password_env: str = ""
+    # 同一份 kb.yaml 要服务两种角色:runtime 用只读库用户、kb-import 用读写库用户。
+    # 一个 `user:` 字段装不下两个,所以用户名也可以按 Pod 从环境变量取。
+    # 留空 = 用上面的 user 字段。
+    user_env: str = ""
 
 
 @dataclass(frozen=True)
@@ -266,7 +274,9 @@ def _pg_store(raw: Any) -> Optional[PgStore]:
         raise KbConfigError(f"kb.yaml store.pg.port 不是整数:{raw.get('port')!r}")
     return PgStore(host=str(raw["host"]), port=port, database=str(raw["database"]),
                    user=str(raw["user"]), credential=str(raw["credential"]),
-                   sslmode=str(raw.get("sslmode") or ""))
+                   sslmode=str(raw.get("sslmode") or ""),
+                   password_env=str(raw.get("password_env") or ""),
+                   user_env=str(raw.get("user_env") or ""))
 
 
 def _graph_store(raw: Any) -> Optional[GraphStore]:

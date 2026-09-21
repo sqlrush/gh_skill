@@ -19,6 +19,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Mapping, Optional
 
+from . import userid
 from .errors import QueryError
 from .hints import with_hint
 from .params import to_param_value
@@ -72,6 +73,7 @@ class GrmpClient:
         data_ip: str,
         timeout: int = DEFAULT_TIMEOUT,
         signer: Optional[Any] = None,
+        user_id: Optional[Any] = None,
     ):
         if not token:
             raise GrmpError("缺少 auth 令牌")
@@ -80,6 +82,7 @@ class GrmpClient:
         self._token = token
         self._timeout = timeout
         self._signer = signer          # common.grmp.signing.RequestSigner;None = 中间件未开签名校验
+        self._user_id = user_id        # common.grmp.userid.UserIdSettings;None = 中间件不收工号
         self._ids: Optional[Dict[str, str]] = None
 
     @property
@@ -94,9 +97,15 @@ class GrmpClient:
         if self._signer is not None:
             # 2026-09-18 起中间件还校验 Appkey / Timestamp / Signature(认应用、防重放、防改路径),每次请求现算
             headers.update(self._signer.headers(path))
-        return headers
+        # 2026-09-20 客户确认中间件要显式收调用人工号;头名由客户给,没配就不加
+        return userid.apply_headers(self._user_id, headers)
+
+    def with_user_id(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """按配置把工号加进报文顶层,返回新字典;没配就原样返回。"""
+        return userid.apply_payload(self._user_id, payload)
 
     def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        payload = self.with_user_id(payload)
         request = urllib.request.Request(
             self.base_url + path,
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),

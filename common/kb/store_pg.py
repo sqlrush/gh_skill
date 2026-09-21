@@ -305,6 +305,27 @@ class PgStore:
 
     # --- meta -------------------------------------------------------------
 
+    def check_embed_model(self, model: str, rebuild: bool) -> None:
+        """记住这套向量是哪个模型算的;换了模型而不重建就拒绝。
+
+        **为什么必须挡**:维度变了 embed.py 会当失败挡下(`len(arr) != dims`),索引输出里
+        直接是「失败 N · 覆盖 X/Y」。危险的是「维度一样、模型不同」——库里混着两套不同
+        向量空间的向量,跨空间算余弦相似度没有意义,检索质量悄悄下降,而状态行仍然
+        显示「覆盖 100%」,所有肉眼可见的指标都正常。
+
+        `--rebuild` 会清空重灌,所以那条路径上换模型是安全的,记录跟着更新。
+        加这个特性之前建的库没有这一行,当作首次记录,不判成「换过模型」。
+        """
+        recorded = self._meta_get("embed_model")
+        if recorded and recorded != model and not rebuild:
+            raise PgStoreError(
+                f"这套向量是用 {recorded} 算的，现在配置的是 {model}。"
+                f"两个模型的向量空间不同，混在一起算相似度没有意义，而覆盖率仍会显示 100%。"
+                f"要换模型请跑 `kb.py index --rebuild`（清空重灌）；"
+                f"若只是配置写错了，把 kb.yaml 的 embeddings.model 改回 {recorded}。")
+        if recorded != model:
+            self._meta_set("embed_model", model)
+
     def _meta_get(self, key: str) -> Optional[str]:
         if not self._has_table("kb_meta"):
             return None

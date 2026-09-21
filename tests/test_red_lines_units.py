@@ -1,9 +1,9 @@
-"""公共安全红线:一份正文(common/red_lines.md),18 个 SKILL.md 与 AGENTS.md 各带一份逐字相同的副本。
+"""公共安全红线:一份正文(common/red_lines.md),19 个 SKILL.md 与 AGENTS.md 各带一份逐字相同的副本。
 
 事故(客户 2026-09-10 截图):09-02 的重构把 14 个 SKILL.md 里的公共红线抽到了仓库根 AGENTS.md,而安装脚本不拷 AGENTS.md
 ——客户只换了 skill 目录,安全审查一 diff,红线整段「被删了」。银行客户要的是每个 skill 文件里看得见,不是仓库里去重。
 所以改成:正文只有一份,由 tools/inject_red_lines.py 注入到每个 SKILL.md 的「## 安全红线」和 AGENTS.md 的标记块里;
-这里的测试保证 18 份副本与正文逐字一致——改了正文忘了注入、或哪份被手工改坏,都在这里变红。
+这里的测试保证 19 份副本与正文逐字一致——改了正文忘了注入、或哪份被手工改坏,都在这里变红。
 """
 import pathlib
 import subprocess
@@ -17,18 +17,46 @@ sys.path.insert(0, str(_ROOT))
 from tools import inject_red_lines as rl  # noqa: E402
 
 _SKILLS = sorted((_ROOT / "skills").glob("gaussdb-*/SKILL.md"))
-_HEADINGS = ("配置文件里绝不允许出现明文口令", "绝对沉默条款", "强制拒绝机制", "输出屏蔽规则", "通用替代策略", "只通过本技能脚本取数")
+_HEADINGS = ("配置文件里绝不允许出现明文口令", "绝对沉默条款", "能力边界不是系统配置",
+             "强制拒绝机制", "输出屏蔽规则", "通用替代策略", "只通过本技能脚本取数")
 
 
-def test_canonical_text_has_the_six_clauses_the_customer_signed_off():
+def test_canonical_text_has_the_clauses_the_customer_signed_off():
     text = rl.canonical_text()
     for h in _HEADINGS:
         assert h in text, "common/red_lines.md 缺「%s」" % h
     assert "{script}" in text and "{baseDir}" in text
 
 
+def test_capability_boundary_is_carved_out_of_the_silence_clause():
+    """过度拒绝,2026-09-21 在容器环境实测到:
+
+    问「当前你加载的 pod 类型」,连问两次都是「抱歉,我无法提供该技术配置信息」——
+    模型把「本环境有哪些能力」归进了「系统配置」。而最后一条本来就要求
+    「脚本未覆盖的能力,如实说明『当前无此能力』并停止」,两条自相矛盾;
+    我方的隔离验收用例也正是靠模型答出「本环境不含知识库导入功能」来判定的。
+
+    这一条把边界写死:**能说**属于哪类环境、有哪些能力、该找谁;**不能说**具体取值。
+    """
+    text = rl.canonical_text()
+    assert "能力边界不是系统配置" in text
+    # 必须给出正面示范,否则模型仍会保守地一律拒答
+    assert "不含知识库导入" in text, "要给一句可以照说的例子"
+    # 而具体取值仍然是禁止的,这一条不能被读成「配置可以说了」
+    for still_secret in ("镜像", "Pod 名", "环境变量", "端口", "IP"):
+        assert still_secret in text, "豁免条款要同时点明 %s 仍不可说" % still_secret
+
+
+def test_every_skill_directory_has_a_skill_md():
+    """原来写死「19 个」—— 容器线 19 个、非容器线 18 个(没有独立的 kb-import),
+    同一份测试在两个仓之间搬就会红。真正要守的是「没有哪个 skill 目录丢了 SKILL.md」,
+    跟总数多少无关。"""
+    dirs = sorted(p.name for p in (_ROOT / "skills").glob("gaussdb-*") if p.is_dir())
+    have = sorted(p.parent.name for p in _SKILLS)
+    assert dirs and have == dirs, "这些 skill 目录没有 SKILL.md:%s" % (set(dirs) - set(have))
+
+
 def test_every_skill_has_its_own_script_named_in_the_last_clause():
-    assert len(_SKILLS) == 18
     for path in _SKILLS:
         script = rl.main_script(path.parent)
         assert (path.parent / "scripts" / script).is_file(), "%s 的主脚本 %s 不存在" % (path.parent.name, script)
