@@ -61,13 +61,18 @@ def kb_section(findings) -> tuple:
     return kbquery.section_for(list(findings))
 
 
-def render_health_json(ev: HealthEvidence, sub_results=()) -> str:
+def health_dict(ev: HealthEvidence, sub_results=()) -> dict:
+    """JSON 形态。--format json 打它,存档也存它 —— 大盘读的就是这个形状,一份定义。"""
     d = ev.to_dict()
     d["sub_skills"] = [{"skill": r.skill, "ok": r.ok, "error": r.error}
                        for r in sub_results]
     d["uncovered_capabilities"] = list(aggregate.NEEDS_TARGET)
     d["kb_refs"] = kb_section(ev.findings)[1]
-    return json.dumps(d, ensure_ascii=False, indent=2)
+    return d
+
+
+def render_health_json(ev: HealthEvidence, sub_results=()) -> str:
+    return json.dumps(health_dict(ev, sub_results=sub_results), ensure_ascii=False, indent=2)
 
 
 def _evidence_with_source(f) -> str:

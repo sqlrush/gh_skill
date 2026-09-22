@@ -33,6 +33,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import pathlib
 import sys
 from typing import Optional
@@ -48,9 +49,10 @@ import aggregate  # noqa: E402
 import common  # noqa: E402
 from common import access  # noqa: E402
 from common import cli  # noqa: E402
+from common import reports  # noqa: E402
 import collectors  # noqa: E402
 from model import HealthEvidence, Severity, worst  # noqa: E402
-from report import render_health, render_health_json  # noqa: E402
+from report import health_dict, render_health, render_health_json  # noqa: E402,F401
 from thresholds import Thresholds, default_thresholds  # noqa: E402
 
 # 四个退役的本地维度名，现在路由到对应子 skill 而不是本地 collector。
@@ -166,10 +168,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         ev = run_health(runner, inc_list, exc_list, args.top, default_thresholds(),
                         sub_results=sub_results)
         ev.conn = common.config.resolved_name(args.conn)
+        d = health_dict(ev, sub_results=sub_results)
         if args.format == "json":
-            print(render_health_json(ev, sub_results=sub_results))
+            print(json.dumps(d, ensure_ascii=False, indent=2))
         else:
             print(render_health(ev, sub_results=sub_results), end="")
+        # 存档在输出之后:大盘读 latest.json;失败只 warn,不影响这次的输出与退出码
+        reports.archive("health", d)
         # 报告已经打印完——3 是附加信息，不是替代输出。exit code 只看 ok，
         # 见 _exit_code 的说明。
         return _exit_code(sub_results)

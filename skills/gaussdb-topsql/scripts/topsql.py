@@ -33,6 +33,7 @@ for parent in _HERE.parents:
 import common  # noqa: E402
 from common import access  # noqa: E402
 from common import cli  # noqa: E402
+from common import reports  # noqa: E402
 # 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
 # 类型还原一律走这里，不用裸 int()/float()/bool()。
 from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
@@ -116,10 +117,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
     try:
         rows = top_sql(runner, args.by, args.limit)
+        payload = {"by": args.by, "limit": args.limit, "rows": [r.__dict__ for r in rows]}
         if args.format == "json":
-            print(json.dumps([r.__dict__ for r in rows], ensure_ascii=False, indent=2))
+            print(json.dumps(payload["rows"], ensure_ascii=False, indent=2))   # stdout 形状不变
         else:
             print(stmt_table("Top SQL by " + args.by, rows), end="")
+        # 存档带 by:大盘按维度页签找最近一份;失败只 warn,不影响输出与退出码
+        reports.archive("topsql", payload, name="%s.%s" % (reports.utc_stamp(), args.by))
         return 0
     except (ValueError, KeyError, common.DBError) as exc:
         print(f"error: {exc}", file=sys.stderr)

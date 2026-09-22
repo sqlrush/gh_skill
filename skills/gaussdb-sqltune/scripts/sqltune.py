@@ -33,6 +33,7 @@ import coltypes  # noqa: E402
 import common  # noqa: E402
 from common import access  # noqa: E402
 from common import cli  # noqa: E402
+from common import reports  # noqa: E402
 from common.grmp.hints import ensure_hint  # noqa: E402
 from common import kernel_funcs as kf  # noqa: E402
 from common import search_path as sp  # noqa: E402
@@ -477,6 +478,13 @@ def sqltune_report(tr: TuneResult) -> str:
     return out
 
 
+def archive_tune(payload: dict) -> None:
+    """按 sql_id 存档(大盘的逐条卡按 sql_id 找)。--sql-stdin 那条路没有 sql_id,不存。"""
+    sql_id = str(payload.get("sql_id") or "").strip()
+    if sql_id:
+        reports.archive("sqltune", payload, name=sql_id)
+
+
 def _to_jsonable(tr: TuneResult) -> dict:
     return {
         "sql_id": tr.sql_id,
@@ -584,10 +592,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                   f"{tr.substitution.placeholders} placeholder(s) found; extras ignored",
                   file=sys.stderr)
 
+        payload = _to_jsonable(tr)
         if args.format == "json":
-            print(json.dumps(_to_jsonable(tr), ensure_ascii=False, indent=2))
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
         else:
             print(sqltune_report(tr), end="")
+        archive_tune(payload)
         return 0
     except systables.SystemSQLSkipped as exc:
         # 策略性跳过是确定性结论,不是失败——exit 0,免得现场 agent 当错误反复重试。
