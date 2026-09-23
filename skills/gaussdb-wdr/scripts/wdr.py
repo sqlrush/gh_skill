@@ -69,7 +69,8 @@ def _cmd_collect(args) -> int:
         return 2
     try:
         opt = Options(begin=args.begin, end=args.end, scope=args.scope, node=args.node,
-                      top=args.top, save_html=args.save_html or default_native_path(),
+                      top=args.top,
+                      save_html=args.save_html or default_native_path(common.config.resolved_name(args.conn)),
                       thresholds=default_thresholds())
         ev = collect_evidence(runner, opt)
         ev.conn = common.config.resolved_name(args.conn)
@@ -78,7 +79,7 @@ def _cmd_collect(args) -> int:
         else:
             print(render_evidence(ev), end="")
         # 存档在输出之后:大盘读 latest.json 与上一份做窗口对比;失败只 warn
-        reports.archive("wdr", ev.to_dict())
+        reports.archive("wdr", ev.to_dict(), instance=ev.conn)
         return 0
     except common.DBError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -108,14 +109,14 @@ def _cmd_render(args) -> int:
     return 0
 
 
-def default_native_path(now: Optional[str] = None) -> str:
-    """原生 WDR 报告的默认落点:本人 reports/wdr/<ts>.native.html,大盘上「下载 HTML →」指它。
-    没设 GSDB_REPORTS_DIR 时返回空串 —— 与现在一样不落盘。目录在这里先建好:
-    native.py 落盘失败只会把失败写进 note,不会自己建目录。"""
+def default_native_path(instance: str, now: Optional[str] = None) -> str:
+    """原生 WDR 报告的默认落点:本人 reports/wdr/<实例键>/<ts>.native.html,大盘上「下载 HTML →」
+    链接的就是 /reports/wdr/<实例键>/<文件名>。没设 GSDB_REPORTS_DIR 时返回空串 —— 与现在一样
+    不落盘。目录在这里先建好:native.py 落盘失败只会把失败写进 note,不会自己建目录。"""
     base = reports.reports_dir()
     if base is None:
         return ""
-    d = base / "wdr"
+    d = base / "wdr" / reports.instance_key(instance)
     try:
         d.mkdir(parents=True, exist_ok=True)
     except OSError:

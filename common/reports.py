@@ -12,13 +12,27 @@ import datetime as _dt
 import json
 import os
 import pathlib
+import re
 import sys
 from typing import Any, Dict, List, Optional
 
 ENV_DIR = "GSDB_REPORTS_DIR"
 LATEST = "latest.json"
 INDEX = "index.json"
+TARGETS = "targets.json"
 DEFAULT_KEEP = 50
+_KEY_BAD = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def instance_key(conn: str) -> str:
+    """实例键:conn 规整成能当路径段的串。
+
+    三个大盘(健康 / Top SQL / WDR)都是按库统计的,报告必须按实例分目录 —— 否则一个人上午
+    看 A 库下午看 B 库,「最近 12 次巡检」会把两个库串成一条线。容器里 conn 形如
+    api/10-0-0-9-postgres(会话句柄解析出来的,已含 dataIp 与库名),直连模式是配置里的连接名。
+    """
+    key = _KEY_BAD.sub("_", (conn or "").strip())
+    return key or "_default"
 
 
 def utc_stamp(now: Optional[str] = None) -> str:
@@ -60,10 +74,21 @@ def _load_index(path: pathlib.Path) -> List[Dict[str, Any]]:
         return []
 
 
-def archive(skill: str, payload: Any, *, name: Optional[str] = None,
-            keep: int = DEFAULT_KEEP, now: Optional[str] = None) -> Optional[pathlib.Path]:
-    """写 <dir>/<skill>/<name or 时间戳>.json,同时覆盖 latest.json、维护 index.json。
+def _update_targets(skill_dir: pathlib.Path, key: str, conn: str, stamp: str, count: int) -> None:
+    """<skill>/targets.json:这个人跑过哪些实例、各自最近一次是什么时候 —— 大盘靠它切实例。"""
+    path = skill_dir / TARGETS
+    items = [t for t in _load_index(path) if t.get("key") != key]
+    items.append({"key": key, "conn": conn, "last_at": stamp, "count": count})
+    items.sort(key=lambda t: t.get("last_at", ""), reverse=True)
+    _write_atomic(path, json.dumps(items, ensure_ascii=False, indent=2))
 
+
+def archive(skill: str, payload: Any, *, name: Optional[str] = None,
+            keep: int = DEFAULT_KEEP, now: Optional[str] = None,
+            instance: Optional[str] = None) -> Optional[pathlib.Path]:
+    """写 <dir>/<skill>/[<实例键>/]<name or 时间戳>.json,同时覆盖 latest.json、维护 index.json。
+
+    instance 给了就分实例目录并维护 <skill>/targets.json;不给(知识库,全体共享一份)则落在技能根目录。
     index 只登记本函数写过的文件,超过 keep 份时也只删登记过的 —— 目录里别的东西不动。
     """
     base = reports_dir()
@@ -72,6 +97,9 @@ def archive(skill: str, payload: Any, *, name: Optional[str] = None,
     stamp = utc_stamp(now)
     fname = (name or stamp) + ".json"
     d = base / skill
+    key = instance_key(instance) if instance is not None else ""
+    if key:
+        d = d / key
     try:
         text = json.dumps(payload, ensure_ascii=False, indent=2)
         _write_atomic(d / fname, text)
@@ -88,6 +116,8 @@ def archive(skill: str, payload: Any, *, name: Optional[str] = None,
                 pass
         idx = idx[-keep:] if keep > 0 else idx
         _write_atomic(d / INDEX, json.dumps(idx, ensure_ascii=False, indent=2))
+        if key:
+            _update_targets(base / skill, key, instance or "", stamp, len(idx))
         return d / fname
     except (OSError, TypeError, ValueError) as exc:
         _warn("%s/%s:%s" % (skill, fname, exc))

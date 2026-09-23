@@ -74,3 +74,35 @@ def test_write_is_atomic_no_tmp_left_behind(monkeypatch, tmp_path):
     monkeypatch.setenv("GSDB_REPORTS_DIR", str(tmp_path))
     reports.archive("wdr", {"overall": 0}, now="20260922T000000Z")
     assert not list((tmp_path / "wdr").glob("*.tmp"))
+
+
+# ---- 按实例分目录 ----------------------------------------------------------------
+
+def test_instance_key_sanitizes_conn_name():
+    assert reports.instance_key("api/10-0-0-9-postgres") == "api_10-0-0-9-postgres"
+    assert reports.instance_key("og5") == "og5"
+    assert reports.instance_key("") == "_default"
+    assert reports.instance_key("../x") == ".._x", "斜杠必须换掉,键要能当路径段"
+
+
+def test_archive_with_instance_goes_into_subdir_and_updates_targets(monkeypatch, tmp_path):
+    """三个大盘都是按库统计的:一个人上午看 A 库下午看 B 库,latest/index 不能混。"""
+    monkeypatch.setenv("GSDB_REPORTS_DIR", str(tmp_path))
+    reports.archive("health", {"overall": 1, "conn": "api/10-0-0-9-postgres"},
+                    instance="api/10-0-0-9-postgres", now="20260923T010000Z")
+    reports.archive("health", {"overall": 2, "conn": "og5"}, instance="og5", now="20260923T020000Z")
+    reports.archive("health", {"overall": 0, "conn": "og5"}, instance="og5", now="20260923T030000Z")
+    assert (tmp_path / "health" / "api_10-0-0-9-postgres" / "latest.json").is_file()
+    assert (tmp_path / "health" / "og5" / "latest.json").is_file()
+    assert not (tmp_path / "health" / "latest.json").exists(), "分实例后技能根目录不该再有 latest"
+    t = json.loads((tmp_path / "health" / "targets.json").read_text(encoding="utf-8"))
+    assert [x["key"] for x in t] == ["og5", "api_10-0-0-9-postgres"], "按最近一次降序"
+    assert t[0] == {"key": "og5", "conn": "og5", "last_at": "20260923T030000Z", "count": 2}
+    og5_idx = json.loads((tmp_path / "health" / "og5" / "index.json").read_text(encoding="utf-8"))
+    assert [e["overall"] for e in og5_idx] == [2, 0], "各实例各自的 index,不混"
+
+
+def test_archive_without_instance_is_unchanged(monkeypatch, tmp_path):
+    monkeypatch.setenv("GSDB_REPORTS_DIR", str(tmp_path))
+    reports.archive("kb", {"a": 1}, name="health")
+    assert (tmp_path / "kb" / "health.json").is_file() and not (tmp_path / "kb" / "targets.json").exists()

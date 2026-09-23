@@ -1,6 +1,7 @@
-"""四个技能的存档钩子:跑一次 main(取数被替换成假的),GSDB_REPORTS_DIR 下就该有 latest.json。
+"""四个技能的存档钩子:跑一次 main(取数被替换成假的),GSDB_REPORTS_DIR 下就该有按实例分目录的 latest.json。
 
-不测取数,不测渲染 —— 那些各有各的测试;这里只钉「输出之后确实存档了」和「格式对得上」。
+不测取数,不测渲染 —— 那些各有各的测试;这里只钉「输出之后确实存档了」「落在实例目录里」和「格式对得上」。
+测试里 resolved_name 一律替换成 "og",所以实例键就是 og。
 """
 import json
 import pathlib
@@ -42,11 +43,13 @@ def test_health_main_archives_json_shape(rdir, monkeypatch):
     monkeypatch.setattr(health, "run_health", lambda *a, **k: ev)
     monkeypatch.setattr(health.common.config, "resolved_name", lambda c: "og")
     assert health.main(["-c", "og", "--format", "json"]) == 0
-    latest = json.loads((rdir / "health" / "latest.json").read_text(encoding="utf-8"))
+    latest = json.loads((rdir / "health" / "og" / "latest.json").read_text(encoding="utf-8"))
     assert latest["overall"] == 2 and latest["findings"][0]["code"] == "SLOW_AVG_MS"
     assert "sub_skills" in latest and "dims" in latest
-    idx = json.loads((rdir / "health" / "index.json").read_text(encoding="utf-8"))
+    idx = json.loads((rdir / "health" / "og" / "index.json").read_text(encoding="utf-8"))
     assert idx[-1]["overall"] == 2 and idx[-1]["counts"] == {"2": 1}
+    targets = json.loads((rdir / "health" / "targets.json").read_text(encoding="utf-8"))
+    assert targets[0]["key"] == "og" and targets[0]["conn"] == "og"
 
 
 def test_health_markdown_output_still_archives_json(rdir, monkeypatch):
@@ -57,7 +60,7 @@ def test_health_markdown_output_still_archives_json(rdir, monkeypatch):
     monkeypatch.setattr(health, "run_health", lambda *a, **k: model.HealthEvidence(conn="og"))
     monkeypatch.setattr(health.common.config, "resolved_name", lambda c: "og")
     assert health.main(["-c", "og"]) == 0
-    assert (rdir / "health" / "latest.json").is_file(), "markdown 输出时也要存 JSON,大盘只认 JSON"
+    assert (rdir / "health" / "og" / "latest.json").is_file(), "markdown 输出时也要存 JSON,大盘只认 JSON"
 
 
 def test_topsql_main_archives_with_by_in_name(rdir, monkeypatch):
@@ -66,11 +69,24 @@ def test_topsql_main_archives_with_by_in_name(rdir, monkeypatch):
     rows = [topsql.StmtRow(sql_id="1a9f", query="select 1", calls=3, total_sec=1.5, avg_ms=500.0, rows=3)]
     monkeypatch.setattr(topsql.access, "for_conn", lambda *a, **k: object())
     monkeypatch.setattr(topsql, "top_sql", lambda runner, by, limit: rows)
+    monkeypatch.setattr(topsql.common.config, "resolved_name", lambda c: "og")
     assert topsql.main(["-c", "og", "--by", "avg", "--format", "json"]) == 0
-    files = sorted(p.name for p in (rdir / "topsql").glob("*.avg.json"))
-    assert len(files) == 1, "文件名要带 by:%s" % list((rdir / "topsql").iterdir())
-    latest = json.loads((rdir / "topsql" / "latest.json").read_text(encoding="utf-8"))
-    assert latest["by"] == "avg" and latest["rows"][0]["sql_id"] == "1a9f"
+    files = sorted(p.name for p in (rdir / "topsql" / "og").glob("*.avg.json"))
+    assert len(files) == 1, "文件名要带 by:%s" % list((rdir / "topsql").rglob("*"))
+    latest = json.loads((rdir / "topsql" / "og" / "latest.json").read_text(encoding="utf-8"))
+    assert latest["by"] == "avg" and latest["rows"][0]["sql_id"] == "1a9f" and latest["conn"] == "og"
+
+
+def test_topsql_payload_carries_conn(rdir, monkeypatch):
+    """Top SQL 报告原来没带 conn —— 没有它就没法归到实例目录,也没法在大盘上显示是哪个库。"""
+    _load("gaussdb-topsql", "topsql", "render")
+    import topsql  # noqa: E402
+    monkeypatch.setattr(topsql.access, "for_conn", lambda *a, **k: object())
+    monkeypatch.setattr(topsql, "top_sql", lambda runner, by, limit: [])
+    monkeypatch.setattr(topsql.common.config, "resolved_name", lambda c: "api/10-0-0-9-postgres")
+    assert topsql.main(["-c", "x", "--format", "json"]) == 0
+    latest = json.loads((rdir / "topsql" / "api_10-0-0-9-postgres" / "latest.json").read_text(encoding="utf-8"))
+    assert latest["conn"] == "api/10-0-0-9-postgres"
 
 
 def test_wdr_collect_archives_evidence(rdir, monkeypatch):
@@ -82,11 +98,12 @@ def test_wdr_collect_archives_evidence(rdir, monkeypatch):
     monkeypatch.setattr(wdr, "collect_evidence", lambda runner, opt: ev)
     monkeypatch.setattr(wdr.common.config, "resolved_name", lambda c: "og")
     assert wdr.main(["collect", "-c", "og", "--begin", "1915", "--end", "1916", "--format", "json"]) == 0
-    latest = json.loads((rdir / "wdr" / "latest.json").read_text(encoding="utf-8"))
+    latest = json.loads((rdir / "wdr" / "og" / "latest.json").read_text(encoding="utf-8"))
     assert latest["window"]["begin_id"] == 1915
 
 
-def test_wdr_native_html_defaults_into_reports_dir(rdir, monkeypatch):
+def test_wdr_native_html_defaults_into_instance_dir(rdir, monkeypatch):
+    """原生 WDR 报告也要落在实例目录里:大盘「下载 HTML →」链接的是 /reports/wdr/<key>/<文件名>。"""
     _load("gaussdb-wdr", *_WDR_MODS)
     import wdr, model  # noqa: E402
     seen = {}
@@ -99,8 +116,8 @@ def test_wdr_native_html_defaults_into_reports_dir(rdir, monkeypatch):
     monkeypatch.setattr(wdr, "collect_evidence", fake_collect)
     monkeypatch.setattr(wdr.common.config, "resolved_name", lambda c: "og")
     wdr.main(["collect", "-c", "og", "--begin", "1", "--end", "2", "--format", "json"])
-    assert seen["save_html"].startswith(str(rdir / "wdr")) and seen["save_html"].endswith(".native.html")
-    assert (rdir / "wdr").is_dir(), "目录要先建好,否则 native.py 落盘会失败并把失败写进 note"
+    assert seen["save_html"].startswith(str(rdir / "wdr" / "og")) and seen["save_html"].endswith(".native.html")
+    assert (rdir / "wdr" / "og").is_dir(), "目录要先建好,否则 native.py 落盘会失败并把失败写进 note"
     wdr.main(["collect", "-c", "og", "--begin", "1", "--end", "2", "--save-html", "/tmp/x.html", "--format", "json"])
     assert seen["save_html"] == "/tmp/x.html", "用户显式给的路径优先"
 
@@ -109,14 +126,15 @@ def test_wdr_native_path_empty_without_reports_dir(monkeypatch):
     monkeypatch.delenv("GSDB_REPORTS_DIR", raising=False)
     _load("gaussdb-wdr", *_WDR_MODS)
     import wdr  # noqa: E402
-    assert wdr.default_native_path() == ""
+    assert wdr.default_native_path("og") == ""
 
 
-def test_sqltune_archive_named_by_sql_id_and_skipped_without_it(rdir, monkeypatch):
+def test_sqltune_archive_named_by_sql_id_under_instance_and_skipped_without_id(rdir, monkeypatch):
     _load("gaussdb-sqltune", "sqltune")
     import sqltune  # noqa: E402
-    sqltune.archive_tune({"sql_id": "1a9f", "x": 1})    # 有 sql_id → 存
-    assert (rdir / "sqltune" / "1a9f.json").is_file()
-    sqltune.archive_tune({"sql_id": "", "x": 2})        # 没有 → 不存,不报错
-    assert not (rdir / "sqltune" / ".json").exists()
-    assert len(list((rdir / "sqltune").glob("*.json"))) == 3   # 1a9f.json + latest.json + index.json
+    sqltune.archive_tune({"sql_id": "1a9f", "conn": "og", "x": 1})    # 有 sql_id → 存到实例目录
+    assert (rdir / "sqltune" / "og" / "1a9f.json").is_file()
+    sqltune.archive_tune({"sql_id": "", "conn": "og", "x": 2})        # 没有 → 不存,不报错
+    assert len(list((rdir / "sqltune" / "og").glob("*.json"))) == 3   # 1a9f.json + latest.json + index.json
+    sqltune.archive_tune({"sql_id": "b3d1", "x": 3})                  # 没有 conn → _default
+    assert (rdir / "sqltune" / "_default" / "b3d1.json").is_file()

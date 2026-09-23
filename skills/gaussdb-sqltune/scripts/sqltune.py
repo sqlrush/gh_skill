@@ -479,10 +479,11 @@ def sqltune_report(tr: TuneResult) -> str:
 
 
 def archive_tune(payload: dict) -> None:
-    """按 sql_id 存档(大盘的逐条卡按 sql_id 找)。--sql-stdin 那条路没有 sql_id,不存。"""
+    """按 sql_id 存到实例目录(unique_sql_id 只在一个库里唯一;大盘的逐条卡按 sql_id 找)。
+    --sql-stdin 那条路没有 sql_id,不存。"""
     sql_id = str(payload.get("sql_id") or "").strip()
     if sql_id:
-        reports.archive("sqltune", payload, name=sql_id)
+        reports.archive("sqltune", payload, name=sql_id, instance=str(payload.get("conn") or ""))
 
 
 def _to_jsonable(tr: TuneResult) -> dict:
@@ -593,6 +594,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                   file=sys.stderr)
 
         payload = _to_jsonable(tr)
+        payload["conn"] = common.config.resolved_name(args.conn)   # 归实例目录、大盘显示是哪个库
         if args.format == "json":
             print(json.dumps(payload, ensure_ascii=False, indent=2))
         else:

@@ -174,7 +174,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         else:
             print(render_health(ev, sub_results=sub_results), end="")
         # 存档在输出之后:大盘读 latest.json;失败只 warn,不影响这次的输出与退出码
-        reports.archive("health", d)
+        reports.archive("health", d, instance=d.get("conn", ""))   # 按实例分目录:大盘按库看
         # 报告已经打印完——3 是附加信息，不是替代输出。exit code 只看 ok，
         # 见 _exit_code 的说明。
         return _exit_code(sub_results)

@@ -117,13 +117,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
     try:
         rows = top_sql(runner, args.by, args.limit)
-        payload = {"by": args.by, "limit": args.limit, "rows": [r.__dict__ for r in rows]}
+        # conn 一定要带:没有它报告没法归到实例目录,大盘也没法显示这是哪个库
+        payload = {"conn": common.config.resolved_name(args.conn), "by": args.by, "limit": args.limit,
+                   "rows": [r.__dict__ for r in rows]}
         if args.format == "json":
             print(json.dumps(payload["rows"], ensure_ascii=False, indent=2))   # stdout 形状不变
         else:
             print(stmt_table("Top SQL by " + args.by, rows), end="")
         # 存档带 by:大盘按维度页签找最近一份;失败只 warn,不影响输出与退出码
-        reports.archive("topsql", payload, name="%s.%s" % (reports.utc_stamp(), args.by))
+        reports.archive("topsql", payload, name="%s.%s" % (reports.utc_stamp(), args.by),
+                        instance=payload["conn"])
         return 0
     except (ValueError, KeyError, common.DBError) as exc:
         print(f"error: {exc}", file=sys.stderr)
