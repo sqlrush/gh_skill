@@ -204,3 +204,21 @@ def test_crit_ratio_is_more_severe_than_warn_ratio():
 def test_clean_table_produces_no_findings():
     assert judge_tables([_tbl(n_dead_tup=10, last_autovacuum_age_s=30)],
                         _SETTINGS, [], default_thresholds()) == []
+
+
+def test_each_table_finding_names_its_table():
+    """两张表都关了 autovacuum 时,两条发现的文字一模一样,看起来像重复 —— 证据里要写是哪张表。
+
+    2026-09-23 大盘真数据测试:健康检查大盘上「autovacuum_enabled = false」连着出现两条,
+    无从分辨,用户只会当成 bug。R1/R2/R3 都是按表的发现,都要带表名。
+    """
+    a = _tbl(schema="biz", table="orders", autovac_enabled=False, reloptions="autovacuum_enabled=false")
+    b = _tbl(schema="biz", table="events", autovac_enabled=False, reloptions="autovacuum_enabled=false")
+    fs = judge_tables([a, b], _SETTINGS, [], default_thresholds())
+    r2 = [f for f in fs if f.metric == "autovacuum_enabled"]
+    assert len(r2) == 2
+    assert "biz.orders" in r2[0].evidence and "biz.events" in r2[1].evidence
+    big = _tbl(schema="biz", table="fact", n_live_tup=1000, n_dead_tup=1000, table_bytes=200 * MB)
+    for f in judge_tables([big], _SETTINGS, [], default_thresholds()):
+        if f.code != "VACUUM_XMIN_BLOCKED":
+            assert f.evidence.startswith("biz.fact"), f.evidence

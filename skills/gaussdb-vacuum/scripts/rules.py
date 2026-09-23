@@ -175,6 +175,11 @@ def evaluate(table: dict, settings: dict, oldest_xmin: list,
     return hits
 
 
+def _tname(table: dict) -> str:
+    """证据开头写上是哪张表:两张表都命中同一条规则时,文字一模一样看起来像重复(2026-09-23 大盘上撞到)。"""
+    return "%s.%s：" % (table.get("schema") or "?", table.get("table") or "?")
+
+
 def _r1_finding(table: dict, trigger: float, th: Thresholds,
                 note: str) -> Finding:
     last_autovac_age = table.get("last_autovacuum_age_s")
@@ -184,7 +189,7 @@ def _r1_finding(table: dict, trigger: float, th: Thresholds,
         history = "距上次 autovacuum 已过 %.0f 秒（超过过期阈值 %.0f 秒）" % (
             as_float(last_autovac_age), th.autovac_overdue_s)
     n_dead = as_float(table.get("n_dead_tup"))
-    evidence = "死元组 %d 已超过触发线 %.0f；%s。" % (int(n_dead), trigger, history)
+    evidence = _tname(table) + "死元组 %d 已超过触发线 %.0f；%s。" % (int(n_dead), trigger, history)
     if note:
         evidence += note
     return Finding(
@@ -195,7 +200,7 @@ def _r1_finding(table: dict, trigger: float, th: Thresholds,
 
 
 def _r2_finding(table: dict, note: str) -> Finding:
-    evidence = ("reloptions 里 autovacuum_enabled=false，autovacuum 永远不会"
+    evidence = (_tname(table) + "reloptions 里 autovacuum_enabled=false，autovacuum 永远不会"
                 "处理这张表，不管死元组堆多少、触发线过没过。")
     if note:
         evidence += note
@@ -210,7 +215,7 @@ def _r3_finding(table: dict, th: Thresholds, note: str) -> Finding:
     ratio = _dead_ratio(table)
     table_bytes = as_float(table.get("table_bytes"))
     sev = Severity.CRITICAL if ratio >= th.dead_ratio_crit else Severity.WARN
-    evidence = ("死元组比例 %.1f%%（活 %d / 死 %d），表大小 %.0f MB —— "
+    evidence = _tname(table) + ("死元组比例 %.1f%%（活 %d / 死 %d），表大小 %.0f MB —— "
                 "比例过警戒线 %.0f%% 且表过门槛 %.0f MB。" % (
                     ratio * 100,
                     int(as_float(table.get("n_live_tup"))),
