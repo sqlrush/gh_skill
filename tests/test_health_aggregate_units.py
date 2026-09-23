@@ -108,6 +108,28 @@ def test_nonzero_exit_is_recorded_not_raised():
     assert r.findings == []
 
 
+def test_nonzero_exit_reason_skips_leading_notices():
+    """首行是提示不是错误时,要跳过它取真正的原因。
+
+    GRMP 路径上子 skill 会先打一行「注意:…--timeout 30 不会生效」,再打真正的报错。
+    只取首行的结果是:三个子技能全失败,报告与大盘上写的失败原因却是一句超时提示,
+    真正的「连接被关闭」一个字都看不到。2026-09-23 集群全链路测试抓到。
+    """
+    err = ("注意：连接 x 的 driver 是 grmp，该访问路径无法设置语句超时（协议没有这个参数），--timeout 30 不会生效。\n"
+           "[warn] 报告未存档:x\n"
+           "error: 请求中间件失败：Remote end closed connection without response\n"
+           "更多堆栈")
+    r = aggregate.run_sub_skill("gaussdb-lockwait", "og", 30, runner=_fake(rc=1, err=err))
+    assert "Remote end closed" in r.error, r.error
+    assert "不会生效" not in r.error
+
+
+def test_nonzero_exit_with_only_notices_still_has_a_reason():
+    r = aggregate.run_sub_skill("gaussdb-lockwait", "og", 30,
+                                runner=_fake(rc=1, err="注意：只有一条提示\n"))
+    assert r.error, "只有提示时也不能留空"
+
+
 def test_nonzero_exit_with_empty_stderr_still_has_a_reason():
     """stderr 是空的也不能让 error 是空字符串——空字符串会被当成「没出错」。
 

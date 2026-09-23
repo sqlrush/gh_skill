@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import shutil
 import sys
 from typing import Optional
 
@@ -79,7 +80,7 @@ def _cmd_collect(args) -> int:
         else:
             print(render_evidence(ev), end="")
         # 存档在输出之后:大盘读 latest.json 与上一份做窗口对比;失败只 warn
-        reports.archive("wdr", ev.to_dict(), instance=ev.conn)
+        reports.archive("wdr", _archive_payload(ev, args.save_html), instance=ev.conn)
         return 0
     except common.DBError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -107,6 +108,26 @@ def _cmd_render(args) -> int:
         return 0
     print(report, end="")
     return 0
+
+
+def _archive_payload(ev, explicit_path: str) -> dict:
+    """给大盘存档的那份。显式 --save-html 时原生报告落在用户指定处(常是 /tmp),大盘的
+    「下载 HTML →」按文件名去报告目录找会 404 —— 所以在报告目录里再留一份副本,存档指向它。
+    屏幕上的输出不动:用户要的那个路径照样是他要的。复制失败只影响大盘那个链接,不报错。"""
+    d = ev.to_dict()
+    src = ev.native.saved_path
+    if not (explicit_path and ev.native.generated and src):
+        return d
+    dst = default_native_path(ev.conn)
+    if not dst:
+        return d
+    try:
+        shutil.copyfile(src, dst)
+    except OSError:
+        d["native"].pop("saved_path", None)      # 宁可大盘不给链接,也不给一个 404 的链接
+        return d
+    d["native"]["saved_path"] = dst
+    return d
 
 
 def default_native_path(instance: str, now: Optional[str] = None) -> str:

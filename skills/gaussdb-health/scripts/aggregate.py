@@ -85,6 +85,10 @@ def script_path(skill: str) -> pathlib.Path:
     return _SKILLS_DIR / skill / "scripts" / name
 
 
+# 子 skill 在报错前会打的提示行:不是失败原因,取原因时跳过
+_NOTICE_PREFIXES = ("注意：", "注意:", "[warn]", "提示：", "提示:")
+
+
 def run_sub_skill(skill: str, conn: str, timeout: int,
                    runner: Callable[..., Any] = subprocess.run) -> SubSkillResult:
     """跑一个子 skill 的脚本，`--format json` 拿结果。
@@ -111,7 +115,10 @@ def run_sub_skill(skill: str, conn: str, timeout: int,
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()
         if stderr:
-            reason = stderr.splitlines()[0]
+            # 跳过提示行取真正的原因:GRMP 路径上首行常是「注意:…--timeout 不会生效」
+            lines = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
+            real = [ln for ln in lines if not ln.startswith(_NOTICE_PREFIXES)]
+            reason = (real or lines)[0]
         else:
             reason = "退出码 %d，无 stderr 输出" % proc.returncode
         return SubSkillResult(skill=skill, ok=False, findings=[], error=reason)

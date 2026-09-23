@@ -87,6 +87,11 @@ def test_instance_key_sanitizes_conn_name():
 
 def test_archive_with_instance_goes_into_subdir_and_updates_targets(monkeypatch, tmp_path):
     """三个大盘都是按库统计的:一个人上午看 A 库下午看 B 库,latest/index 不能混。"""
+    from common import config
+
+    def _no_conn(name=None):
+        raise config.ConfigError("未登录")
+    monkeypatch.setattr(config, "resolve", _no_conn)     # 不让开发机上的 ~/.gdaa 影响结果
     monkeypatch.setenv("GSDB_REPORTS_DIR", str(tmp_path))
     reports.archive("health", {"overall": 1, "conn": "api/10-0-0-9-postgres"},
                     instance="api/10-0-0-9-postgres", now="20260923T010000Z")
@@ -97,9 +102,90 @@ def test_archive_with_instance_goes_into_subdir_and_updates_targets(monkeypatch,
     assert not (tmp_path / "health" / "latest.json").exists(), "分实例后技能根目录不该再有 latest"
     t = json.loads((tmp_path / "health" / "targets.json").read_text(encoding="utf-8"))
     assert [x["key"] for x in t] == ["og5", "api_10-0-0-9-postgres"], "按最近一次降序"
-    assert t[0] == {"key": "og5", "conn": "og5", "last_at": "20260923T030000Z", "count": 2}
+    assert t[0] == {"key": "og5", "conn": "og5", "last_at": "20260923T030000Z", "count": 2,
+                    "label": "og5", "login": ""}, "解析不到连接时 label 退回 conn、login 留空"
     og5_idx = json.loads((tmp_path / "health" / "og5" / "index.json").read_text(encoding="utf-8"))
     assert [e["overall"] for e in og5_idx] == [2, 0], "各实例各自的 index,不混"
+
+
+def _conn(**kw):
+    from common.config import Connection
+    base = dict(name="10-0-0-9-postgres", type="gaussdb", host="127.0.0.1", port=8779,
+                database="postgres", user="u", driver="grmp", data_ip="10.0.0.9", app="api")
+    base.update(kw)
+    return Connection(**base)
+
+
+def test_targets_carry_a_readable_label_and_a_login_phrase(monkeypatch, tmp_path):
+    """大盘按实例分开,深挖开的新会话还没登录 —— 首句不说是哪个库,模型只能反过来问用户。
+
+    targets.json 记下可读的实例名(侧栏显示)和登录说法(深挖首句用)。红线第 5 条允许出现
+    用户自己连接的实例 IP 与库名。2026-09-23 v1.1.0 全面测试时发现。
+    """
+    from common import config
+    monkeypatch.setenv("GSDB_REPORTS_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "resolve", lambda name=None: _conn())
+    reports.archive("health", {"overall": 1}, instance="api/10-0-0-9-postgres", now="20260923T010000Z")
+    t = json.loads((tmp_path / "health" / "targets.json").read_text(encoding="utf-8"))[0]
+    assert t["label"] == "10.0.0.9 / postgres"
+    assert t["login"] == "登录 10.0.0.9 的 postgres 库"
+
+
+def test_direct_mode_target_logs_in_by_connection_name(monkeypatch, tmp_path):
+    from common import config
+    monkeypatch.setenv("GSDB_REPORTS_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "resolve",
+                        lambda name=None: _conn(name="og", app="", driver="psycopg2", data_ip="", host="db1", port=5432))
+    reports.archive("health", {"overall": 1}, instance="og", now="20260923T010000Z")
+    t = json.loads((tmp_path / "health" / "targets.json").read_text(encoding="utf-8"))[0]
+    assert t["label"] == "og / postgres"
+    assert t["login"] == "用连接 og 登录"
+
+
+def test_label_is_not_taken_from_a_different_connection(monkeypatch, tmp_path):
+    """解析出来的连接和要存档的 conn 对不上时不用它 —— 宁可退回 conn,不能把 A 库的名字挂到 B 库上。"""
+    from common import config
+    monkeypatch.setenv("GSDB_REPORTS_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "resolve", lambda name=None: _conn(name="10-0-0-12-postgres", data_ip="10.0.0.12"))
+    reports.archive("health", {"overall": 1}, instance="api/10-0-0-9-postgres", now="20260923T010000Z")
+    t = json.loads((tmp_path / "health" / "targets.json").read_text(encoding="utf-8"))[0]
+    assert t["label"] == "api/10-0-0-9-postgres" and t["login"] == ""
+
+
+def test_archive_hides_middleware_address_and_endpoint_path(monkeypatch, tmp_path):
+    """红线第 5 条:内部接口路径、http:// 地址是机密,只有用户连接的实例 IP 与库名可以出现。
+
+    模型的输出有自检,大盘没有 —— 采集失败时维度说明里带着
+    「请求 /x/y/…/invoke 失败…(中间件 http://host:8781)」,原样画在每个用户的大盘上。
+    2026-09-23 集群全链路测试截图发现。存档时就隐去,大盘、下载的 JSON 都干净。
+    """
+    monkeypatch.setenv("GSDB_REPORTS_DIR", str(tmp_path))
+    msg = ("不可用：请求 /corp/paas/aiops/grmp/diagnostic/agent/common-operations/invoke 失败："
+           "Remote end closed connection without response（中间件 http://host.docker.internal:8781）")
+    payload = {"dims": [{"dimension": "Overview", "available": False, "headline": msg, "note": msg,
+                         "rows": [["/data/db/base/16384", "x"]]}],
+               "sub_skills": [{"skill": "gaussdb-lockwait", "ok": False, "error": "连不上 https://10.1.2.3:443/api/v1/x"}],
+               "rows": [{"query": "select a/b/c from t where u = 'http://x'"}]}
+    p = reports.archive("health", payload, now="20260923T010000Z")
+    d = json.loads(p.read_text(encoding="utf-8"))
+    dim = d["dims"][0]
+    for text in (dim["headline"], dim["note"], d["sub_skills"][0]["error"]):
+        assert "http" not in text and "/invoke" not in text and "aiops" not in text, text
+    assert "Remote end closed connection" in dim["headline"], "原因本身要留着"
+    assert dim["rows"] == [["/data/db/base/16384", "x"]], "表格数据不动"
+    assert d["rows"][0]["query"] == "select a/b/c from t where u = 'http://x'", "SQL 文本不动"
+
+
+def test_index_records_how_many_dims_were_unavailable(monkeypatch, tmp_path):
+    """全部采集失败时 overall=0,只看 overall 的历史条会画成绿色「正常」。"""
+    monkeypatch.setenv("GSDB_REPORTS_DIR", str(tmp_path))
+    reports.archive("health", {"overall": 0, "dims": [{"available": False}, {"available": False}, {"available": True}]},
+                    now="20260923T010000Z")
+    reports.archive("kb", {"x": 1}, name="health")
+    idx = json.loads((tmp_path / "health" / "index.json").read_text(encoding="utf-8"))
+    assert idx[-1]["dims"] == {"total": 3, "na": 2}
+    kb_idx = json.loads((tmp_path / "kb" / "index.json").read_text(encoding="utf-8"))
+    assert "dims" not in kb_idx[-1], "没有维度的报告不记"
 
 
 def test_archive_without_instance_is_unchanged(monkeypatch, tmp_path):

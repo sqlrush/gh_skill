@@ -122,11 +122,51 @@ def test_wdr_native_html_defaults_into_instance_dir(rdir, monkeypatch):
     assert seen["save_html"] == "/tmp/x.html", "用户显式给的路径优先"
 
 
+def test_wdr_explicit_save_html_still_leaves_a_copy_for_the_dashboard(rdir, monkeypatch, tmp_path):
+    """显式 --save-html 时,大盘的「下载 HTML →」照样要能下到。
+
+    SKILL.md 写着「--save-html <path> 留底原生 WDR」,模型于是自己挑 /tmp/...;存档 JSON 里
+    saved_path 就是 /tmp 的路径,大盘按文件名去报告目录找 → 404。2026-09-23 集群全链路测试抓到。
+    修法:用户指定的路径照写,报告目录里再留一份,存档 JSON 指向那一份;屏幕输出不变。
+    """
+    _load("gaussdb-wdr", *_WDR_MODS)
+    import wdr, model  # noqa: E402
+    user_path = tmp_path / "mine.html"
+
+    def fake_collect(runner, opt):
+        pathlib.Path(opt.save_html).write_text("<html>" + "x" * 2000, encoding="utf-8")
+        return model.Evidence(conn="og", native=model.NativeInfo(generated=True, bytes=2006, saved_path=opt.save_html))
+
+    monkeypatch.setattr(wdr.access, "for_conn", lambda *a, **k: object())
+    monkeypatch.setattr(wdr, "collect_evidence", fake_collect)
+    monkeypatch.setattr(wdr.common.config, "resolved_name", lambda c: "og")
+    assert wdr.main(["collect", "-c", "og", "--begin", "1", "--end", "2", "--save-html", str(user_path),
+                     "--format", "json"]) == 0
+    assert user_path.is_file(), "用户要的那份照写"
+    latest = json.loads((rdir / "wdr" / "og" / "latest.json").read_text(encoding="utf-8"))
+    archived = pathlib.Path(latest["native"]["saved_path"])
+    assert archived.parent == rdir / "wdr" / "og", "存档里指向报告目录的副本:%s" % archived
+    assert archived.read_text(encoding="utf-8") == user_path.read_text(encoding="utf-8")
+
+
 def test_wdr_native_path_empty_without_reports_dir(monkeypatch):
     monkeypatch.delenv("GSDB_REPORTS_DIR", raising=False)
     _load("gaussdb-wdr", *_WDR_MODS)
     import wdr  # noqa: E402
     assert wdr.default_native_path("og") == ""
+
+
+def test_sqltune_policy_skip_is_archived_so_the_dashboard_stops_offering_tune(rdir, monkeypatch):
+    """系统 SQL 按策略跳过时也要留一份存档。
+
+    Top SQL 榜上常是监控类 SQL,每行都挂着「调优 →」;点下去调优技能按策略跳过、不存档,
+    大盘上那一行就永远在邀请用户去点一个注定被拒的按钮。2026-09-23 集群全链路测试发现。
+    """
+    _load("gaussdb-sqltune", "sqltune")
+    import sqltune  # noqa: E402
+    sqltune.archive_tune(sqltune.skip_payload("825712617", "og", ["pg_database"]))
+    d = json.loads((rdir / "sqltune" / "og" / "825712617.json").read_text(encoding="utf-8"))
+    assert d["skipped"] == "system" and d["system_objects"] == ["pg_database"] and d["sql_id"] == "825712617"
 
 
 def test_sqltune_archive_named_by_sql_id_under_instance_and_skipped_without_id(rdir, monkeypatch):

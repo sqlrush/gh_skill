@@ -486,6 +486,12 @@ def archive_tune(payload: dict) -> None:
         reports.archive("sqltune", payload, name=sql_id, instance=str(payload.get("conn") or ""))
 
 
+def skip_payload(sql_id: str, conn: str, objects: list) -> dict:
+    """按策略跳过(系统 SQL)时存的那份:大盘据此把这一行标成「系统 SQL · 按策略不调优」,
+    不再挂一个注定被拒的「调优 →」。"""
+    return {"sql_id": sql_id, "conn": conn, "skipped": "system", "system_objects": list(objects)}
+
+
 def _to_jsonable(tr: TuneResult) -> dict:
     return {
         "sql_id": tr.sql_id,
@@ -607,6 +613,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(json.dumps(systables.skip_json(exc.objects), ensure_ascii=False, indent=2))
         else:
             print(systables.skip_report(exc.objects), end="")
+        if has_id:
+            archive_tune(skip_payload(args.sql_id, common.config.resolved_name(args.conn), exc.objects))
         return 0
     # access.QueryError 归一了两条路径的取数失败（中间件 GrmpError / 直连
     # DBError），skill 只认这一个类型；common.DBError 仍要留着 —— 会话那条口子
