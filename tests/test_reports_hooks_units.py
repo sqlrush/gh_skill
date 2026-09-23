@@ -63,6 +63,23 @@ def test_health_markdown_output_still_archives_json(rdir, monkeypatch):
     assert (rdir / "health" / "og" / "latest.json").is_file(), "markdown 输出时也要存 JSON,大盘只认 JSON"
 
 
+@pytest.mark.parametrize("scope", [["--include", "logs"], ["--exclude", "bloat"]])
+def test_health_partial_run_is_not_archived_as_a_patrol(rdir, monkeypatch, scope):
+    """只查部分维度的运行不是一次巡检,不能成为大盘上的「最近一次」。
+
+    2026-09-23 user 反馈「健康检查为什么变成了只有一个维度」:深挖会话里模型用 --include 只查了
+    检查点一个维度,这份局部结果被存成最新,整块大盘只剩一张卡,历史条里也多了一次「巡检」。
+    """
+    _load("gaussdb-health", *_HEALTH_MODS)
+    import health, model  # noqa: E402
+    monkeypatch.setattr(health.access, "for_conn", lambda *a, **k: object())
+    monkeypatch.setattr(health.aggregate, "collect_all", lambda *a, **k: [])
+    monkeypatch.setattr(health, "run_health", lambda *a, **k: model.HealthEvidence(conn="og"))
+    monkeypatch.setattr(health.common.config, "resolved_name", lambda c: "og")
+    assert health.main(["-c", "og"] + scope) == 0
+    assert not (rdir / "health").exists(), "局部运行照常输出,但不存档"
+
+
 def test_topsql_main_archives_with_by_in_name(rdir, monkeypatch):
     _load("gaussdb-topsql", "topsql", "render")
     import topsql  # noqa: E402
