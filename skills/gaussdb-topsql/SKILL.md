@@ -56,6 +56,7 @@ metadata:
    优先基于结果里的 `SQL_ID` 引导执行 `gaussdb-sqlfetch`；不要凭空编造完整 SQL 文本。
 9. 如果用户进一步要求对某条 SQL 做执行计划或调优：
    引导进入 `gaussdb-explain` 或 `gaussdb-sqltune`，但前提是先把真实 Top SQL 结果查出来。
+10. 脚本在标准错误里打出「已存入大盘:/dash/topsql?inst=…&by=…」时，在回答末尾附上这个链接。它是给用户看的页面地址（和对话页同一个网址），不是内部接口，原样给出即可；没有这一行（非容器环境，或存档失败）就不提大盘，**不要自己拼 HTML 或 Markdown 版「大盘」**。
 
 标准工作流：
 

@@ -51,6 +51,40 @@ api_connection:
 
 签名相关的环境变量(都优先于配置文件):`GRMP_APPKEY`、`GRMP_SM2_PRIVATE_KEY`、`GRMP_SIGN_USER_ID`、`GRMP_SIGN_TIMESTAMP`、`GRMP_SIGN_FORMAT`、`GRMP_SIGN_ENCODING`、`GRMP_SIGN_PAYLOAD`。配了 appkey 却拿不到私钥、或某个旋钮的值不认识,**在建连接时就报错**,不会拖到中间件回鉴权失败。本地对照:`grmp_middleware.grmp_mock --appkey <名> --sm2-public-key <hex 或 @pem 文件>`(还有 `--sign-*` 同名旋钮),skill 侧配一样的值,对不上在本地先暴露。
 
+### api 模式的实例别名（可选）
+
+api 模式没有预置的连接清单，用户说「核心库」「og5」时智能体只能反问是哪个库。在 config.yaml 里登记别名后，
+`gaussdb-login --list` 能列出**别名、库名与说明（不显示实例 IP）**，用 `--alias <别名>` 登录：
+
+```yaml
+instance_aliases:
+  - name: 核心库          # 别名，不分大小写
+    ip: 10.1.2.3          # 实例 IP（即 dataIp）
+    database: coredb
+    note: 生产核心         # 可选，--list 里显示
+  - name: og5
+    ip: 10.0.0.9
+    database: postgres
+```
+
+- 别名清单是部署配置，不是谁的登录：用别名登录照样只属于当前对话、每次重新登录。
+- 缺 `name` / `ip` / `database` 的项不生效，其余照常可用；`--list` 会把写错的项列出来提示修正。
+- 容器版（gh_agent_k8s）由 agent-config 的 `GRMP_INSTANCE_ALIASES` 生成同一段配置，脚本是同一份。
+
+### api 模式登录时核对库名
+
+api 模式下库名不发给中间件（一个实例 IP 只对一个库），写错不会报错，只会把报告抬头写错。登录时
+`gaussdb-login` 用白名单里已有的 `procinfo.locate_context`（取不到再试 `proctune.locate_context`）查中间件实际连的库：
+
+| 结果 | 行为 |
+|---|---|
+| 一致 | 登录表格「库名核对」写「与中间件实际连的库一致」 |
+| 只差大小写 | 按实际库名登录，并说明 |
+| 不一致 | **不建立会话**，输出实际库名与这个实例上的库清单 |
+| 两条脚本都没登记 / 查不动 | 照常登录，「库名核对」写「库名未核实」 |
+
+**不需要新增或重新导入白名单脚本**（这两条从 skills-v12.5 起就在交付 DML 里，现场的 skills-v12.9 / v12.9.1 也有）；`--no-verify` 时跳过核对。
+
 > **旧的平铺 `connections:` 列表仍然可用**，与 `db_connections` 合并解析，
 > 只是没有应用分组。不强制迁移。
 

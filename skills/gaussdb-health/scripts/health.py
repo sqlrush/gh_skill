@@ -177,7 +177,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         # 只有完整巡检才存:--include/--exclude 的局部运行(深挖时常见)存进去会成为「最近一次」,
         # 大盘只剩那一两张卡、历史里多一次假巡检(2026-09-23 user 反馈)。
         if not inc_list and not exc_list:
-            reports.archive("health", d, instance=d.get("conn", ""))   # 按实例分目录:大盘按库看
+            saved = reports.archive("health", d, instance=d.get("conn", ""))   # 按实例分目录:大盘按库看
+            reports.announce("health", saved, d.get("conn", ""))
         # 报告已经打印完——3 是附加信息，不是替代输出。exit code 只看 ok，
         # 见 _exit_code 的说明。
         return _exit_code(sub_results)

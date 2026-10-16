@@ -43,7 +43,14 @@ metadata:
    python3 {baseDir}/scripts/wdr.py snaps -c <conn>
    ```
 
-   读 `enable_wdr_snapshot` 与快照列表，给出建议窗口。**若报"WDR 未开启"或"快照不足"**：如实转告用户需在 DB 侧 `ALTER SYSTEM SET enable_wdr_snapshot=on`（需 reload/重启）或 `SELECT create_wdr_snapshot();`，**绝不代为开启或创建**，然后停止等待用户。默认采用建议窗口，除非用户另指定 begin/end。
+   读 `enable_wdr_snapshot` 与快照列表，给出建议窗口。**若报"WDR 未开启"或"快照不足"**：如实转告用户需在 DB 侧 `ALTER SYSTEM SET enable_wdr_snapshot=on`（需 reload/重启）或 `SELECT create_wdr_snapshot();`，**绝不代为开启或创建**，然后停止等待用户。窗口怎么定：
+   - 用户给了**快照号**：照用。
+   - 用户说的是**时间段**（「15:16 到 15:26 那次故障」「昨天下午三点左右」）：不要自己数快照号，跑
+     `python3 {baseDir}/scripts/wdr.py snaps -c <conn> --from 'YYYY-MM-DD HH:MM' --to 'YYYY-MM-DD HH:MM'`，
+     用它给出的「覆盖 … 的窗口」。它报「围不住」时把原因和它给的近似窗口告诉用户，**由用户决定**，不要自己改用近似窗口。
+     它提醒「窗口比时间段宽」时也要转告用户。
+   - 都没给：采用建议窗口（最近两个快照），并在回答里说明这是默认的最近窗口。
+   - **回答里写明分析的是快照几到几**，以实际传给 `collect` 的 `--begin/--end` 为准，不要凭记忆写另一个窗口。
 
 3. **采集证据——一条命令不中停。**
 
@@ -112,6 +119,8 @@ metadata:
 - 某维度 `## Collection Notes` 标降级时，如实说明不可用，不臆测其结论。
 - 绝不回显密码 / DSN。
 - 遇脚本报错查 `{baseDir}/references/setup.md`。
+- **大盘链接。** `collect` 在标准错误里打出「已存入大盘:/dash/wdr?inst=…&run=…」时，在 render 输出**之后**附上这一行链接
+  （这是「逐字呈现 render 输出」之外唯一允许追加的内容）。它是给用户看的页面地址（和对话页同一个网址），不是内部接口，原样给出即可；没有这一行（非容器环境，或存档失败）就不提大盘，**不要自己拼 HTML 或 Markdown 版「大盘」**。
 
 ## 安全红线
 

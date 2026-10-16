@@ -255,6 +255,40 @@ def api_endpoint() -> ApiEndpoint:
     )
 
 
+@dataclass(frozen=True)
+class InstanceAlias:
+    """部署时登记的「实例别名 → 实例 IP / 库名」(api 模式)。是部署配置,不是谁的登录会话。"""
+    name: str
+    ip: str
+    database: str
+    note: str = ""
+
+
+def instance_aliases() -> list:
+    """config.yaml 的 instance_aliases(容器里由 podctl 按 GRMP_INSTANCE_ALIASES 生成,非容器版直接写在 config.yaml)。没配 = 空。
+
+    缺字段的项跳过并记进 instance_alias_errors() —— 别名只是登录时的便利,一项写错不该让登录整个失败。
+    """
+    out = []
+    for item in _read_raw().get("instance_aliases") or []:
+        if not isinstance(item, dict):
+            continue
+        name, ip, db = (str(item.get(k) or "").strip() for k in ("name", "ip", "database"))
+        if name and ip and db:
+            out.append(InstanceAlias(name, ip, db, str(item.get("note") or "").strip()))
+    return out
+
+
+def instance_alias_errors() -> list:
+    """部署时写错、没能登记进别名清单的项(原文)。"""
+    raw = _read_raw()
+    errs = [str(e) for e in raw.get("instance_aliases_errors") or []]
+    for item in raw.get("instance_aliases") or []:
+        if not isinstance(item, dict) or not all(str(item.get(k) or "").strip() for k in ("name", "ip", "database")):
+            errs.append("instance_aliases 里的一项缺 name / ip / database:%r" % (item,))
+    return errs
+
+
 def api_endpoint_if_configured() -> Optional[ApiEndpoint]:
     """配置里有 api_connection 才解析;没有返回 None(签名等设置这时全靠环境变量)。"""
     return api_endpoint() if _read_raw().get("api_connection") else None

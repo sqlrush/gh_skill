@@ -195,3 +195,58 @@ def test_sqltune_archive_named_by_sql_id_under_instance_and_skipped_without_id(r
     assert len(list((rdir / "sqltune" / "og").glob("*.json"))) == 3   # 1a9f.json + latest.json + index.json
     sqltune.archive_tune({"sql_id": "b3d1", "x": 3})                  # 没有 conn → _default
     assert (rdir / "sqltune" / "_default" / "b3d1.json").is_file()
+
+
+# --- 存档之后在标准错误里给大盘直达链接(v1.1.6 待修第 7 项) -------------------------
+# 标准输出一个字不能多:JSON 模式要纯 JSON(wdr 的 collect 输出还要被 render 读回去)。
+
+def test_health_announces_the_dashboard_link_on_stderr_and_keeps_stdout_pure_json(rdir, monkeypatch, capsys):
+    _load("gaussdb-health", *_HEALTH_MODS)
+    import health, model  # noqa: E402
+    monkeypatch.setattr(health.access, "for_conn", lambda *a, **k: object())
+    monkeypatch.setattr(health.aggregate, "collect_all", lambda *a, **k: [])
+    monkeypatch.setattr(health, "run_health", lambda *a, **k: model.HealthEvidence(conn="og"))
+    monkeypatch.setattr(health.common.config, "resolved_name", lambda c: "og")
+    assert health.main(["-c", "og", "--format", "json"]) == 0
+    out, err = capsys.readouterr()
+    json.loads(out)                                   # 多一行就不是合法 JSON 了
+    run = json.loads((rdir / "health" / "og" / "index.json").read_text(encoding="utf-8"))[-1]["file"]
+    assert "已存入大盘:/dash/health?inst=og&run=%s" % run in err
+
+
+def test_partial_health_run_gives_no_link(rdir, monkeypatch, capsys):
+    _load("gaussdb-health", *_HEALTH_MODS)
+    import health, model  # noqa: E402
+    monkeypatch.setattr(health.access, "for_conn", lambda *a, **k: object())
+    monkeypatch.setattr(health.aggregate, "collect_all", lambda *a, **k: [])
+    monkeypatch.setattr(health, "run_health", lambda *a, **k: model.HealthEvidence(conn="og"))
+    monkeypatch.setattr(health.common.config, "resolved_name", lambda c: "og")
+    health.main(["-c", "og", "--include", "logs"])
+    assert "已存入大盘" not in capsys.readouterr().err, "没存档就不能给链接"
+
+
+def test_topsql_link_opens_the_same_sort_tab(rdir, monkeypatch, capsys):
+    _load("gaussdb-topsql", "topsql", "render")
+    import topsql  # noqa: E402
+    monkeypatch.setattr(topsql.access, "for_conn", lambda *a, **k: object())
+    monkeypatch.setattr(topsql, "top_sql", lambda runner, by, limit: [])
+    monkeypatch.setattr(topsql.common.config, "resolved_name", lambda c: "api/10-0-0-9-postgres")
+    assert topsql.main(["-c", "x", "--by", "avg"]) == 0
+    assert "已存入大盘:/dash/topsql?inst=api_10-0-0-9-postgres&by=avg" in capsys.readouterr().err
+
+
+def test_wdr_collect_link_and_window_in_the_index(rdir, monkeypatch, capsys):
+    _load("gaussdb-wdr", *_WDR_MODS)
+    import wdr, model  # noqa: E402
+    ev = model.Evidence(conn="og", target="t")
+    ev.window.begin_id, ev.window.end_id = 2936, 2937
+    ev.window.begin_ts, ev.window.end_ts = "2026-10-16 15:16:42", "2026-10-16 15:26:46"
+    monkeypatch.setattr(wdr.access, "for_conn", lambda *a, **k: object())
+    monkeypatch.setattr(wdr, "collect_evidence", lambda runner, opt: ev)
+    monkeypatch.setattr(wdr.common.config, "resolved_name", lambda c: "og")
+    assert wdr.main(["collect", "-c", "og", "--begin", "2936", "--end", "2937", "--format", "json"]) == 0
+    out, err = capsys.readouterr()
+    json.loads(out)
+    assert "已存入大盘:/dash/wdr?inst=og&run=" in err
+    idx = json.loads((rdir / "wdr" / "og" / "index.json").read_text(encoding="utf-8"))
+    assert idx[-1]["window"]["begin_id"] == 2936 and idx[-1]["window"]["end_ts"] == "2026-10-16 15:26:46"

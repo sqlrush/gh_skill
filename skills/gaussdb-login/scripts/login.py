@@ -18,7 +18,7 @@ import argparse
 import re
 import pathlib
 import sys
-from typing import List, Optional
+from typing import List, NamedTuple, Optional, Tuple
 
 _HERE = pathlib.Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent))
@@ -103,6 +103,30 @@ def _api_connection(ip: str, database: str, endpoint) -> Connection:
     )
 
 
+def _find_alias(name: str):
+    """别名不分大小写。"""
+    want = name.strip().lower()
+    return next((a for a in config.instance_aliases() if a.name.lower() == want), None)
+
+
+def _render_aliases(aliases, errors) -> str:
+    """--list 的 api 部分。**不列实例 IP**:红线只放行用户自己给的、或已连上的实例 IP,
+    别名清单里的 IP 两者都不是;登录时 --alias 在脚本里换成 IP,模型不需要看到它。"""
+    if aliases:
+        out = "部署时登记的实例别名（%d 个）：\n\n" % len(aliases)
+        out += render.table(["别名", "库名", "说明"], [[a.name, a.database, a.note or "—"] for a in aliases])
+        out += ("\n\n用户说的是清单里的别名时，用 `--alias <别名>` 登录；"
+                "不在清单里的库，照样用 `--ip <实例IP> --database <库名>`。")
+    else:
+        out = ("api 模式没有预置的连接清单（部署时也没有登记实例别名）—— 目标由你指定。\n"
+               "用 `--ip <实例IP> --database <库名>` 登录。")
+    if errors:
+        out += ("\n\n> ⚠ 部署时登记的别名里有 %d 项写法不对，没有生效（请运维修正：容器版在 agent-config 的 "
+                "GRMP_INSTANCE_ALIASES，非容器版在 config.yaml 的 instance_aliases）：\n" % len(errors)) \
+            + "".join("> - %s\n" % e for e in errors)
+    return out
+
+
 # --- 连通性验证 ---------------------------------------------------------------
 
 def _verify(conn: Connection) -> tuple:
@@ -174,6 +198,58 @@ def _verify_direct(conn: Connection) -> tuple:
         db.close()
 
 
+# --- api 模式:库名核对 --------------------------------------------------------
+
+# 已随白名单下发的「当前库 / 当前账号 / 实例上的库清单」脚本(过程找不到时的排查用),两份 SQL 同体。
+# 复用它而不新加一条:新脚本要客户重新导入白名单才生效。
+DB_SCRIPTS = ("procinfo.locate_context", "proctune.locate_context")
+
+
+class DbCheck(NamedTuple):
+    # NamedTuple 而不是 dataclass:测试按文件路径加载本脚本、不登记 sys.modules,dataclass 会在那里找模块而失败
+    status: str                       # ok / case(只差大小写)/ mismatch / unknown(核不了)
+    actual: str = ""
+    databases: Tuple[str, ...] = ()
+    note: str = ""
+
+
+def _check_database(conn: Connection) -> DbCheck:
+    """中间件按 dataIp 实际连的是哪个库,和用户给的库名对一下。
+
+    **为什么要核:** api 模式下库名不发给中间件(报文只有 dataIp / id / param,一个 dataIp 只对一个库),
+    写错了不会报错,只会变成报告抬头与大盘上的错误标签,还把同一个库的历史劈成两份(2026-10-14 抓到)。
+    核不了(脚本没登记、查不动)时返回 unknown,由调用方如实写「未核实」,不猜。
+    """
+    last = ""
+    for script in DB_SCRIPTS:
+        try:
+            rows = access.runner_for(conn).run(script)
+        except Exception as exc:                      # noqa: BLE001 —— 核不了就说核不了,不挡登录
+            last = "%s:%s" % (script, str(exc).splitlines()[0][:80] if str(exc) else type(exc).__name__)
+            continue
+        actual = str((rows or [{}])[0].get("db") or "").strip()
+        if not actual:
+            last = "%s 没返回库名" % script
+            continue
+        dbs = tuple(x.strip() for x in str(rows[0].get("databases") or "").split(",") if x.strip())
+        if actual == conn.database:
+            return DbCheck("ok", actual, dbs)
+        if actual.lower() == conn.database.lower():
+            return DbCheck("case", actual, dbs)
+        return DbCheck("mismatch", actual, dbs)
+    return DbCheck("unknown", note=last)
+
+
+def _mismatch_message(conn: Connection, chk: DbCheck) -> str:
+    others = "、".join(chk.databases) if chk.databases else "（没取到）"
+    return ("库名不对，**未建立会话**：中间件按实例 IP %s 实际连到的是库「%s」，不是「%s」。\n"
+            "这个实例上的库：%s。\n\n"
+            "用实际的库名重新登录：\n    gaussdb-login --ip %s --database %s\n\n"
+            "（api 模式下一个实例 IP 只对一个库，库名不参与路由 —— 写错的库名不会报错，"
+            "只会把报告抬头和大盘上的实例名写错，所以登录时就拦下。）"
+            % (conn.data_ip, chk.actual, conn.database, others, conn.data_ip, chk.actual))
+
+
 # --- 输出 ---------------------------------------------------------------------
 
 ROLE_SCRIPT = "health.overview"     # 已注册脚本里带 pg_is_in_recovery() 的那条,不必新加白名单
@@ -212,7 +288,8 @@ def _handle_banner(handle: str, conn: Connection) -> str:
         % (handle, session.target_of(conn), conn.database, handle, handle))
 
 
-def _describe(conn: Connection, note: str, path, role: str = "", handle: str = "") -> str:
+def _describe(conn: Connection, note: str, path, role: str = "", handle: str = "",
+              db_note: str = "") -> str:
     out = "# 已登录\n\n"
     if handle:
         out += _handle_banner(handle, conn)
@@ -223,6 +300,7 @@ def _describe(conn: Connection, note: str, path, role: str = "", handle: str = "
          ["应用", conn.app or "—"],         
          ["实例 IP（dataIp）", conn.data_ip],
          ["数据库", conn.database] ,
+         *([["库名核对", db_note]] if db_note else []),
          ["验证", note],
          ["主备", role or "未探测"]])
     else:
@@ -289,6 +367,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--conn", help="gsql 模式：连接名")
     ap.add_argument("--ip", help="api 模式：目标实例 IP（接口一的 dataIp）")
     ap.add_argument("--database", help="api 模式：要访问的数据库名")
+    ap.add_argument("--alias", help="api 模式：部署时登记的实例别名（--list 能看到），代替 --ip/--database")
     ap.add_argument("--list", action="store_true", help="只列出可选项，不登录")
     ap.add_argument("--status", action="store_true", help="看本对话的会话（要带 --session；不带就是未登录）")
     ap.add_argument("--logout", action="store_true", help="退出本对话的会话（要带 --session；运维清空全部用 --all）")
@@ -324,13 +403,25 @@ def main(argv: Optional[List[str]] = None) -> int:
                     "把它放进环境变量 %s（推荐），或写在 api_connection.token 里。\n"
                     "令牌是长期有效、无重放保护的静态凭据，放环境变量能少一份"
                     "落盘副本。"
-                    % (endpoint.host, endpoint.port, endpoint.host_env,endpoint.resolve_host,endpoint.port, endpoint.token_env))
+                    % (endpoint.host, endpoint.port, endpoint.host_env, endpoint.resolve_host(), endpoint.port,
+                       endpoint.token_env))
             if args.list:
                 print("模式：api（GRMP 中间件）\n端点：%s:%s\n"
                       % (endpoint.host, endpoint.port))
-                print("api 模式没有预置的连接清单 —— 目标由你指定。\n"
-                      "用 `--ip <实例IP> --database <库名>` 登录。")
+                print(_render_aliases(config.instance_aliases(), config.instance_alias_errors()))
                 return 0
+            if args.alias:
+                if args.ip or args.database:
+                    print("--alias 与 --ip/--database 二选一：别名已经代表一个实例 IP 和库名。", file=sys.stderr)
+                    return 2
+                hit = _find_alias(args.alias)
+                if hit is None:
+                    names = "、".join(a.name for a in config.instance_aliases()) or "（部署时没有登记任何别名）"
+                    print("没有叫「%s」的实例别名。登记过的别名：%s。\n"
+                          "不在清单里的库，请向用户要实例 IP 和库名，用 `--ip <实例IP> --database <库名>` 登录。"
+                          % (args.alias, names), file=sys.stderr)
+                    return 2
+                args.ip, args.database = hit.ip, hit.database
             missing = [f for f, v in (("--ip", args.ip),
                                       ("--database", args.database)) if not v]
             if missing:
@@ -375,9 +466,26 @@ def main(argv: Optional[List[str]] = None) -> int:
                     "取数时才失败，那时错误看起来像是那个 skill 坏了。"
                     % (conn.qualified, note))
 
+        db_note = ""
+        if conn.driver == "grmp":
+            if args.no_verify:
+                db_note = "未核实（--no-verify）"
+            else:
+                chk = _check_database(conn)
+                if chk.status == "mismatch":
+                    return _fail(_mismatch_message(conn, chk))
+                if chk.status == "case":
+                    db_note = "按实际库名「%s」登录（你给的是「%s」，只差大小写）" % (chk.actual, conn.database)
+                    conn = _api_connection(conn.data_ip, chk.actual, config.api_endpoint())
+                elif chk.status == "ok":
+                    db_note = "与中间件实际连的库一致"
+                else:
+                    db_note = ("**库名未核实**（%s）：api 模式下库名不发给中间件，写错不会报错、"
+                               "只会写错报告抬头。请确认「%s」就是这个实例上的库。" % (chk.note, conn.database))
+
         role = "未探测（--no-verify）" if args.no_verify else _probe_role(conn)
         handle = session.save(conn)
-        print(_describe(conn, note, session.path_for(handle), role, handle=handle))
+        print(_describe(conn, note, session.path_for(handle), role, handle=handle, db_note=db_note))
         return 0
 
     except ConfigError as exc:

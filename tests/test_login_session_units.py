@@ -36,6 +36,7 @@ def api_home(tmp_path, monkeypatch):
     monkeypatch.setattr(login, "_verify", lambda conn: (True, "ok"))
     monkeypatch.setattr(login, "_probe_role", lambda conn: "主库（in_recovery=false）")
     monkeypatch.setattr(login, "whitelist", lambda conn: ["health.overview"])
+    monkeypatch.setattr(login, "_check_database", lambda conn: login.DbCheck("ok", conn.database))
     yield tmp_path
     import os
     os.environ.pop(session.ENV_HANDLE, None)

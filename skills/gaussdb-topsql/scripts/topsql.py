@@ -125,8 +125,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         else:
             print(stmt_table("Top SQL by " + args.by, rows), end="")
         # 存档带 by:大盘按维度页签找最近一份;失败只 warn,不影响输出与退出码
-        reports.archive("topsql", payload, name="%s.%s" % (reports.utc_stamp(), args.by),
-                        instance=payload["conn"])
+        saved = reports.archive("topsql", payload, name="%s.%s" % (reports.utc_stamp(), args.by),
+                                instance=payload["conn"])
+        reports.announce("topsql", saved, payload["conn"], by=args.by)
         return 0
     except (ValueError, KeyError, common.DBError) as exc:
         print(f"error: {exc}", file=sys.stderr)

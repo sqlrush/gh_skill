@@ -14,6 +14,7 @@ import os
 import pathlib
 import re
 import sys
+import urllib.parse
 from typing import Any, Dict, List, Optional
 
 ENV_DIR = "GSDB_REPORTS_DIR"
@@ -102,6 +103,14 @@ def _dims_summary(payload: Any) -> Dict[str, Any]:
     return {"dims": {"total": len(dims), "na": na}}
 
 
+def _window_summary(payload: Any) -> Dict[str, Any]:
+    """WDR 的快照窗口抄进索引:报告的 at 是**存档时间**,大盘按时间段筛选时要按窗口筛。"""
+    win = payload.get("window") if isinstance(payload, dict) else None
+    if not isinstance(win, dict) or not win.get("begin_ts"):
+        return {}
+    return {"window": {k: win.get(k) for k in ("begin_id", "end_id", "begin_ts", "end_ts")}}
+
+
 def _load_index(path: pathlib.Path) -> List[Dict[str, Any]]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -174,7 +183,7 @@ def archive(skill: str, payload: Any, *, name: Optional[str] = None,
         idx = [e for e in _load_index(d / INDEX) if e.get("file") != fname]
         idx.append({"at": stamp, "file": fname,
                     "overall": payload.get("overall") if isinstance(payload, dict) else None,
-                    "counts": _counts(payload), **_dims_summary(payload)})
+                    "counts": _counts(payload), **_dims_summary(payload), **_window_summary(payload)})
         idx.sort(key=lambda e: e.get("at", ""))
         for old in idx[:-keep] if keep > 0 else []:
             try:
@@ -189,6 +198,38 @@ def archive(skill: str, payload: Any, *, name: Optional[str] = None,
     except (OSError, TypeError, ValueError) as exc:
         _warn("%s/%s:%s" % (skill, fname, exc))
         return None
+
+
+# 有大盘页的技能 → 页面名。调优没有自己的页(出现在 Top SQL 的明细里),知识库不分实例。
+DASH_PAGES = {"health": "health", "topsql": "topsql", "wdr": "wdr"}
+
+
+def dash_link(skill: str, path: Optional[pathlib.Path], instance: str, by: str = "") -> str:
+    """这一份报告在大盘上的直达地址(相对路径:大盘与对话页在同一个网关地址下)。没存档 / 没有页 → 空串。
+
+    health / wdr 带 run=<文件> 直接打开这一份;topsql 按维度页签各取最近一份,带 by=<维度>。
+    """
+    page = DASH_PAGES.get(skill)
+    if path is None or page is None:
+        return ""
+    q = [("inst", instance_key(instance))]
+    if skill != "topsql":
+        q.append(("run", path.name))
+    elif by:
+        q.append(("by", by))
+    return "/dash/%s?%s" % (page, urllib.parse.urlencode(q))
+
+
+def announce(skill: str, path: Optional[pathlib.Path], instance: str, by: str = "") -> None:
+    """存档成功后在**标准错误**打一行大盘直达链接。
+
+    以前存档悄无声息,模型不知道有大盘(用户要「大盘」时它只能自己拼 Markdown)。走标准错误:
+    JSON 模式的 stdout 必须是纯 JSON,WDR 的最终报告必须是 render 的原样输出,都不能多一行。
+    """
+    link = dash_link(skill, path, instance, by)
+    if link:
+        print("已存入大盘:%s (在对话页同一个网址下打开;它是给用户看的页面,可以原样转给用户)" % link,
+              file=sys.stderr)
 
 
 def append_jsonl(skill: str, name: str, row: Dict[str, Any]) -> bool:

@@ -12,7 +12,7 @@ Port of internal/probe/wdr/* + internal/cli/wdr.go. Three subcommands:
 NEVER creates snapshots, NEVER executes changes.
 
 Usage:
-    wdr.py snaps    -c <conn> [--limit 20]
+    wdr.py snaps    -c <conn> [--limit 20] [--from 'YYYY-MM-DD HH:MM' [--to 'YYYY-MM-DD HH:MM']]
     wdr.py collect  -c <conn> --begin <id> --end <id> [--top 10] [--scope node|cluster] [--format json]
     wdr.py render   --evidence ev.json --interp interp.json [--format md|ansi]
 """
@@ -51,7 +51,7 @@ def _cmd_snaps(args) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     try:
-        print(run_snaps(runner, args.limit), end="")
+        print(run_snaps(runner, args.limit, args.t_from, args.t_to), end="")
         return 0
     except common.DBError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -80,7 +80,8 @@ def _cmd_collect(args) -> int:
         else:
             print(render_evidence(ev), end="")
         # 存档在输出之后:大盘读 latest.json 与上一份做窗口对比;失败只 warn
-        reports.archive("wdr", _archive_payload(ev, args.save_html), instance=ev.conn)
+        saved = reports.archive("wdr", _archive_payload(ev, args.save_html), instance=ev.conn)
+        reports.announce("wdr", saved, ev.conn)
         return 0
     except common.DBError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -154,6 +155,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     ps.add_argument("-c", "--conn", default="")
     cli.add_session_arg(ps)
     ps.add_argument("--limit", type=int, default=20, help="列出最近 N 个快照")
+    ps.add_argument("--from", dest="t_from", default="", metavar="'YYYY-MM-DD HH:MM'",
+                    help="按时间段找窗口:开始时间(数据库所在时区)")
+    ps.add_argument("--to", dest="t_to", default="", metavar="'YYYY-MM-DD HH:MM'",
+                    help="按时间段找窗口:结束时间;不给 = 到最新快照")
     ps.add_argument("--timeout", type=int, default=None)
 
     pc = sub.add_parser("collect", help="collect snapshot-delta evidence + findings")
