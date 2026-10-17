@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import json
 import pathlib
 import sys
 
@@ -180,14 +181,16 @@ def test_the_second_ask_uses_the_baseline_and_does_not_sleep_at_all(monkeypatch,
     r = _Runner()
     T._run_delta(r, _Args(window="10m"), "og5")          # 留基线
     sleeps.clear()
-    # 把基线的时间戳改成 5 分钟前,模拟「上次问过、过了一会儿再问」
+    # 把历史里每一刻的时间戳都往前挪 5 分钟,模拟「上次问过、过了一会儿再问」
+    import datetime as _dt
+
     import delta as DD
     bpath = DD.baseline_path(pathlib.Path(str(tmp_path)), T.reports.instance_key("og5"))
-    import json as _json
-    import datetime as _dt
-    d = _json.loads(bpath.read_text(encoding="utf-8"))
-    d["at"] = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(minutes=5)).strftime("%Y%m%dT%H%M%SZ")
-    bpath.write_text(_json.dumps(d), encoding="utf-8")
+    d = json.loads(bpath.read_text(encoding="utf-8"))
+    back = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(minutes=5)
+    for i, smp in enumerate(d["samples"]):
+        smp["at"] = (back + _dt.timedelta(seconds=i)).strftime("%Y%m%dT%H%M%SZ")
+    bpath.write_text(json.dumps(d), encoding="utf-8")
 
     rc = T._run_delta(r, _Args(window="10m"), "og5")
     assert rc == 0 and sleeps == []
@@ -210,3 +213,112 @@ def test_an_explicit_live_sample_within_the_cap_still_waits(monkeypatch, tmp_pat
     T = _load_topsql(monkeypatch, sleeps, tmp_path)
     assert T._run_delta(_Runner(), _Args(live_sample="30s"), "og5") == 0
     assert sleeps == [30]
+
+
+# ---------------------------------------------------------------- 采样历史
+
+def _s(at, n=1):
+    return D.Sample(at=at, rows={"a": D.Counters(calls=n, total_sec=float(n), rows=n,
+                                                 query="SELECT 1")})
+
+
+def test_saving_appends_instead_of_overwriting(tmp_path):
+    """**实测抓到的问题:** 只留一刻的话,连着问两次「最近十分钟」,第二次读到的基线是
+    第一次运行刚写下的(年龄 1 秒)—— 于是又退回现场采样,回看功能等于永远用不上。
+    """
+    p = tmp_path / D.BASELINE_NAME
+    for i in range(3):
+        D.save_baseline(p, _s("20261017T10%02d00Z" % i, i + 1))
+    assert len(D.load_history(p)) == 3
+
+
+def test_history_is_capped(tmp_path):
+    p = tmp_path / D.BASELINE_NAME
+    for i in range(D.HISTORY_MAX + 5):
+        D.save_baseline(p, _s("20261017T10%02d00Z" % i, i + 1))
+    assert len(D.load_history(p)) == D.HISTORY_MAX
+
+
+def test_history_is_oldest_first_and_since_last_takes_the_newest(tmp_path):
+    p = tmp_path / D.BASELINE_NAME
+    D.save_baseline(p, _s("20261017T100000Z"))
+    D.save_baseline(p, _s("20261017T101000Z"))
+    hist = D.load_history(p)
+    assert [s.at for s in hist] == ["20261017T100000Z", "20261017T101000Z"]
+    newest, why = D.load_baseline(p)
+    assert why == "" and newest.at == "20261017T101000Z"
+
+
+def test_an_old_single_sample_file_is_still_read(tmp_path):
+    """升级时已经存着的那一份不该被丢掉 —— 丢了的话升级后第一次问又没有基线。"""
+    p = tmp_path / D.BASELINE_NAME
+    p.write_text(json.dumps({"at": "20261017T100000Z",
+                             "rows": {"a": {"calls": 1, "total_sec": 1.0, "rows": 1}}}),
+                 encoding="utf-8")
+    hist = D.load_history(p)
+    assert len(hist) == 1 and hist[0].at == "20261017T100000Z"
+
+
+def test_only_the_newest_sample_keeps_the_query_text(tmp_path):
+    """历史几刻只参与相减,留着文本会让这个文件白白大十倍。"""
+    p = tmp_path / D.BASELINE_NAME
+    D.save_baseline(p, _s("20261017T100000Z"))
+    D.save_baseline(p, _s("20261017T101000Z"))
+    hist = D.load_history(p)
+    assert hist[0].rows["a"].query == ""
+    assert hist[-1].rows["a"].query == "SELECT 1"
+
+
+@pytest.mark.parametrize("bad", ["", "{坏的", "[]", '{"samples": "不是表"}'])
+def test_a_corrupt_history_file_is_empty_not_an_exception(tmp_path, bad):
+    p = tmp_path / D.BASELINE_NAME
+    p.write_text(bad, encoding="utf-8")
+    assert D.load_history(p) == []
+
+
+# ---------------------------------------------------------------- 挑哪一刻
+
+_AGES = {"t_5s": 5, "t_60s": 60, "t_9m": 540, "t_11m": 660, "t_3h": 3 * 3600}
+
+
+def _age_of(s):
+    return _AGES.get(s.at)
+
+
+def test_the_sample_closest_to_the_asked_window_is_chosen():
+    """问「最近十分钟」,就该挑十分钟前那一刻 —— 不是最近那一刻,也不是最旧那一刻。"""
+    samples = [_s(k) for k in _AGES]
+    chosen, age = D.pick_baseline(samples, 600, _age_of)
+    assert chosen.at == "t_9m" and age == 540
+
+
+def test_samples_that_are_too_fresh_are_not_chosen():
+    chosen, age = D.pick_baseline([_s("t_5s")], 600, _age_of)
+    assert chosen is None and age == 5
+
+
+def test_samples_that_are_too_old_are_not_chosen():
+    chosen, age = D.pick_baseline([_s("t_3h")], 600, _age_of)
+    assert chosen is None and age == 3 * 3600
+
+
+def test_with_nothing_usable_the_newest_age_comes_back_to_explain_why():
+    """带回最新那刻的年龄,好让 choose_source 分清「太新」还是「太旧」这两种原因。"""
+    chosen, age = D.pick_baseline([_s("t_5s"), _s("t_3h")], 600, _age_of)
+    assert chosen is None and age == 5
+
+
+def test_an_empty_history_gives_no_age_at_all():
+    chosen, age = D.pick_baseline([], 600, _age_of)
+    assert chosen is None and age is None
+
+
+def test_samples_whose_age_cannot_be_computed_are_skipped():
+    chosen, age = D.pick_baseline([_s("解析不了"), _s("t_9m")], 600, _age_of)
+    assert chosen.at == "t_9m"
+
+
+def test_asking_a_shorter_window_picks_a_closer_sample():
+    """同一份历史,问「最近一分钟」挑的是另一刻 —— 挑法要跟着问题走。"""
+    samples = [_s(k) for k in _AGES]
+    assert D.pick_baseline(samples, 60, _age_of)[0].at == "t_60s"

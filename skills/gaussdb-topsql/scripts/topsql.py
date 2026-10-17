@@ -214,18 +214,25 @@ def _run_delta(runner, args, conn_name: str) -> int:
         except ValueError as exc:
             print("error: %s" % exc, file=sys.stderr)
             return 2
-        cached, why = delta_mod.load_baseline(bpath)
-        age = _span_seconds(cached.at, _now()) if cached is not None else None
+        # 从**采样历史**里挑一刻最合适的 —— 不是「最近那一刻」。
+        # 只留一刻的话,连着问两次时第二次读到的基线是刚写下的(年龄 1 秒),
+        # 又退回现场采样,回看功能等于永远用不上(实测过)。
+        now_at = _now()
+        hist = delta_mod.load_history(bpath)
+        cached, age = delta_mod.pick_baseline(
+            hist, want, lambda s: _span_seconds(s.at, now_at) if s.at else None)
+        # age 为 None = 历史里一刻可用的都没有(空文件 / 时间戳都解析不了);
+        # 挑不出但 age 有值 = 有采样但都太新或太旧,choose_source 会分别说明是哪一种。
         src = delta_mod.choose_source(want, age)
         extra = src.note
-        if src.kind == "baseline":
-            before, after = cached, _sample(runner, _now())
+        if src.kind == "baseline" and cached is not None:
+            before, after = cached, _sample(runner, now_at)
             span = src.span_s
             label = "最近 %s" % delta_mod.human_span(src.span_s)
         else:
             # **不等满用户问的时长。** 过去回看不了就老实采一小段,并说明这是多长一段。
-            if cached is None and why:
-                extra = why + " " + extra
+            if not hist:
+                extra = "还没有采样历史,这是第一次对这个实例取数。" + extra
             before = _sample(runner, _now())
             print("无法回看，改为现场采 %d 秒 …" % int(src.wait_s), file=sys.stderr)
             time.sleep(src.wait_s)
@@ -249,7 +256,10 @@ def _run_delta(runner, args, conn_name: str) -> int:
     except ValueError as exc:
         print("error: %s" % exc, file=sys.stderr)
         return 2
-    # 不管这次算不算得出增量,都把最新采样留成基线 —— 下次才有东西可减
+    # 两刻都存进历史 —— 下次问「最近一段时间」时,靠前那一刻才是能回看的那一刻。
+    # 只存 after 的话历史里永远只有「刚刚」,回看不了(实测过)。
+    if before is not None and before.at != after.at:
+        delta_mod.save_baseline(bpath, before)
     delta_mod.save_baseline(bpath, after)
 
     payload = {"conn": conn_name, "by": args.by, "limit": args.limit,

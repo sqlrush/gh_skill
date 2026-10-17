@@ -255,16 +255,31 @@ def baseline_path(base_dir: Optional[pathlib.Path], instance_key: str) -> Option
     return base_dir / "topsql" / instance_key / BASELINE_NAME
 
 
+# 基线里留几刻采样。**只留一刻是不够的** —— 实测:连着问两次「最近十分钟」,
+# 第二次读到的基线是第一次运行刚写下的(年龄 1 秒),于是又退回现场采样,
+# 回看功能等于永远用不上。留一串采样,才能按用户问的时长挑一刻最合适的。
+# 12 刻:按日常问几次的节奏,足够覆盖到半小时以上的回看。
+HISTORY_MAX = 12
+
+
 def save_baseline(path: Optional[pathlib.Path], sample: Sample) -> bool:
-    """留下基线供下次相减。失败只返回 False —— 存不下基线不该让这次的报告失败。"""
+    """把这一刻**追加**进采样历史(不是覆盖),供以后按不同时长回看。
+
+    **为什么是追加。** 每次运行都覆盖的话,存下来的永远是「刚刚」—— 而「最近十分钟」
+    需要的是十分钟前那一刻。覆盖式基线只答得上「距上次」,答不上「最近某段时间」。
+
+    只有最新那一刻保留 query 文本:呈现用的是本次现采的那一刻,历史几刻只参与相减,
+    留着文本会让这个文件白白大十倍。失败只返回 False —— 存不下不该让这次的报告失败。
+    """
     if path is None:
         return False
     try:
+        hist = [s for s in load_history(path) if s.at != sample.at]
+        hist.append(sample)
+        hist = hist[-HISTORY_MAX:]
+        payload = {"samples": [_sample_to_dict(s, keep_query=(i == len(hist) - 1))
+                               for i, s in enumerate(hist)]}
         path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"at": sample.at,
-                   "rows": {sid: {"calls": c.calls, "total_sec": c.total_sec,
-                                  "rows": c.rows, "query": c.query}
-                            for sid, c in sample.rows.items()}}
         tmp = path.with_name(path.name + ".tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         tmp.replace(path)
@@ -273,19 +288,19 @@ def save_baseline(path: Optional[pathlib.Path], sample: Sample) -> bool:
         return False
 
 
-def load_baseline(path: Optional[pathlib.Path]) -> Tuple[Optional[Sample], str]:
-    """读基线。返回 (采样, 读不到的原因)。原因非空时采样为 None。"""
-    if path is None:
-        return None, "没有报告存档目录,无法保存/读取基线(--since-last 只在容器环境可用)"
-    if not path.exists():
-        return None, "还没有基线 —— 这是第一次对这个实例采样,本次会留下基线,下次就能算增量"
-    try:
-        d = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        return None, "基线文件读不出来(%s),本次重新留一份" % exc
+def _sample_to_dict(s: Sample, keep_query: bool = True) -> dict:
+    return {"at": s.at,
+            "rows": {sid: {"calls": c.calls, "total_sec": c.total_sec, "rows": c.rows,
+                           **({"query": c.query} if keep_query else {})}
+                     for sid, c in s.rows.items()}}
+
+
+def _sample_from_dict(d) -> Optional[Sample]:
+    if not isinstance(d, dict):
+        return None
     rows = d.get("rows")
     if not isinstance(rows, dict) or not rows:
-        return None, "基线文件里没有数据,本次重新留一份"
+        return None
     out: Dict[str, Counters] = {}
     for sid, v in rows.items():
         if not isinstance(v, dict):
@@ -298,5 +313,69 @@ def load_baseline(path: Optional[pathlib.Path]) -> Tuple[Optional[Sample], str]:
         except (TypeError, ValueError):
             continue
     if not out:
-        return None, "基线文件里的数据都解析不了,本次重新留一份"
-    return Sample(at=str(d.get("at") or ""), rows=out), ""
+        return None
+    return Sample(at=str(d.get("at") or ""), rows=out)
+
+
+def load_history(path: Optional[pathlib.Path]) -> List[Sample]:
+    """读采样历史,**由旧到新**。读不出来就返回空表(调用方如实说明没有基线)。
+
+    也认旧的单刻格式(`{"at":…,"rows":…}`)—— 升级时已经存着的那一份不该被丢掉。
+    """
+    if path is None or not path.exists():
+        return []
+    try:
+        d = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(d, dict):
+        return []
+    raw = d.get("samples")
+    if isinstance(raw, list):
+        out = [_sample_from_dict(x) for x in raw]
+        return [s for s in out if s is not None][-HISTORY_MAX:]
+    one = _sample_from_dict(d)          # 旧格式:整个文件就是一刻
+    return [one] if one is not None else []
+
+
+def pick_baseline(samples: List[Sample], requested_s: int,
+                  age_of) -> Tuple[Optional[Sample], Optional[float]]:
+    """从历史里挑一刻最适合回答「最近 requested_s 秒」的采样。
+
+    `age_of(sample) -> 秒` 由调用方给(时间戳格式是调用方的事)。
+
+    挑法:在**年龄落在可用区间内**的采样里,选年龄离 requested_s 最近的那一刻。
+    挑不出来返回 (None, 最新那刻的年龄) —— 把年龄也带回去,好让 choose_source
+    说出「太新」还是「太旧」这两种不同的原因。
+    """
+    aged = []
+    for s in samples or []:
+        a = age_of(s)
+        if a is None:
+            continue
+        aged.append((max(0.0, float(a)), s))
+    if not aged:
+        return None, None
+    usable = [(a, s) for a, s in aged
+              if a >= MIN_WINDOW_S and a <= requested_s * BASELINE_MAX_RATIO]
+    if not usable:
+        newest = min(aged, key=lambda t: t[0])[0]
+        return None, newest
+    a, s = min(usable, key=lambda t: abs(t[0] - requested_s))
+    return s, a
+
+
+def load_baseline(path: Optional[pathlib.Path]) -> Tuple[Optional[Sample], str]:
+    """读**最新那一刻**采样(`--since-last` 用)。返回 (采样, 读不到的原因)。
+
+    按时长回看用 `load_history` + `pick_baseline`:那边要的是「十分钟前那一刻」,
+    不是「最近那一刻」。
+    """
+    if path is None:
+        return None, "没有报告存档目录,无法保存/读取基线(--since-last 只在容器环境可用)"
+    if not path.exists():
+        return None, "还没有基线 —— 这是第一次对这个实例采样,本次会留下基线,下次就能算增量"
+    hist = load_history(path)
+    if not hist:
+        return None, "基线文件里没有可用数据,本次重新留一份"
+    return hist[-1], ""
