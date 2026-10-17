@@ -1,0 +1,290 @@
+# 预期发现矩阵:每个场景 → 库里能看到什么 → 哪个 skill 应该报什么。
+#
+# **这张表是这套东西的目的所在。** 造故障本身只是手段;真正要回答的是
+# 「这套诊断 skill 面对已知的故障,报不报、报得对不对」。所以每一项都写明:
+#   signals  —— 不靠 skill、直接查库就能看到的事实(复核用,也是 probe 的依据)
+#   expect   —— 哪个 skill、应该出现哪个判定码 / 哪句话
+#   actual   —— **第一次全量跑完后由人填**:实际报了什么。没报出来的就是测试发现。
+#
+# expect 里的判定码取自各 skill 脚本里的常量(2026-10-17 从代码里核对过):
+#   health    XACT_IDLE XACT_LONG PREPARED_XACT DEADLOCKS STALE_STATS SLOWSQL_TOP
+#             SLOWSQL_LOW_CPU ROLLBACK_HIGH ACTIVE_HIGH ACTIVE_SQL_HOT CONN_HIGH
+#             CKPT_PRESSURE CACHE_LOW INDEX_INVALID INDEX_UNUSED
+#   lockwait  LOCK_WAIT LOCK_WAIT_LONG LOCK_BLOCKED LOCK_ROOT_IDLE_XACT LOCK_DEADLOCK
+#   vacuum    VACUUM_OVERDUE(R1) VACUUM_DISABLED(R2) VACUUM_DEAD_RATIO(R3) VACUUM_XMIN_BLOCKED(R4)
+#   waitevent WAIT_LOCK_HEAVY WAIT_LWLOCK_HEAVY DBTIME_CPU_HEAVY DBTIME_IO_HEAVY
+#             LOCK_EVENT LWLOCK_EVENT
+#   memanalyze MEM_SQL_SPILL MEM_OP_SPILL MEM_SQL_ESTIMATE_OFF MEM_SESSION_IDLE_XACT
+#
+# **一个重要提醒(写给填 actual 的人):** 「skill 没报」有两种可能 —— 它漏报,
+# 或者故障根本没造出来。填之前先看 signals 那一列是否成立(用 `faultlab.py status` 复核)。
+
+meta:
+  window_s: 1200
+  note: 全部场景共用一个 20 分钟窗口;轻量锁五段与 WDR 快照边界对齐(0/240/480/720/960/1200 秒)
+
+scenarios:
+
+  # ----------------------------------------------------------------- 慢 SQL
+  - code: S1
+    title: 相关子查询逐行执行(7 表,payments.order_id 无索引)
+    signals: pg_stat_activity 里 fl:S1/q 一直 active,query_start 距今十几分钟
+    expect:
+      - health: 应报有长时间执行中的 SQL(ACTIVE_SQL_HOT / 慢 SQL 维度)
+      - slowsql: 执行历史里**不该**有它 —— 它一次都没跑完;只会出现在「正在执行」里
+      - sqltune: 给出的根因应落在「相关子查询 + 内层无索引」,建议建 payments(order_id) 索引
+      - explain: 计划里应出现 SubPlan + Seq Scan on payments
+    actual: ""
+
+  - code: S2
+    title: 三层派生表 + LIKE 前缀关联 + 1MB work_mem
+    signals: 同上一直 active;临时文件随哈希聚合落盘增长
+    expect:
+      - waitevent: 该窗口 DB time 里 IO 占比上升(DBTIME_IO_HEAVY)
+      - memanalyze: 落盘类发现(MEM_SQL_SPILL / MEM_OP_SPILL)
+      - sqltune: 应指出 LIKE 前缀关联用不上索引
+    actual: ""
+
+  - code: S3
+    title: NOT IN 碰上可空列(逐行子计划)
+    signals: 单次执行约 8 分钟,窗口内跑完 1 次以上;dbe_perf.statement 里有它
+    expect:
+      - slowsql: 应按阈值筛出它(SLOWSQL_TOP)
+      - topsql: 平均耗时榜应排前
+      - sqltune: 应指出 NOT IN + 可空列不能改写成反连接,建议改 NOT EXISTS
+    actual: ""
+
+  - code: S4
+    title: 索引列上套类型转换(code::bigint)
+    signals: 单次约 3 分钟;计划里 Seq Scan on customers + Filter 带 ::bigint
+    expect:
+      - slowsql: 应筛出
+      - sqltune: 应指出转换套在索引列上导致 idx_customers_code 失效
+    actual: ""
+
+  - code: S5
+    title: 统计信息过期 + 数据倾斜 → 估 3 行实际 16 万行
+    signals: "EXPLAIN 里 import_stage 估 rows=3;实际 cust_id=1 有 166668 行"
+    expect:
+      - sqltune: 应指出统计信息过期(建议 ANALYZE),而不是只建议加索引
+      - health: STALE_STATS 应包含 fl.import_stage
+      - memanalyze: 可能报 MEM_SQL_ESTIMATE_OFF(估算偏差)
+    actual: ""
+
+  - code: S6
+    title: 四个窗口函数 + 64kB work_mem(落盘)
+    signals: "EXPLAIN ANALYZE 里 Sort Method: external merge,单次四个排序各落 77~112 MB"
+    expect:
+      - memanalyze: MEM_SQL_SPILL / MEM_OP_SPILL
+      - waitevent: IO 相关占比上升
+    actual: ""
+
+  - code: S7
+    title: 高频中等慢 SQL(cust_code 无索引)
+    signals: 调用次数远高于其他 SQL,单次 1~3 秒
+    expect:
+      - topsql: **总耗时**榜首应是它,而**平均耗时**榜首应是 S3/S4 —— 两张榜不该是同一条
+      - health: SLOWSQL_TOP 或 ACTIVE_SQL_HOT
+    actual: ""
+
+  # ----------------------------------------------------------------- 锁等待
+  - code: K1
+    title: 四层行锁阻塞链,根会话空闲不提交
+    signals: 5 个会话 waiting;pg_thread_wait_status 里 block_sessionid 成链
+    expect:
+      - lockwait: LOCK_BLOCKED + LOCK_ROOT_IDLE_XACT;**根阻塞会话必须算到最根上那个
+          (fl:K1/root),不能算成链条中间的 mid1/mid2**
+      - health: XACT_IDLE(空闲事务)
+    actual: ""
+
+  - code: K10
+    title: 孤儿两阶段事务
+    signals: pg_prepared_xacts 有 fl_orphan_k10;持锁者不在 pg_stat_activity
+    expect:
+      - health: PREPARED_XACT
+      - lockwait: 等它的会话应被识别为「阻塞者不是会话」,建议 ROLLBACK PREPARED
+    actual: ""
+
+  - code: K4
+    title: LOCK TABLE IN EXCLUSIVE MODE,锁 2 分钟放 1 分钟
+    signals: 锁着的那几分钟 pg_locks 有 ExclusiveLock,业务侧 2 个会话 waiting
+    expect:
+      - lockwait: LOCK_WAIT / LOCK_WAIT_LONG,锁对象是 fl.acct_child
+    actual: ""
+
+  - code: K6
+    title: 外键父子表互等
+    signals: 子表插入会话 waiting,等的是父行
+    expect:
+      - lockwait: 应报出等待,且说明与外键有关
+    actual: ""
+
+  - code: K7
+    title: 多会话插同一主键
+    signals: waiting 的会话等的是 transactionid(不是行锁)
+    expect:
+      - lockwait: 应报出「在等某笔事务的结果」,而不是「在等某一行」
+    actual: ""
+
+  - code: K8
+    title: 咨询锁(advisory)排队
+    signals: pg_locks 里 locktype='advisory',1 持有 3 排队
+    expect:
+      - lockwait: 应报出 advisory 锁等待 —— **只看表锁的实现会在这里完全漏报**
+    actual: ""
+
+  - code: K2
+    title: 批处理 FOR UPDATE,抖动型等锁
+    signals: 等锁数在 0~2 之间跳;单次等待不超过几秒
+    expect:
+      - lockwait: 瞬时查询可能什么都看不到(正常);WDR 窗口里应有锁等待事件累计
+      - waitevent: WAIT_LOCK_HEAVY 或 LOCK_EVENT 占比
+    actual: ""
+
+  - code: K5
+    title: 非并发建索引挡住写入
+    signals: 建索引期间写入会话 waiting,锁对象 fl.order_items
+    expect:
+      - lockwait: 应报出 DDL(建索引)是阻塞者
+    actual: ""
+
+  - code: K3
+    title: DDL 锁队列放大
+    signals: ALTER TABLE 在等长查询,普通读又排在 ALTER 之后
+    expect:
+      - lockwait: 应把根因指到**长查询**,并说明后面的读是被 ALTER 挡住的(队列放大)
+    actual: ""
+
+  - code: K9
+    title: 并发插入抢表扩展锁
+    signals: pg_locks 里 locktype='extend'(瞬时,抓不到也正常)
+    expect:
+      - waitevent: 等待事件里应出现 extend 相关
+    actual: ""
+
+  # ----------------------------------------------------------------- 死锁
+  - code: D
+    title: 六种死锁形态轮流(D1 交叉行、D2 三会话成环、D3 跨表、D4 锁升级、D5 外键、D6 唯一索引)
+    signals: pg_stat_database.deadlocks 每 30 秒 +1;时间线里有每一轮的形态与计数增量
+    expect:
+      - health: DEADLOCKS(应给出累计计数,并说明这个计数不会自己清零)
+      - lockwait: LOCK_DEADLOCK
+      - 建议内容: 不同形态的建议应有区别(改加锁顺序 / 一开始就 FOR UPDATE / 调整父子表写入顺序)
+    actual: ""
+
+  # ----------------------------------------------------------------- VACUUM
+  - code: V1
+    title: 关掉表级 autovacuum 后持续更新
+    signals: fl.bloat_hot 死元组占比过半,last_autovacuum 为空
+    expect:
+      - vacuum: VACUUM_DISABLED(R2) + VACUUM_DEAD_RATIO(R3)
+      - health: 膨胀维度应提到这张表
+    actual: ""
+
+  - code: V5
+    title: autovacuum 被表级限速,追不上
+    signals: fl.bloat_slow 死元组持续涨,但 last_autovacuum 一直在更新
+    expect:
+      - vacuum: VACUUM_DEAD_RATIO(R3);**不应**报 VACUUM_DISABLED —— 它是开着的
+      - 建议内容: 应指向 cost_delay / cost_limit,而不是「打开 autovacuum」
+    actual: ""
+
+  - code: V2
+    title: 长事务(可重复读)卡住回收水位
+    signals: fl.xmin_hold 死元组涨且清不掉;fl:V2/holder 的 xact_start 很老
+    expect:
+      - vacuum: VACUUM_XMIN_BLOCKED(R4),来源应指向**长事务**
+      - health: XACT_LONG
+    actual: ""
+
+  - code: V3
+    title: 两阶段事务卡住回收水位
+    signals: pg_prepared_xacts 有 fl_xmin_v3;pg_stat_activity 里找不到持有者
+    expect:
+      - vacuum: VACUUM_XMIN_BLOCKED(R4),来源应指向**两阶段事务**并给出 gid
+      - 建议内容: 应是 ROLLBACK/COMMIT PREPARED,不是「找那笔长事务」
+    actual: ""
+
+  - code: V4
+    title: 复制槽无人消费
+    signals: pg_replication_slots 有 fl_slot_v4、active=false;WAL 持续增长
+    expect:
+      - vacuum: VACUUM_XMIN_BLOCKED(R4),来源应指向**复制槽**
+      - 已知限制: 这个内核上 pg_replication_slots 没有时间戳列,xmin_age_s 恒为空
+          (见 gaussdb-vacuum/scripts/rules.py 的 docstring)—— R4 不该因此漏报
+    actual: ""
+
+  - code: V6
+    title: VACUUM FULL 堵住整张表
+    signals: 维护会话 active,业务侧 waiting,锁对象 fl.bloat_hot
+    expect:
+      - lockwait: 应报出 VACUUM FULL 是阻塞者
+      - vacuum: 做完之后 bloat_hot 的死元组应回落(前后对比)
+    actual: ""
+
+  - code: V7
+    title: 导入 50 万行不收集统计信息
+    signals: "pg_class.reltuples 为 0 / 极小,实际 50 万行"
+    expect:
+      - health: STALE_STATS 应包含 fl.import_stage
+      - vacuum: 可能报 VACUUM_OVERDUE(R1)
+    actual: ""
+
+  # ----------------------------------------------------------------- 轻量锁
+  # 五段都只验一件事:**只会查 pg_locks 的实现在这里全部漏报**,
+  # 因为轻量锁在 pg_locks 里一行都没有,只出现在等待事件统计里。
+  - code: L1
+    title: 提交风暴(WAL 相关轻量锁)
+    signals: pg_thread_wait_status 里出现 WALInsertLock / WALWriteLock / WALFlushWait
+    expect:
+      - waitevent: WAIT_LWLOCK_HEAVY,排名里应出现 WAL 相关
+      - wdr: 第 1 个窗口(0~240 秒)的等待事件段里 WAL 相关应靠前
+    actual: ""
+
+  - code: L2
+    title: 热点页(页内容锁)
+    signals: 等待事件里出现 BufferContentLock
+    expect:
+      - waitevent: WAIT_LWLOCK_HEAVY;第 2 个窗口(240~480 秒)
+    actual: ""
+
+  - code: L3
+    title: 极短事务高频提交(事务号 / 快照相关)
+    signals: 等待事件里出现 XidGenLock / ProcArrayLock / CSN 相关
+    expect:
+      - waitevent: 第 3 个窗口(480~720 秒)
+    actual: ""
+
+  - code: L4
+    title: 千分区表全分区扫描(锁管理器)
+    signals: 等待事件里出现 LockMgrLock / 分区锁相关
+    expect:
+      - waitevent: 第 4 个窗口(720~960 秒)
+      - 可能不明显: og5 只有 4 核、3 条会话,争用可能很轻 —— 如实记录
+    actual: ""
+
+  - code: L5
+    title: 每事务上千子事务(子事务 / CLog 相关)
+    signals: 等待事件里出现 SubtransControlLock / CLogControlLock 相关
+    expect:
+      - waitevent: 第 5 个窗口(960~1200 秒)
+      - 可能不明显: 同 L4
+    actual: ""
+
+# ----------------------------------------------------------------- 跨场景
+cross_cutting:
+  - 项: Top SQL 两张榜不该相同
+    说明: 总耗时榜首应是 S7(高频),平均耗时榜首应是 S3/S4(单次慢)
+    actual: ""
+  - 项: 四种「回收水位被卡」的来源要分得清
+    说明: V2 长事务 / V3 两阶段事务 / V4 复制槽,三者的建议完全不同;只报「有死元组」等于没说
+    actual: ""
+  - 项: autovacuum「关了」与「限速到追不上」要分得清
+    说明: V1 vs V5 —— 后者 last_autovacuum 一直在更新,只看开关会判成正常
+    actual: ""
+  - 项: 线程池的空闲条目不该被算成会话
+    说明: >
+      og5 开了线程池,pg_stat_activity 里会有 sessionid=0、无客户端、不持锁的空闲线程条目
+      (本工具在 db.REAL_SESSION 里专门过滤)。如果 skill 把它们算进「连接数 / 活跃会话数」,
+      会虚高一截 —— 这是跑这套东西时顺带要核对的一点。
+    actual: ""
