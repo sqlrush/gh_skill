@@ -81,7 +81,10 @@ def _cmd_collect(args) -> int:
             print(render_evidence(ev), end="")
         # 存档在输出之后:大盘读 latest.json 与上一份做窗口对比;失败只 warn
         saved = reports.archive("wdr", _archive_payload(ev, args.save_html), instance=ev.conn)
-        reports.announce("wdr", saved, ev.conn)
+        # 链接直接筛在**本次分析的窗口**上:用户说「生成这段时间的报告」时,
+        # 点开就该是那一段,而不是全部历史再让他自己去顶栏选一次。
+        # 快照时间形如 `2026-10-17 10:46:29`,大盘的时间段参数要 `2026-10-17T10:46`。
+        reports.announce("wdr", saved, ev.conn, span=_dash_span(ev.window))
         return 0
     except common.DBError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -144,6 +147,33 @@ def default_native_path(instance: str, now: Optional[str] = None) -> str:
     except OSError:
         return ""
     return str(d / (reports.utc_stamp(now) + ".native.html"))
+
+
+def _dash_span(w) -> tuple:
+    """快照窗口 → 大盘时间段参数。取不到就返回空,announce 会照常只给普通链接。
+
+    大盘的 WDR 页按**快照时间**筛(lib/range.js),所以这里给的就是窗口两端的快照时间;
+    为了把边界上的那一份也包含进去,两头各放宽一分钟 —— 不放宽的话,窗口起点正好等于
+    筛选起点时,浮点/秒级取整偶尔会把这一份自己筛掉。
+    """
+    import datetime as _dt
+
+    def fmt(ts, delta):
+        # 快照时间**两种长度都会出现**:`2026-10-17 10:46:29` 与 `2026-10-17 10:46`
+        # (wdr.window 这条脚本按分钟给)。只认带秒的那种会一个都解析不出来、
+        # 链接静默地不带时间段 —— 第一版就是这样,日志里什么都看不到。
+        t = str(ts or "").strip()
+        for pat, n in (("%Y-%m-%d %H:%M:%S", 19), ("%Y-%m-%d %H:%M", 16)):
+            if len(t) < n:
+                continue
+            try:
+                d = _dt.datetime.strptime(t[:n], pat) + _dt.timedelta(minutes=delta)
+                return d.strftime("%Y-%m-%dT%H:%M")
+            except ValueError:
+                continue
+        return ""
+    a, b = fmt(getattr(w, "begin_ts", ""), -1), fmt(getattr(w, "end_ts", ""), 1)
+    return (a, b) if a and b else ()
 
 
 def main(argv: Optional[list[str]] = None) -> int:

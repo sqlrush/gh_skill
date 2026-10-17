@@ -111,6 +111,32 @@ def _window_summary(payload: Any) -> Dict[str, Any]:
     return {"window": {k: win.get(k) for k in ("begin_id", "end_id", "begin_ts", "end_ts")}}
 
 
+def _dbtime_summary(payload: Any) -> Dict[str, Any]:
+    """WDR 的 DB time 抄进索引,让大盘能画「窗口间 DB time 趋势」。
+
+    为什么要进索引:大盘画趋势只读 index.json(一份文件),不会把几十份报告全下载下来。
+    索引里没有这个数,就只能画「发现条数」的趋势 —— 而用户想知道的是「是不是越来越卡」,
+    发现条数回答不了那个问题(阈值没变,数量可以一直是 3)。
+
+    与 _dims_summary / _window_summary 同一个做法:只认已知的维度名与列名,取不到就不写这一项。
+    """
+    dims = payload.get("dims") if isinstance(payload, dict) else None
+    if not isinstance(dims, list):
+        return {}
+    for d in dims:
+        if not isinstance(d, dict) or d.get("dimension") != "Load Profile":
+            continue
+        headers, rows = d.get("headers") or [], d.get("rows") or []
+        if not headers or not rows or not isinstance(rows[0], list):
+            return {}
+        try:
+            i = next(k for k, h in enumerate(headers) if str(h).startswith("DB time"))
+            return {"db_time_s": float(rows[0][i])}
+        except (StopIteration, IndexError, TypeError, ValueError):
+            return {}
+    return {}
+
+
 def _load_index(path: pathlib.Path) -> List[Dict[str, Any]]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -183,7 +209,8 @@ def archive(skill: str, payload: Any, *, name: Optional[str] = None,
         idx = [e for e in _load_index(d / INDEX) if e.get("file") != fname]
         idx.append({"at": stamp, "file": fname,
                     "overall": payload.get("overall") if isinstance(payload, dict) else None,
-                    "counts": _counts(payload), **_dims_summary(payload), **_window_summary(payload)})
+                    "counts": _counts(payload), **_dims_summary(payload), **_window_summary(payload),
+                    **_dbtime_summary(payload)})
         idx.sort(key=lambda e: e.get("at", ""))
         for old in idx[:-keep] if keep > 0 else []:
             try:
@@ -204,10 +231,15 @@ def archive(skill: str, payload: Any, *, name: Optional[str] = None,
 DASH_PAGES = {"health": "health", "topsql": "topsql", "wdr": "wdr"}
 
 
-def dash_link(skill: str, path: Optional[pathlib.Path], instance: str, by: str = "") -> str:
+def dash_link(skill: str, path: Optional[pathlib.Path], instance: str, by: str = "",
+              span: Optional[tuple] = None) -> str:
     """这一份报告在大盘上的直达地址(相对路径:大盘与对话页在同一个网关地址下)。没存档 / 没有页 → 空串。
 
     health / wdr 带 run=<文件> 直接打开这一份;topsql 按维度页签各取最近一份,带 by=<维度>。
+
+    **span=(from, to) 时额外带上时间段**(本地时间字符串,形如 `2026-10-17T10:46`)。
+    用户说「生成某时间段的报告」时,给出的链接应该**已经筛在那个时间段上** ——
+    否则用户点开看到的是全部历史,还得自己再去顶栏选一次时间段,而他刚刚已经说过了。
     """
     page = DASH_PAGES.get(skill)
     if path is None or page is None:
@@ -217,16 +249,21 @@ def dash_link(skill: str, path: Optional[pathlib.Path], instance: str, by: str =
         q.append(("run", path.name))
     elif by:
         q.append(("by", by))
+    if span:
+        a, b = (str(x or "").strip() for x in span)
+        if a and b:
+            q.extend([("from", a), ("to", b)])
     return "/dash/%s?%s" % (page, urllib.parse.urlencode(q))
 
 
-def announce(skill: str, path: Optional[pathlib.Path], instance: str, by: str = "") -> None:
+def announce(skill: str, path: Optional[pathlib.Path], instance: str, by: str = "",
+             span: Optional[tuple] = None) -> None:
     """存档成功后在**标准错误**打一行大盘直达链接。
 
     以前存档悄无声息,模型不知道有大盘(用户要「大盘」时它只能自己拼 Markdown)。走标准错误:
     JSON 模式的 stdout 必须是纯 JSON,WDR 的最终报告必须是 render 的原样输出,都不能多一行。
     """
-    link = dash_link(skill, path, instance, by)
+    link = dash_link(skill, path, instance, by, span)
     if link:
         print("已存入大盘:%s (在对话页同一个网址下打开;它是给用户看的页面,可以原样转给用户)" % link,
               file=sys.stderr)

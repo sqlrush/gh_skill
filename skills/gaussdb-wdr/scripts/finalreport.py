@@ -150,6 +150,8 @@ def _emit_markdown(m: _ReportModel) -> str:
     out += render.table(["维度", "严重度", "关键指标"], mrows)
     out += "\n"
 
+    out += _emit_charts(m)
+
     if m.raw_tables:
         out += "## 全景分析（自顶向下）\n\n"
         for t in m.raw_tables:
@@ -178,6 +180,62 @@ def _emit_markdown(m: _ReportModel) -> str:
     out += _emit_sql_appendix(m)
     out += "—— 本报告经脚本只读采集；结论已对确定性发现锚定校验，建议经实证。\n"
     return out
+
+
+# 图示里每类最多画几条 —— 画满十条就成了另一张表,失去「一眼看出比例」的意义。
+CHART_ROWS = 5
+
+
+def _col(t, *names):
+    """按列名找下标;找不到返回 -1。**不按下标取值** —— 列顺序变过一次,
+    按下标取会静默地把另一列的数当成这一列。"""
+    for n in names:
+        for i, h in enumerate(t.headers or []):
+            if str(h).startswith(n):
+                return i
+    return -1
+
+
+def _emit_charts(m: _ReportModel) -> str:
+    """图示:等待类占比、Top SQL 占 DB time。
+
+    **为什么要有它:** 纯数字表格看不出倾斜 —— 「LOCK_EVENT 86%、IO_EVENT 10%、LWLOCK 3%」
+    要读三个数再在脑子里比;一条占了八成的横条一眼就看出来。
+    对话窗口渲染不了 SVG/图片,所以用方块字符;真正的曲线图与柱状图在大盘上。
+    取不到数据就整段不出现(宁可没有图,也不要画一张空图)。
+    """
+    blocks = []
+    for t in m.raw_tables:
+        if t.title == "Wait Events / Classes":
+            i_name, i_pct = _col(t, "等待类"), _col(t, "占比")
+            if i_name >= 0 and i_pct >= 0:
+                items = [(r[i_name], _f(r[i_pct])) for r in t.rows[:CHART_ROWS]]
+                body = render.share_lines(items)
+                if body:
+                    blocks.append(("等待类占比（窗口内总等待时长的分布）", body))
+        elif t.title == "Top SQL":
+            i_sid, i_pct = _col(t, "sql_id"), _col(t, "占DB time", "占本榜合计")
+            if i_sid >= 0 and i_pct >= 0:
+                items = [(r[i_sid], _f(r[i_pct])) for r in t.rows[:CHART_ROWS]]
+                body = render.share_lines(items)
+                if body:
+                    label = (t.headers or [])[i_pct]
+                    blocks.append(("Top SQL 的 %s" % label, body))
+    if not blocks:
+        return ""
+    out = "## 图示\n\n"
+    for title, body in blocks:
+        out += "**%s**\n\n" % title
+        out += render.code_block("", body)
+        out += "\n"
+    return out
+
+
+def _f(x) -> float:
+    try:
+        return float(str(x).replace("%", "").strip())
+    except (TypeError, ValueError):
+        return 0.0
 
 
 # 发现码 → 下一步该跑什么。**由脚本生成,不靠模型自己想。**
