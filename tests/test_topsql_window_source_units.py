@@ -322,3 +322,37 @@ def test_asking_a_shorter_window_picks_a_closer_sample():
     """同一份历史,问「最近一分钟」挑的是另一刻 —— 挑法要跟着问题走。"""
     samples = [_s(k) for k in _AGES]
     assert D.pick_baseline(samples, 60, _age_of)[0].at == "t_60s"
+
+
+def test_history_is_sorted_by_time_not_by_write_order(tmp_path):
+    """**实测存出过乱序历史**(123517 / 123516 / 123617):两次运行的写入顺序
+    不一定就是时间顺序。而 `--since-last` 取「最后一刻」—— 不排序的话它可能拿到
+    的不是最新那刻,算出来的增量连方向都是错的(可能变成负数而被判成「清零」)。
+    """
+    p = tmp_path / D.BASELINE_NAME
+    p.write_text(json.dumps({"samples": [
+        _sample_dict("20261017T123517Z"),
+        _sample_dict("20261017T123516Z"),
+        _sample_dict("20261017T123617Z"),
+    ]}), encoding="utf-8")
+    assert [s.at for s in D.load_history(p)] == ["20261017T123516Z",
+                                                "20261017T123517Z",
+                                                "20261017T123617Z"]
+    newest, why = D.load_baseline(p)
+    assert why == "" and newest.at == "20261017T123617Z"
+
+
+def _sample_dict(at):
+    return {"at": at, "rows": {"a": {"calls": 1, "total_sec": 1.0, "rows": 1}}}
+
+
+def test_trimming_drops_the_oldest(tmp_path):
+    """排序之后再裁,裁掉的必须是最旧的那几刻 —— 裁掉新的等于把刚采的样丢了。"""
+    p = tmp_path / D.BASELINE_NAME
+    p.write_text(json.dumps({"samples": [
+        _sample_dict("20261017T10%02d00Z" % i) for i in range(D.HISTORY_MAX + 3)]}),
+        encoding="utf-8")
+    kept = [s.at for s in D.load_history(p)]
+    assert len(kept) == D.HISTORY_MAX
+    assert kept[-1] == "20261017T10%02d00Z" % (D.HISTORY_MAX + 2)
+    assert kept[0] == "20261017T100300Z"

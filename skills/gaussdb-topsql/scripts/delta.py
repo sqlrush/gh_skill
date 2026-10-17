@@ -332,8 +332,13 @@ def load_history(path: Optional[pathlib.Path]) -> List[Sample]:
         return []
     raw = d.get("samples")
     if isinstance(raw, list):
-        out = [_sample_from_dict(x) for x in raw]
-        return [s for s in out if s is not None][-HISTORY_MAX:]
+        out = [s for s in (_sample_from_dict(x) for x in raw) if s is not None]
+        # **按时刻排序,不信文件里的顺序。** 两次运行的写入顺序不一定就是时间顺序
+        # (实测存出过 123517 / 123516 / 123617 这样的历史),而 `--since-last` 取的是
+        # 「最后一刻」—— 不排序的话它可能拿到的不是最新那刻,算出来的增量方向都是错的。
+        # utc_stamp(`YYYYMMDDTHHMMSSZ`)按字典序排就是按时间序。
+        out.sort(key=lambda s: s.at)
+        return out[-HISTORY_MAX:]
     one = _sample_from_dict(d)          # 旧格式:整个文件就是一刻
     return [one] if one is not None else []
 
