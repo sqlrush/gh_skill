@@ -487,6 +487,8 @@ def collect_concurrency(runner, th: Thresholds, _top: int) -> DimResult:
     rb_pct = 100.0 * rollback / total if total > 0 else 0.0
     d.rows.append(["deadlocks", i64(deadlocks)])
     d.rows.append(["commit/rollback", f"{commit}/{rollback} ({rb_pct:.1f}%回滚)"])
+    # 原始值带给收尾处理算「距上次新增」(health.py 的 annotate_counters)
+    d.raw.update({"deadlocks": deadlocks, "xact_commit": commit, "xact_rollback": rollback})
     if deadlocks > 0:
         d.findings.append(Finding(DIM_CONCURRENCY, "DEADLOCKS", Severity.NOTICE,
                                   "死锁累计数", i64(deadlocks), ">0", "pg_stat_database.deadlocks"))

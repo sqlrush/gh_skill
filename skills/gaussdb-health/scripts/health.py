@@ -33,6 +33,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import pathlib
 import sys
@@ -51,6 +52,7 @@ from common import access  # noqa: E402
 from common import cli  # noqa: E402
 from common import reports  # noqa: E402
 import collectors  # noqa: E402
+import counters as counters_mod  # noqa: E402
 from model import HealthEvidence, Severity, worst  # noqa: E402
 from report import health_dict, render_health, render_health_json  # noqa: E402,F401
 from thresholds import Thresholds, default_thresholds  # noqa: E402
@@ -122,6 +124,61 @@ def run_health(runner, include: list[str], exclude: list[str], top: int,
     return ev
 
 
+def annotate_counters(ev: HealthEvidence, conn: str, full_run: bool) -> str:
+    """把累计计数器换算成「距上次新增」,并据此修正判定。返回一句说明(空 = 没做)。
+
+    **为什么必须做这件事。** 死锁数、回滚数都是**自上次统计重置以来**的累计值。
+    一旦发生过一次死锁,`deadlocks` 就永远 > 0,健康检查从此每次都报「死锁累计数 24」。
+    报了三个月,其中可能两个月零新增 —— 看报告的人分不出「正在发生」和「历史上发生过」,
+    久了把这条当背景噪音,真的新增时也看不见了。
+
+    有基线时:
+      · 累计值照样显示(回答「历史上有没有」);
+      · **判定改按增量**(回答「现在有没有」)—— 零新增时把死锁这条降级成信息行,
+        并写明「累计 N 次,距上次巡检没有新增」;
+      · 回滚率也按增量算 —— 累计回滚率会被历史摊平。
+
+    只有完整巡检才更新基线(与存档同一个条件):局部巡检(--include)拿到的计数器是一样的,
+    但如果它也更新基线,下一次完整巡检的「距上次」就被这次局部运行截断了。
+    """
+    dim = next((d for d in ev.dims if d.raw.get("deadlocks") is not None), None)
+    if dim is None:
+        return ""
+    now = {k: int(dim.raw.get(k, 0) or 0) for k in counters_mod.TRACKED}
+    path = counters_mod.baseline_path(reports.reports_dir(), reports.instance_key(conn))
+    before, since, why = counters_mod.load(path)
+    res = counters_mod.compute(now, before, since)
+
+    if full_run:
+        counters_mod.save(path, reports.utc_stamp(), now)
+
+    dl = res.items.get("deadlocks")
+    if dl is not None and dl.delta is not None:
+        dim.rows.append(["deadlocks 距上次新增", "%d（累计 %d）" % (dl.delta, dl.now)])
+        # 判定按增量来:零新增就不该再占着一条发现
+        if dl.delta <= 0:
+            dim.findings[:] = [f for f in dim.findings if f.code != "DEADLOCKS"]
+            ev.findings[:] = [f for f in ev.findings if f.code != "DEADLOCKS"]
+            dim.rows.append(["deadlocks 判定", "累计 %d 次，但距上次巡检没有新增" % dl.now])
+        else:
+            # Finding 是 frozen dataclass:**不能改字段,只能换一条新的**。
+            # (第一版直接赋值,报 "cannot assign to field 'metric'",而它发生在
+            #  「确实有新增死锁」这条路径上 —— 正是最该报出来的时候整份报告挂掉。
+            #  仓库的不可变规范本来也要求重建而不是原地改。)
+            def _as_delta(f):
+                if f.code != "DEADLOCKS":
+                    return f
+                return dataclasses.replace(
+                    f, metric="死锁（距上次新增）",
+                    value="%d（累计 %d）" % (dl.delta, dl.now), threshold=">0")
+            dim.findings[:] = [_as_delta(f) for f in dim.findings]
+            ev.findings[:] = [_as_delta(f) for f in ev.findings]
+    rb = counters_mod.rollback_pct(res, "delta")
+    if rb is not None:
+        dim.rows.append(["回滚率 距上次", "%.1f%%" % rb])
+    return res.note or why
+
+
 def _split_dim_list(s: str) -> list[str]:
     return [p.strip() for p in (s or "").split(",") if p.strip()]
 
@@ -168,6 +225,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         ev = run_health(runner, inc_list, exc_list, args.top, default_thresholds(),
                         sub_results=sub_results)
         ev.conn = common.config.resolved_name(args.conn)
+        # 累计计数器换算成「距上次新增」。必须在生成 d / 渲染**之前**做 ——
+        # 它会改动判定(零新增时撤掉 DEADLOCKS 那条发现)。
+        cnote = annotate_counters(ev, ev.conn, full_run=not inc_list and not exc_list)
+        if cnote:
+            ev.overall = worst([f.severity for f in ev.findings])
         d = health_dict(ev, sub_results=sub_results)
         if args.format == "json":
             print(json.dumps(d, ensure_ascii=False, indent=2))

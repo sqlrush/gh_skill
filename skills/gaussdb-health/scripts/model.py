@@ -38,6 +38,10 @@ class DimResult:
     headers: list = field(default_factory=list)
     rows: list = field(default_factory=list)
     findings: list = field(default_factory=list)
+    # 采集到的**原始数值**,只在进程内传给收尾处理(算「距上次新增」)用,
+    # **不进 to_dict** —— 存档与大盘的契约不变,免得前端要跟着改。
+    # 不放进 rows 的原因:rows 是给人看的格式化字符串,再解析回数字很容易出错。
+    raw: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         d = {"dimension": self.dimension, "available": self.available,
