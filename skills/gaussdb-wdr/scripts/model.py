@@ -129,6 +129,7 @@ class Options:
     db_time_us: int = 0
     cpu_time_us: int = 0
     wait_total_us: int = 0
+    window_s: int = 0           # 窗口墙钟秒数,算平均并发活跃会话用
 
 
 @dataclass

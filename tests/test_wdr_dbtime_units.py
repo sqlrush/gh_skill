@@ -201,3 +201,68 @@ def test_load_profile_registry_is_marked_deprecated_and_unused():
     assert "已弃用" in sql
     code = (_SCRIPTS / "collectors.py").read_text(encoding="utf-8")
     assert 'runner.run("wdr.load_profile"' not in code
+
+# ------------------------------------------------- 「数对了但维度还是绿灯」的两处
+
+def test_load_profile_flags_a_wait_dominated_window():
+    """DB time 很大而 CPU 只占一小块 —— 时间花在等待上,不能还显示「健康」。
+
+    2026-10-17 实测的那组数:DB time 23517 秒、CPU 占 14.9%、锁等待 15371 秒,
+    而 Load Profile 维度一条判定都没有,于是永远是 🟢健康。
+    """
+    opt = _opt(window_s=1320)
+    r = Runner(**{"waitevent.instance_time": _it(23_517_792_505, 3_506_381_360),
+                  "wdr.db_summary": [{"xact_commit": "1103253", "blks_read": "2037610",
+                                      "blks_hit": "1289933185"}]})
+    d = C.collect_loadprofile(r, opt)
+    codes = [f.code for f in d.findings]
+    assert "WDR_DBTIME_WAIT_HEAVY" in codes
+    # 平均并发活跃会话要算出来摆在表里:23517 秒 ÷ 1320 秒 ≈ 17.8
+    assert "平均并发活跃会话" in d.headers
+    assert float(d.rows[0][d.headers.index("平均并发活跃会话")]) == pytest.approx(17.8, abs=0.2)
+    assert "平均并发活跃会话 17.8" in d.headline
+
+
+def test_load_profile_stays_quiet_when_cpu_dominates():
+    """CPU 占大头说明真的在干活,不该报「时间花在等待上」。"""
+    opt = _opt(window_s=1320)
+    r = Runner(**{"waitevent.instance_time": _it(1_000_000_000, 900_000_000),
+                  "wdr.db_summary": [{"xact_commit": "1", "blks_read": "1", "blks_hit": "1"}]})
+    d = C.collect_loadprofile(r, opt)
+    assert [f.code for f in d.findings] == []
+
+
+def test_load_profile_omits_avg_sessions_when_window_length_unknown():
+    """窗口长度没传进来时不要瞎算一个 0.0 摆在表里。"""
+    r = Runner(**{"waitevent.instance_time": _it(1_000_000, 900_000),
+                  "wdr.db_summary": [{"xact_commit": "1", "blks_read": "1", "blks_hit": "1"}]})
+    d = C.collect_loadprofile(r, _opt(window_s=0))
+    assert "平均并发活跃会话" not in d.headers
+
+
+def test_top_sql_flags_long_elapsed_with_near_zero_cpu_below_the_share_threshold():
+    """**这是修复 DB time 之后带出来的回归。**
+
+    榜首等了 5963 秒、CPU 0.03 秒,占真实 DB time 25.4% —— 低于 30% 的占比门槛。
+    原来「高耗时但 CPU 极低」这条判定挂在同一个门槛后面,于是分母修对之后整个
+    Top SQL 维度反而一条发现都不出了。被锁住等几千秒,和它占 DB time 多少无关。
+    """
+    rows = [{"sid": "3167133288", "query": "UPDATE fl.acct SET bal = bal + ? WHERE id = ?",
+             "calls": "76", "elapsed_us": "5963140000", "cpu_us": "30000",
+             "spill_kb": "0", "phys_blocks": "33"},
+            {"sid": "648622204", "query": "SELECT pg_advisory_lock(?)", "calls": "4",
+             "elapsed_us": "2882260000", "cpu_us": "0", "spill_kb": "0", "phys_blocks": "1"}]
+    opt = _opt(db_time_us=23_517_792_505)
+    d = C.collect_topsql(Runner(**{"wdr.top_sql": rows}), opt)
+    top_pct = float(d.rows[0][d.headers.index("占DB time%")])
+    assert top_pct < opt.thresholds.top_sql_dbtime_notice, "前提:占比确实没够门槛"
+    assert "WDR_TOPSQL_LOW_CPU" in [f.code for f in d.findings], \
+        "等了 5963 秒而 CPU 近零,必须报出来"
+
+
+def test_top_sql_does_not_flag_a_short_cpu_light_statement():
+    """几百毫秒的小语句 CPU 占比低是正常的,不要报成被锁住。"""
+    rows = [{"sid": "1", "query": "select 1", "calls": "1", "elapsed_us": "300000",
+             "cpu_us": "1000", "spill_kb": "0", "phys_blocks": "0"}]
+    d = C.collect_topsql(Runner(**{"wdr.top_sql": rows}), _opt(db_time_us=23_517_792_505))
+    assert "WDR_TOPSQL_LOW_CPU" not in [f.code for f in d.findings]

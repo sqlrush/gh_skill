@@ -107,13 +107,39 @@ def collect_loadprofile(runner, opt: Options) -> DimResult:
                                 _i(rows[0]["blks_hit"]))
 
     cpu_pct = 100.0 * cpu_time_us / db_time_us if db_time_us > 0 else 0.0
-    d = DimResult(dimension=DIM_LOADPROFILE, available=True,
-                  headers=["DB time(s)", "CPU time(s)", "CPU占DBtime%", "commits", "物理读(块)", "逻辑读(块)"],
-                  rows=[[f2(db_time_us / 1e6), f2(cpu_time_us / 1e6), f2(cpu_pct),
-                         i64(commits), i64(blks_read), i64(blks_hit)]])
+
+    # **平均并发活跃会话 = DB time ÷ 窗口墙钟。** 光看「DB time 23517 秒」没人判断得出
+    # 这是轻还是重;除以窗口长度就直观了:22 分钟窗口里 23517 秒 ≈ 17.8 个会话一直在忙。
+    # 这是个派生量,不设阈值(不知道对端有几个核),但必须摆出来让人能自己判。
+    window_s = int(getattr(opt, "window_s", 0) or 0)
+    avg_sessions = (db_time_us / 1e6 / window_s) if window_s > 0 else 0.0
+
+    headers = ["DB time(s)", "CPU time(s)", "CPU占DBtime%", "commits", "物理读(块)", "逻辑读(块)"]
+    row = [f2(db_time_us / 1e6), f2(cpu_time_us / 1e6), f2(cpu_pct),
+           i64(commits), i64(blks_read), i64(blks_hit)]
+    if avg_sessions > 0:
+        headers.insert(3, "平均并发活跃会话")
+        row.insert(3, f2(avg_sessions))
+    d = DimResult(dimension=DIM_LOADPROFILE, available=True, headers=headers, rows=[row])
+
+    # **CPU 占比很低 = 这个窗口的时间主要花在等待上,不是在干活。**
+    # 这条发现存在的理由:本维度原来一条判定都没有,于是永远是 🟢健康 —— 2026-10-17 实测里
+    # DB time 23517 秒、CPU 只占 14.9%、锁等待 15371 秒,维度照样显示「健康」,
+    # 而读报告的人会据此以为负载正常。
+    th = opt.thresholds
+    if db_time_us > 0 and cpu_pct < th.cpu_share_notice:
+        d.findings.append(Finding(
+            DIM_LOADPROFILE, "WDR_DBTIME_WAIT_HEAVY", Severity.NOTICE,
+            "CPU 占 DB time",
+            f"{cpu_pct:.1f}%", f"<{th.cpu_share_notice:.0f}%",
+            f"snap_global_instance_time：DB time {db_time_us / 1e6:.0f}s、"
+            f"CPU {cpu_time_us / 1e6:.0f}s —— 时间主要花在等待(锁/IO/睡眠),"
+            "真凶看等待事件维度,不是 CPU 不够"))
+
     d.headline = (f"DB time {db_time_us / 1e6:.1f}s（其中 CPU {cpu_time_us / 1e6:.1f}s="
-                  f"{cpu_pct:.0f}%，余为等待/锁/IO/睡眠）、commits {commits}、"
-                  f"物理读 {blks_read} 块、逻辑读 {blks_hit} 块")
+                  f"{cpu_pct:.0f}%，余为等待/锁/IO/睡眠）"
+                  + (f"、平均并发活跃会话 {avg_sessions:.1f}" if avg_sessions > 0 else "")
+                  + f"、commits {commits}、物理读 {blks_read} 块、逻辑读 {blks_hit} 块")
     return d
 
 
@@ -228,8 +254,13 @@ def collect_topsql(runner, opt: Options) -> DimResult:
     elif top_pct > th.top_sql_dbtime_notice:
         mk(Severity.NOTICE, f">{th.top_sql_dbtime_notice:.0f}%")
 
+    # **这一条不能挂在占比门槛后面。** 原来写的是 `top_pct > notice and cpu_ratio < …`,
+    # 2026-10-17 实测:榜首等了 5963 秒、CPU 0.03 秒,占 DB time 25.4% —— 没够 30%,
+    # 于是整个维度一条发现都没出、判成健康。而「等几千秒、CPU 近零」本身就是被锁住的
+    # 典型信号,和它占 DB time 多少无关。改成:占比够高**或**绝对耗时够长,都要报。
     cpu_ratio = t_cpu / t_elapsed if t_elapsed > 0 else 0.0
-    if top_pct > th.top_sql_dbtime_notice and cpu_ratio < th.top_sql_low_cpu_ratio:
+    long_enough = t_elapsed / 1e6 >= th.top_sql_low_cpu_min_elapsed_s
+    if (top_pct > th.top_sql_dbtime_notice or long_enough) and cpu_ratio < th.top_sql_low_cpu_ratio:
         d.findings.append(Finding(
             DIM_TOPSQL, "WDR_TOPSQL_LOW_CPU", Severity.NOTICE, "高 DB time 但 CPU 极低",
             f"CPU 仅占其耗时 {cpu_ratio * 100:.1f}%", f"<{th.top_sql_low_cpu_ratio * 100:.0f}%",
@@ -405,6 +436,8 @@ def collect_evidence(runner, opt: Options) -> Evidence:
         opt.top = 10
     ev = Evidence()
     ev.window = load_window(runner, opt)            # validate snaps + scope/node + wdr-enabled
+    # 窗口墙钟长度给 Load Profile 用:DB time ÷ 墙钟 = 平均并发活跃会话数
+    opt.window_s = int(getattr(ev.window, "duration_min", 0) or 0) * 60
     ev.native = generate_native(runner, opt, ev.window)  # best-effort留底
     for fn in registry():
         d = fn(runner, opt)
