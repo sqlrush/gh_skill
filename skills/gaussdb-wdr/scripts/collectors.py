@@ -114,13 +114,19 @@ def collect_loadprofile(runner, opt: Options) -> DimResult:
     window_s = int(getattr(opt, "window_s", 0) or 0)
     avg_sessions = (db_time_us / 1e6 / window_s) if window_s > 0 else 0.0
 
-    headers = ["DB time(s)", "CPU time(s)", "CPU占DBtime%", "commits", "物理读(块)", "逻辑读(块)"]
-    row = [f2(db_time_us / 1e6), f2(cpu_time_us / 1e6), f2(cpu_pct),
-           i64(commits), i64(blks_read), i64(blks_hit)]
+    # **表头字面量必须留在 DimResult(headers=[...]) 这个位置上,新列只能往后追加。**
+    # 大盘按列名取值,而 tests/test_frontend_contract_units.py 的守卫是从源码里正则抓
+    # `headers=[...]` 这个关键字参数来核对列名的。第一版把表头改成了变量再 insert 到中间,
+    # 守卫当场报「采集代码的表头里没有 DB time / CPU占DBtime」—— 那正是它该报的:
+    # 列名一旦从源码里看不见,页面读不到哪一列就只能等上线才发现。
+    # 往后追加还顺带避免列位移,已经在读这几列的消费方不受影响。
+    d = DimResult(dimension=DIM_LOADPROFILE, available=True,
+                  headers=["DB time(s)", "CPU time(s)", "CPU占DBtime%", "commits", "物理读(块)", "逻辑读(块)"],
+                  rows=[[f2(db_time_us / 1e6), f2(cpu_time_us / 1e6), f2(cpu_pct),
+                         i64(commits), i64(blks_read), i64(blks_hit)]])
     if avg_sessions > 0:
-        headers.insert(3, "平均并发活跃会话")
-        row.insert(3, f2(avg_sessions))
-    d = DimResult(dimension=DIM_LOADPROFILE, available=True, headers=headers, rows=[row])
+        d.headers.append("平均并发活跃会话")
+        d.rows[0].append(f2(avg_sessions))
 
     # **CPU 占比很低 = 这个窗口的时间主要花在等待上,不是在干活。**
     # 这条发现存在的理由:本维度原来一条判定都没有,于是永远是 🟢健康 —— 2026-10-17 实测里
@@ -202,6 +208,24 @@ def collect_dbstat(runner, opt: Options) -> DimResult:
     return d
 
 
+# 存档里单条 SQL 文本的上限。存档会经 HTTP 发给大盘,几百条语句各带几十 KB
+# 会把这份 JSON 撑到打不开 —— 超了就截断并留标记,**明确告诉读的人这是截断过的**。
+SQL_TEXT_MAX = 4000
+
+# 根因里带的 SQL 片段长度:够认出是哪条语句,又不至于把一行证据撑爆。
+SQL_BRIEF = 80
+
+
+def _clip_sql(text: str) -> str:
+    t = " ".join(str(text or "").split())
+    return t if len(t) <= SQL_TEXT_MAX else t[:SQL_TEXT_MAX] + " …（全文已截断）"
+
+
+def _sql_brief(text: str) -> str:
+    t = " ".join(str(text or "").split())
+    return t if len(t) <= SQL_BRIEF else t[:SQL_BRIEF] + "…"
+
+
 # --- Top SQL -----------------------------------------------------------------
 
 def collect_topsql(runner, opt: Options) -> DimResult:
@@ -215,6 +239,16 @@ def collect_topsql(runner, opt: Options) -> DimResult:
     items = [(str(r["sid"]), str(r["query"]), _i(r["calls"]), _i(r["elapsed_us"]),
               _i(r["cpu_us"]), _i(r["spill_kb"]), _i(r["phys_blocks"]))
              for r in rows]
+
+    # **全文留给存档**(显示仍然截断)。根因里提到某条 SQL 时要能给出 sql_id + 全文,
+    # 大盘的详情面板和执行计划深挖也靠它。`wdr.top_sql` 返回的是未截断的文本,
+    # 所以这件事不需要改白名单。超长的按 SQL_TEXT_MAX 截并留标记 —— 存档要经 HTTP
+    # 发给大盘,几百条语句各带几十 KB 会把这份 JSON 撑到没法用。
+    texts = getattr(opt, "sql_texts", None)
+    if texts is not None:
+        for sid, query, *_rest in items:
+            if sid and sid not in texts:
+                texts[sid] = _clip_sql(query)
 
     # **分母必须是窗口的真实 DB time,不能是本榜单的合计(2026-10-17 修)。**
     # 原来拿「Top N 行的 elapsed 之和」当分母,于是 Top N 截断得越狠、每条的占比越高 ——
@@ -243,7 +277,8 @@ def collect_topsql(runner, opt: Options) -> DimResult:
     def mk(sev: Severity, thr: str):
         d.findings.append(Finding(DIM_TOPSQL, "WDR_TOPSQL_DBTIME", sev, "单条 SQL 占 DB time",
                                   f2(top_pct) + "%", thr,
-                                  f"snap_summary_statement：sqlid {t_sid} elapsed {t_elapsed / 1e6:.1f}s ×{t_calls}"
+                                  f"snap_summary_statement：sqlid {t_sid}（{_sql_brief(t_query)}）"
+                                  f" elapsed {t_elapsed / 1e6:.1f}s ×{t_calls}"
                                   + (f"，窗口 DB time {total_elapsed / 1e6:.0f}s" if db_time_us > 0
                                      else "，分母是本榜合计(窗口 DB time 取不到)"),
                                   sql_id=t_sid))
@@ -264,7 +299,8 @@ def collect_topsql(runner, opt: Options) -> DimResult:
         d.findings.append(Finding(
             DIM_TOPSQL, "WDR_TOPSQL_LOW_CPU", Severity.NOTICE, "高 DB time 但 CPU 极低",
             f"CPU 仅占其耗时 {cpu_ratio * 100:.1f}%", f"<{th.top_sql_low_cpu_ratio * 100:.0f}%",
-            f"sqlid {t_sid} elapsed {t_elapsed / 1e6:.1f}s / cpu {t_cpu / 1e6:.1f}s → "
+            f"sqlid {t_sid}（{_sql_brief(t_query)}）elapsed {t_elapsed / 1e6:.1f}s / "
+            f"cpu {t_cpu / 1e6:.1f}s → "
             "阻塞/睡眠主导(锁/等待/pg_sleep)，非资源消耗；真凶看 CPU time 与等待事件",
             sql_id=t_sid))
 
@@ -438,11 +474,13 @@ def collect_evidence(runner, opt: Options) -> Evidence:
     ev.window = load_window(runner, opt)            # validate snaps + scope/node + wdr-enabled
     # 窗口墙钟长度给 Load Profile 用:DB time ÷ 墙钟 = 平均并发活跃会话数
     opt.window_s = int(getattr(ev.window, "duration_min", 0) or 0) * 60
+    opt.sql_texts = {}                              # 采集过程中由 Top SQL 填,见 _clip_sql
     ev.native = generate_native(runner, opt, ev.window)  # best-effort留底
     for fn in registry():
         d = fn(runner, opt)
         ev.dims.append(d)
         ev.findings.extend(d.findings)
+    ev.sql_texts = dict(getattr(opt, "sql_texts", {}) or {})
     _check_consistency(ev, opt)                     # 跨维度兜底,必须在全部维度采完之后
     ev.findings.sort(key=lambda f: int(f.severity), reverse=True)
     ev.overall = worst([f.severity for f in ev.findings])

@@ -44,6 +44,7 @@ class _FindingView:
     evidence_line: str
     root_cause: str
     suggestions: list = field(default_factory=list)
+    sql_id: str = ""        # 这条发现指向哪条语句;SQL 附录按它列全文
 
 
 @dataclass
@@ -68,6 +69,7 @@ class _ReportModel:
     unanchored: list = field(default_factory=list)
     unverified: list = field(default_factory=list)
     raw_tables: list = field(default_factory=list)
+    sql_texts: dict = field(default_factory=dict)   # sql_id → 全文,给 SQL 附录用
 
 
 def format_suggestion(s: Suggestion) -> str:
@@ -88,7 +90,7 @@ def build_model(ev: Evidence, r: Rechecked) -> _ReportModel:
         fv = _FindingView(
             sev=a.ev.severity, code=a.ev.code, dim=a.ev.dimension,
             evidence_line=f"{a.ev.metric} {a.ev.value} vs 阈值 {a.ev.threshold}（{a.ev.evidence}）",
-            root_cause=a.root_cause)
+            root_cause=a.root_cause, sql_id=getattr(a.ev, "sql_id", "") or "")
         for s in a.verified:
             fv.suggestions.append(format_suggestion(s))
         m.findings.append(fv)
@@ -105,6 +107,7 @@ def build_model(ev: Evidence, r: Rechecked) -> _ReportModel:
         if d.available and d.rows:
             m.raw_tables.append(_RawTable(d.dimension, d.headline, d.headers, d.rows))
     m.raw_tables.sort(key=lambda t: _dim_rank(t.title))
+    m.sql_texts = dict(getattr(ev, "sql_texts", {}) or {})   # SQL 附录用
     return m
 
 
@@ -160,7 +163,47 @@ def _emit_markdown(m: _ReportModel) -> str:
         out += "\n"
 
     out += _emit_quarantine_md(m)
+    out += _emit_sql_appendix(m)
     out += "—— 本报告经脚本只读采集；结论已对确定性发现锚定校验，建议经实证。\n"
+    return out
+
+
+# 附录里每条 SQL 最多展示这么长。再长的留标记,让人去大盘或 sqlfetch 取 ——
+# 报告是给人读的,一条几 KB 的 SQL 糊在正文里谁也读不下去。
+APPENDIX_SQL_MAX = 1200
+
+
+def _emit_sql_appendix(m: _ReportModel) -> str:
+    """SQL 附录:根因里提到的 sql_id → 完整 SQL 文本。
+
+    **为什么要有附录(照 AWR 的做法):** 根因那几行里只写 sql_id 和一小段片段,
+    读的人认不出是哪条语句;可要是把全文塞进根因,一条几百字的 SQL 会把结论冲掉。
+    所以正文给 sql_id + 片段,全文集中在附录,再给出大盘与执行计划的去处。
+
+    只列**根因里真正提到过**的 sql_id —— 把 Top SQL 全表的文本都搬下来,
+    附录会比报告本身还长。
+    """
+    texts = m.sql_texts or {}
+    if not texts:
+        return ""
+    wanted, seen = [], set()
+    for f in m.findings:
+        sid = getattr(f, "sql_id", "") or ""
+        if sid and sid in texts and sid not in seen:
+            seen.add(sid)
+            wanted.append(sid)
+    if not wanted:
+        return ""
+    out = "## SQL 附录（根因里提到的语句）\n\n"
+    for sid in wanted:
+        body = texts[sid]
+        if len(body) > APPENDIX_SQL_MAX:
+            body = body[:APPENDIX_SQL_MAX] + "\n…（全文更长，到大盘或用 gaussdb-sqlfetch 取）"
+        out += "### sql_id `%s`\n\n" % sid
+        out += render.code_block("sql", body)
+        out += ("\n- 执行计划：`python3 ../gaussdb-explain/scripts/explain.py --sql-id %s`"
+                "（计划要实时连库，报告里不预先生成）\n" % sid)
+        out += ("- 调优实证：`python3 ../gaussdb-sqltune/scripts/sqltune.py %s`\n\n" % sid)
     return out
 
 

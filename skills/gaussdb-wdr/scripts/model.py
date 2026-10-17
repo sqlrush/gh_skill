@@ -130,6 +130,7 @@ class Options:
     cpu_time_us: int = 0
     wait_total_us: int = 0
     window_s: int = 0           # 窗口墙钟秒数,算平均并发活跃会话用
+    sql_texts: dict = field(default_factory=dict)   # sql_id → 全文,采集中累积
 
 
 @dataclass
@@ -141,11 +142,21 @@ class Evidence:
     findings: list = field(default_factory=list)
     overall: Severity = Severity.OK
     native: NativeInfo = field(default_factory=NativeInfo)
+    # sql_id → **完整** SQL 文本。
+    #
+    # 为什么单独存一张表、不塞进 Top SQL 的行里:根因里每提到一条 SQL 都要能拿到全文,
+    # 而提到它的地方不止 Top SQL 那张表(findings 里只有 sql_id)。按 sql_id 查一张表,
+    # 两边都能解析,长文本也只存一份。
+    #
+    # 原来**全文根本没留下来**:采集时就 trunc 到 50 字符存盘,想展示也没有。
+    # 现在显示仍然截断,但存档留全文 —— 大盘的 SQL 详情面板和执行计划深挖都靠它。
+    sql_texts: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {"conn": self.conn, "target": self.target,
                 "window": self.window.to_dict(),
                 "dims": [d.to_dict() for d in self.dims],
+                "sql_texts": self.sql_texts,
                 "findings": [f.to_dict() for f in self.findings],
                 "overall": int(self.overall),
                 "native": self.native.to_dict()}
@@ -156,6 +167,7 @@ class Evidence:
             conn=d.get("conn", ""), target=d.get("target", ""),
             window=Window.from_dict(d.get("window", {}) or {}),
             dims=[DimResult.from_dict(x) for x in d.get("dims", []) or []],
+            sql_texts=d.get("sql_texts", {}) or {},
             findings=[_finding_from_dict(x) for x in d.get("findings", []) or []],
             overall=Severity(int(d.get("overall", 0))),
             native=NativeInfo.from_dict(d.get("native", {}) or {}))
