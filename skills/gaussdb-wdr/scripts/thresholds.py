@@ -18,6 +18,11 @@ class Thresholds:
     # 于是整个 Top SQL 维度一条发现都没出、判成健康。而「等几千秒、CPU 近零」本身就是
     # 被锁住的典型信号,和它占 DB time 多少无关。
     top_sql_low_cpu_min_elapsed_s: float = 60
+    # CPU 占自身耗时高于此 → 这条语句是在**真干活**(算、排序、扫数据),
+    # 不是被锁住 —— 该看执行计划。与 low_cpu 那条是一对:
+    # 两种语句的下一步完全不同(一个去 sqltune,一个去 lockwait),
+    # 报告必须把它们分开,否则用户拿着「锁受害者」去调执行计划,方向就错了。
+    top_sql_cpu_heavy_ratio: float = 0.5
     # CPU 占 DB time 低于此 → 这个窗口的时间主要花在等待上,不是在干活。
     # 取 30% 与 gaussdb-waitevent/scripts/dbtime.py 的 _IO_HEAVY_RATIO 对齐,
     # 免得两个 skill 对同一个窗口给出不一样的口径。

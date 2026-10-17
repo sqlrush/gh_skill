@@ -215,6 +215,44 @@ SQL_TEXT_MAX = 4000
 # 根因里带的 SQL 片段长度:够认出是哪条语句,又不至于把一行证据撑爆。
 SQL_BRIEF = 80
 
+# 「在真干活」最多报几条 —— 一张榜刷出十条发现会把重点冲淡。
+CPU_HEAVY_MAX = 2
+
+
+def _strip_lead_comments(text: str) -> str:
+    """剥掉 SQL **开头**的注释,只为显示。
+
+    现场的 SQL 常常在最前面挂注释:ORM 的 `/* app=order-svc */`、批处理的说明、
+    或者整段中文说明。表格里那一列只有几十个字,被注释占满之后显示出来的是
+    「-- S6 窗口函数 + 大排序落盘(5 张表)…」——看着像一段注释,根本认不出是哪条语句,
+    用户会以为报告里没有慢 SQL(2026-10-17 实测就是这样)。
+
+    **必须在压缩空白之前按行剥。** 第一版先把换行压成空格再剥,行注释的边界就没了 ——
+    只剥掉了第一个 `--` 和紧跟的一个词,后面几行注释照样留在显示里。
+
+    只剥开头、不动中间和结尾:中间的注释可能是 hint 或业务标记。
+    存档里的全文一个字都不剥 —— 要靠它去对现场的 SQL。
+    整段都是注释(没有语句)时返回压缩后的原文,免得显示成空白。
+    """
+    t = str(text or "")
+    while True:
+        t = t.lstrip()
+        if t.startswith("--"):
+            nl = t.find("\n")
+            if nl < 0:              # 整行都是注释且没有换行 → 后面没有语句了
+                break
+            t = t[nl + 1:]
+            continue
+        if t.startswith("/*"):
+            end_ = t.find("*/")
+            if end_ < 0:
+                break
+            t = t[end_ + 2:]
+            continue
+        break
+    out = " ".join(t.split())
+    return out or " ".join(str(text or "").split())
+
 
 def _clip_sql(text: str) -> str:
     t = " ".join(str(text or "").split())
@@ -222,7 +260,7 @@ def _clip_sql(text: str) -> str:
 
 
 def _sql_brief(text: str) -> str:
-    t = " ".join(str(text or "").split())
+    t = _strip_lead_comments(text)
     return t if len(t) <= SQL_BRIEF else t[:SQL_BRIEF] + "…"
 
 
@@ -268,7 +306,8 @@ def collect_topsql(runner, opt: Options) -> DimResult:
     for sid, query, calls, elapsed, cpu, spill, phys in items:
         pct = 100.0 * elapsed / total_elapsed if total_elapsed > 0 else 0.0
         d.rows.append([sid, i64(calls), f2(elapsed / 1e6), f2(cpu / 1e6),
-                       f2(spill / 1024), i64(phys), f2(pct), trunc(query, 50)])
+                       f2(spill / 1024), i64(phys), f2(pct),
+                       trunc(_strip_lead_comments(query), 50)])
 
     th = opt.thresholds
     t_sid, t_query, t_calls, t_elapsed, t_cpu, t_spill, t_phys = items[0]
@@ -295,6 +334,34 @@ def collect_topsql(runner, opt: Options) -> DimResult:
     # 典型信号,和它占 DB time 多少无关。改成:占比够高**或**绝对耗时够长,都要报。
     cpu_ratio = t_cpu / t_elapsed if t_elapsed > 0 else 0.0
     long_enough = t_elapsed / 1e6 >= th.top_sql_low_cpu_min_elapsed_s
+
+    # **把「真在干活」的语句单独报出来,并指明下一步是看执行计划。**
+    # 榜首不一定是锁受害者:CPU 占自身耗时过半说明它在算、在排序、在扫数据 ——
+    # 这类才该去 sqltune / explain。两类语句的处置方向相反,报告里必须分开:
+    # 2026-10-17 实测那个窗口榜首是锁受害者(CPU 0.0%),而真正该调计划的 S2/S6
+    # 排在后面、一条发现都没有,用户只能靠自己翻表。
+    # **扫整张榜,不是只看前几名。** 按耗时排序时,锁受害者往往霸占前几位
+    # (它们等得最久),真正在干活的语句排在后面:2026-10-17 实测榜前 5 名 CPU 全是 0%,
+    # 而 61%/62%/66% 的那三条排在 6~8 位 —— 只看前 3 名就一条都报不出来。
+    # 最多报 CPU_HEAVY_MAX 条,免得一张榜刷出十条发现把真正的重点冲淡。
+    heavy = 0
+    for sid, query, calls, elapsed, cpu, spill, phys in items:
+        if heavy >= CPU_HEAVY_MAX:
+            break
+        if elapsed / 1e6 < th.top_sql_low_cpu_min_elapsed_s:
+            continue
+        ratio = cpu / elapsed if elapsed > 0 else 0.0
+        if ratio < th.top_sql_cpu_heavy_ratio:
+            continue
+        heavy += 1
+        d.findings.append(Finding(
+            DIM_TOPSQL, "WDR_TOPSQL_CPU_HEAVY", Severity.NOTICE, "高耗时且 CPU 占主导",
+            f"CPU 占其耗时 {ratio * 100:.0f}%（{elapsed / 1e6:.0f}s × {calls} 次）",
+            f">{th.top_sql_cpu_heavy_ratio * 100:.0f}%",
+            f"snap_summary_statement：sqlid {sid}（{_sql_brief(query)}）—— 在真干活"
+            "（算/排序/扫数据），不是被锁住；下一步看执行计划与调优，不要往锁的方向查",
+            sql_id=sid))
+
     if (top_pct > th.top_sql_dbtime_notice or long_enough) and cpu_ratio < th.top_sql_low_cpu_ratio:
         d.findings.append(Finding(
             DIM_TOPSQL, "WDR_TOPSQL_LOW_CPU", Severity.NOTICE, "高 DB time 但 CPU 极低",
