@@ -122,6 +122,13 @@ class Options:
     top: int = 10
     save_html: str = ""
     thresholds: object = None
+    # 采集过程中算出来、后续采集器要用的量(不是用户给的选项):
+    #   db_time_us / cpu_time_us —— Load Profile 算出的窗口真实 DB time,Top SQL 拿它做分母
+    #   wait_total_us            —— 等待维度的总等待时长,收尾时用来交叉校验 DB time 是否可信
+    # 0 表示「还没算出来 / 不可用」,用的一方必须自己判。
+    db_time_us: int = 0
+    cpu_time_us: int = 0
+    wait_total_us: int = 0
 
 
 @dataclass

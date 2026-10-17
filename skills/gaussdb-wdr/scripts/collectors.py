@@ -31,6 +31,9 @@ for parent in _HERE.parents:
 # 取数失败只认这一个类型。换一种数据库访问方式时，改的是访问模块，
 # 不是这里 —— 详见 common/grmp/errors.py。
 from common import access  # noqa: E402
+# 协议回来的值全是字符串,NULL 是空串而不是 None —— 累计计数器的增量**不能**
+# 把取数失败悄悄当成 0,那会把「没取到」伪装成「恰好为零」。
+from common.grmp.values import as_int, is_null  # noqa: E402
 
 
 
@@ -38,15 +41,63 @@ def _i(x) -> int:
     return 0 if x is None else int(x)
 
 
+# --- 窗口内的真实 DB time ----------------------------------------------------
+#
+# **为什么不再用 wdr.load_profile(2026-10-17 修):** 那条脚本把 DB time 算成
+# snap_summary_statement 里「两端都在的 sql_id」的耗时增量之和:
+#
+#     FROM e JOIN b USING (sid)     -- 内连接
+#
+# snap_summary_statement 是**滚动的语句历史**,语句集合每时每刻都在变。窗口中途才出现
+# 的语句(在 begin 快照里没有)和窗口结束前就老化出历史的语句,全被这个内连接静默丢掉。
+# 压测实测:22 分钟窗口里出现过 147 条语句,内连接只剩 55 条,算出来的 DB time 是
+# **2.67 秒**,而内核自己的 DB_TIME 增量是 **23518 秒** —— 差 8800 倍,还不报错,
+# 于是负载维度被判成「健康」。
+#
+# 现在改取 snap_global_instance_time 的 DB_TIME / CPU_TIME 增量(注册脚本
+# waitevent.instance_time,**早就在白名单里**,客户不需要重新导入)。它是实例级累计
+# 计数器,没有「集合会变」的问题。判定规则与 gaussdb-waitevent/scripts/dbtime.py
+# 一致(那边是这套取数的参考实现,连重启判定一起):
+#   · 取不到 / 缺项 / 值是 NULL  → 整个维度降级,绝不当 0;
+#   · 任一项增量为负            → 窗口跨了实例重启,这个窗口的算术结果不可用。
+
+_DB_TIME = "DB_TIME"
+_CPU_TIME = "CPU_TIME"
+
+
+def window_db_time(runner, opt: Options) -> tuple:
+    """窗口内 (DB time 微秒, CPU time 微秒, 不可用原因)。原因非空时前两个值无意义。"""
+    try:
+        rows = runner.run("waitevent.instance_time", {"b": int(opt.begin), "e": int(opt.end)})
+    except access.QueryError as exc:
+        return 0, 0, summarize_err(exc)
+    parsed = {}
+    for r in rows:
+        name = str(r.get("stat_name") or "")
+        if name not in (_DB_TIME, _CPU_TIME):
+            continue
+        raw = r.get("delta_us")
+        if is_null(raw):
+            return 0, 0, "%s 的增量是空值 —— 累计计数器的增量不该有空值,不能当 0 处理" % name
+        parsed[name] = as_int(raw)
+    missing = [k for k in (_DB_TIME, _CPU_TIME) if k not in parsed]
+    if missing:
+        return 0, 0, "waitevent.instance_time 没返回 %s" % "、".join(missing)
+    if any(v < 0 for v in parsed.values()):
+        return 0, 0, ("窗口内有负增量 —— 跨了一次实例重启,计数器已清零,"
+                      "这个窗口的 DB time 算出来是假的,不report")
+    return parsed[_DB_TIME], parsed[_CPU_TIME], ""
+
+
 # --- Load Profile ------------------------------------------------------------
 
 def collect_loadprofile(runner, opt: Options) -> DimResult:
     b, e = int(opt.begin), int(opt.end)
-    try:
-        rows = runner.run("wdr.load_profile", {"b": b, "e": e})
-    except access.QueryError as exc:
-        return degraded(DIM_LOADPROFILE, summarize_err(exc))
-    db_time_us, cpu_time_us = _i(rows[0]["db_time_us"]), _i(rows[0]["cpu_time_us"])
+    db_time_us, cpu_time_us, why = window_db_time(runner, opt)
+    if why:
+        return degraded(DIM_LOADPROFILE, why)
+    # Top SQL 的「占 DB time%」要拿这个真实值做分母,存一份给它用
+    opt.db_time_us, opt.cpu_time_us = db_time_us, cpu_time_us
     try:
         rows = runner.run("wdr.db_summary", {"b": b, "e": e})
     except access.QueryError as exc:
@@ -138,10 +189,19 @@ def collect_topsql(runner, opt: Options) -> DimResult:
     items = [(str(r["sid"]), str(r["query"]), _i(r["calls"]), _i(r["elapsed_us"]),
               _i(r["cpu_us"]), _i(r["spill_kb"]), _i(r["phys_blocks"]))
              for r in rows]
-    total_elapsed = sum(it[3] for it in items)
+
+    # **分母必须是窗口的真实 DB time,不能是本榜单的合计(2026-10-17 修)。**
+    # 原来拿「Top N 行的 elapsed 之和」当分母,于是 Top N 截断得越狠、每条的占比越高 ——
+    # 压测里一条跑了 1 秒的 TRUNCATE 被算成「占 DB time 37.7%」,还触发了
+    # 「单条 SQL 占比过高」的告警。真实占比是 1.01s / 23518s ≈ 0.004%。
+    # 拿不到真实 DB time 时**改列名**说明分母变了,不假装还是占 DB time。
+    db_time_us = int(getattr(opt, "db_time_us", 0) or 0)
+    list_total = sum(it[3] for it in items)
+    total_elapsed = db_time_us if db_time_us > 0 else list_total
+    pct_header = "占DB time%" if db_time_us > 0 else "占本榜合计%"
 
     d = DimResult(dimension=DIM_TOPSQL, available=True,
-                  headers=["sql_id", "calls", "elapsed_s", "cpu_s", "spill_MB", "物理读(块)", "占DB time%", "query"])
+                  headers=["sql_id", "calls", "elapsed_s", "cpu_s", "spill_MB", "物理读(块)", pct_header, "query"])
     if not items:
         d.headline = "窗口内无正增量 SQL"
         return d
@@ -157,7 +217,9 @@ def collect_topsql(runner, opt: Options) -> DimResult:
     def mk(sev: Severity, thr: str):
         d.findings.append(Finding(DIM_TOPSQL, "WDR_TOPSQL_DBTIME", sev, "单条 SQL 占 DB time",
                                   f2(top_pct) + "%", thr,
-                                  f"snap_summary_statement：sqlid {t_sid} elapsed {t_elapsed / 1e6:.1f}s ×{t_calls}",
+                                  f"snap_summary_statement：sqlid {t_sid} elapsed {t_elapsed / 1e6:.1f}s ×{t_calls}"
+                                  + (f"，窗口 DB time {total_elapsed / 1e6:.0f}s" if db_time_us > 0
+                                     else "，分母是本榜合计(窗口 DB time 取不到)"),
                                   sql_id=t_sid))
     if top_pct > th.top_sql_dbtime_crit:
         mk(Severity.CRITICAL, f">{th.top_sql_dbtime_crit:.0f}%")
@@ -200,6 +262,7 @@ def collect_waits(runner, opt: Options) -> DimResult:
         return degraded(DIM_WAITS, summarize_err(exc))
     items = [(str(r["wait_class"]), _i(r["waits"]), _i(r["wait_us"])) for r in rows]
     total = sum(it[2] for it in items)
+    opt.wait_total_us = total          # 收尾时与 DB time 交叉校验(见 _check_consistency)
 
     d = DimResult(dimension=DIM_WAITS, available=True, headers=["等待类", "waits", "wait_s", "占比%"])
     if not items:
@@ -298,6 +361,43 @@ def registry():
             collect_checkpoint, collect_cache, collect_fileio]
 
 
+# 等待时长超过 DB time 这么多倍,就认定 DB time 不可信(留足余量:两个计数器的
+# 口径本来就不完全可比 —— DB time 按线程累加,等待事件也按线程累加,但采样边界不同)。
+_DB_TIME_SANITY_FACTOR = 1.5
+
+
+def _check_consistency(ev: Evidence, opt: Options) -> None:
+    """跨维度自检:**DB time 比总等待时长还小,就不是「负载很轻」,是这个数不可信。**
+
+    2026-10-17 压测抓到的真实后果:同一份报告里 DB time 写 2.67 秒、锁等待写 15371 秒,
+    两者并存本身就说明前者是错的,而当时没有任何提示,负载维度还被判成「健康」,
+    看报告的人完全无从察觉。取数的 bug 已经修了(见 window_db_time),这条校验是**兜底**:
+    以后不管哪个数据源再出类似问题,至少会明说「这个数不可信」,而不是悄悄给个绿灯。
+    """
+    db_time_us = int(getattr(opt, "db_time_us", 0) or 0)
+    wait_us = int(getattr(opt, "wait_total_us", 0) or 0)
+    if db_time_us <= 0 or wait_us <= 0:
+        return                      # 有一边没取到,不做这个判断(取不到已各自降级说明)
+    if wait_us <= db_time_us * _DB_TIME_SANITY_FACTOR:
+        return
+    for d in ev.dims:
+        if d.dimension != DIM_LOADPROFILE:
+            continue
+        note = ("DB time(%.1fs)比总等待时长(%.1fs)还小 —— 这个 DB time 不可信,"
+                "不要据此判断负载轻重,改看等待事件与原生 WDR。"
+                % (db_time_us / 1e6, wait_us / 1e6))
+        d.note = (d.note + "；" + note) if d.note else note
+        d.findings.append(Finding(
+            DIM_LOADPROFILE, "WDR_DBTIME_INCONSISTENT", Severity.WARN,
+            "DB time 与等待时长矛盾",
+            "DB time %.1fs < 等待 %.1fs" % (db_time_us / 1e6, wait_us / 1e6),
+            f">{_DB_TIME_SANITY_FACTOR:g}×",
+            "snap_global_instance_time DB_TIME 增量 vs snap_global_wait_events 总等待 —— "
+            "两者不可能是这个关系,DB time 取数有问题"))
+        ev.findings.extend(d.findings[-1:])
+        return
+
+
 def collect_evidence(runner, opt: Options) -> Evidence:
     """Run every collector over the window and assemble evidence. Per-collector
     failures degrade; only the window/native prep can fail (propagated)."""
@@ -310,6 +410,7 @@ def collect_evidence(runner, opt: Options) -> Evidence:
         d = fn(runner, opt)
         ev.dims.append(d)
         ev.findings.extend(d.findings)
+    _check_consistency(ev, opt)                     # 跨维度兜底,必须在全部维度采完之后
     ev.findings.sort(key=lambda f: int(f.severity), reverse=True)
     ev.overall = worst([f.severity for f in ev.findings])
     return ev

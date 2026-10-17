@@ -954,13 +954,13 @@ INSERT INTO grmp.grmp.script_config (id, script_type, script_name, database_type
                   sum(snap_n_blocks_fetched-snap_n_blocks_hit) AS phys
              FROM snapshot.snap_summary_statement WHERE snapshot_id={{e}} GROUP BY snap_unique_sql_id)
 SELECT e.sid, e.query,
-       (e.calls-b.calls)       AS calls,
-       (e.elapsed-b.elapsed)   AS elapsed_us,
-       (e.cpu-b.cpu)           AS cpu_us,
-       (e.spill-b.spill)       AS spill_kb,
-       (e.phys-b.phys)         AS phys_blocks
-FROM e JOIN b USING (sid)
-WHERE (e.elapsed-b.elapsed) > 0
+       (e.calls   - COALESCE(b.calls,   0)) AS calls,
+       (e.elapsed - COALESCE(b.elapsed, 0)) AS elapsed_us,
+       (e.cpu     - COALESCE(b.cpu,     0)) AS cpu_us,
+       (e.spill   - COALESCE(b.spill,   0)) AS spill_kb,
+       (e.phys    - COALESCE(b.phys,    0)) AS phys_blocks
+FROM e LEFT JOIN b USING (sid)
+WHERE (e.elapsed - COALESCE(b.elapsed, 0)) > 0
 ORDER BY elapsed_us DESC LIMIT {{top}};
 ', '[{"key":"b","value":"","type":"INTEGER","autoAcquire":false},{"key":"e","value":"","type":"INTEGER","autoAcquire":false},{"key":"top","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, 'grmp-register', '2026-09-09 15:30:45.656', 'grmp-register', NULL, 0, NULL, 'ALL');
 INSERT INTO grmp.grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode) VALUES ('87', 'SQL', 'wdr.waits', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'WITH b AS (SELECT snap_type AS wait_class, snap_event AS event, sum(snap_wait) AS waits, sum(snap_total_wait_time) AS wt

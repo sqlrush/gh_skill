@@ -2,8 +2,15 @@
 # **改动：两个 COALESCE(...) 加了别名 db_time_us / cpu_time_us。**
 # 原来两列都叫 coalesce，协议按列名做键，重名列会被后一个覆盖 ——
 # DB time 会被 CPU time 顶掉，且不报错。加别名不改语义与结果。
+# **2026-10-17 起本脚本已弃用,skill 不再调用它。** 留着只为兼容已下发的白名单
+# (删它要客户动 DML,不值得);**不要再拿它算 DB time**。
+#
+# 原因:它把 DB time 算成 snap_summary_statement 里「两端都在的 sql_id」的耗时增量之和。
+# 那张表是滚动的语句历史,内连接会把窗口中途才出现的语句整批丢掉。压测实测 22 分钟窗口
+# 算出 2.67 秒,而内核 DB_TIME 增量是 23518 秒 —— 差 8800 倍且不报错。
+# 现在 DB time 取 waitevent.instance_time(snap_global_instance_time 的增量)。
 name: wdr.load_profile
-description: 窗口内 DB time 与 CPU time 增量（snap_summary_statement）
+description: 【已弃用,勿用】窗口内 DB time 与 CPU time 增量(snap_summary_statement,内连接会漏语句)
 sql: |
   WITH b AS (SELECT snap_unique_sql_id AS sid, sum(snap_total_elapse_time) AS t, sum(snap_cpu_time) AS c
                FROM snapshot.snap_summary_statement WHERE snapshot_id={{b}} GROUP BY snap_unique_sql_id),
