@@ -5,8 +5,18 @@
 用户问的恰恰是「最近十分钟怎么了」,而累计榜回答的是「这一个月总体谁最重」—— 两个问题
 不一样,拿后者当前者答,会让一次真实的冲高被完全漏掉。
 
+**「最近十分钟」只能靠基线回看,不能靠等。** 这是第一版踩过的坑:`--window 10m` 当时的实现
+是采一次样、`sleep(600)`、再采一次。两个问题,都是硬伤 ——
+  ① **语义反了**:用户问的是**过去**十分钟,这个实现测的是**未来**十分钟;
+  ② 一条在对话里跑十分钟的命令等于把会话挂死,实测 opencode 直接卡住不出结果。
+累计计数器没有历史,过去十分钟**只能**从十分钟前留下的基线里算出来。所以:
+  · 有基线 → 拿它相减,如实说明实际覆盖了多久(可能是 8.5 分钟,不是整 10 分钟);
+  · 没有基线 / 基线太旧 → **绝不等满用户要的时长**,现场采一小段(见 `MAX_LIVE_SAMPLE_S`)、
+    如实标明这是最近多少秒,并留下基线 —— 下次问同样的问题就真能回看了。
+  · 确实要盯着看一段时间,用 `--live-sample`(显式阻塞,有上限)。
+
 **两种取法,对应两个真实问题:**
-  · `--window 10m`  现场采两次,中间等十分钟 → 精确的「最近十分钟」。代价是命令要跑十分钟。
+  · `--window 10m`  回看最近十分钟(基线优先,不阻塞)。
   · `--since-last`  与上一次运行留下的基线相减 → 「距上次巡检」。几乎零代价,适合日常巡检。
     基线由每次运行自动留下(与报告存档同一个目录),所以越跑越有用。
 
@@ -36,6 +46,20 @@ SAMPLE_WIDTH = 500
 # 上限 6 小时:再长就该用 WDR 快照,不该让一条命令挂在那里等。
 MIN_WINDOW_S = 10
 MAX_WINDOW_S = 6 * 3600
+
+# 回看不了的时候,现场最多采多久。**这是个硬上限,不受用户问的时长影响** ——
+# 问「最近 10 分钟」不代表愿意等 10 分钟,他想要的是答案,不是一个挂住的会话。
+MAX_LIVE_SAMPLE_S = 60
+
+# 用户显式说「盯着采 N 秒」(--live-sample)时的上限。比自动的宽,但仍然有限:
+# 一条能在对话里阻塞几小时的命令是个陷阱,要更长就分两次用 --since-last。
+MAX_LIVE_EXPLICIT_S = 300
+
+# 基线可用的年龄区间,相对用户问的窗口。
+#   太新(< MIN_WINDOW_S)  采样抖动比信号大,不如现场采;
+#   太旧(> 问的 × 这个倍数) 它覆盖的时间远宽于用户问的,拿它相减又会把最近的冲高拉平 ——
+#                          那正是要解决的问题,不能用它来「解决」。
+BASELINE_MAX_RATIO = 3.0
 
 _WINDOW_RE = re.compile(r"^\s*(\d+)\s*([smh])\s*$", re.I)
 _UNIT_S = {"s": 1, "m": 60, "h": 3600}
@@ -89,6 +113,69 @@ def parse_window(text: str) -> int:
         raise ValueError("窗口要在 %d 秒 ~ %d 小时之间,给的是 %s"
                          % (MIN_WINDOW_S, MAX_WINDOW_S // 3600, text))
     return secs
+
+
+class Source(NamedTuple):
+    """「最近 N 分钟」这个问题该怎么回答。
+
+    kind   "baseline" 拿已有基线相减(不等) / "live" 现场采一小段(等 wait_s 秒)
+    span_s 结果实际覆盖多长时间 —— 呈现时必须用这个数,不是用户问的那个
+    wait_s 这次要阻塞多久(baseline 时为 0)
+    note   给用户看的一句话:为什么是这个口径
+    """
+    kind: str
+    span_s: float
+    wait_s: float
+    note: str
+
+
+def choose_source(requested_s: int, baseline_age_s: Optional[float],
+                  live_cap_s: int = MAX_LIVE_SAMPLE_S) -> Source:
+    """回看最近 requested_s 秒:用基线,还是现场采一小段?
+
+    **绝不返回「等满 requested_s」** —— 用户问的是过去,等待量不该随他问的时长增长。
+    `baseline_age_s=None` 表示没有可用基线。
+    """
+    req = max(1, int(requested_s))
+    cap = max(MIN_WINDOW_S, int(live_cap_s))
+
+    if baseline_age_s is None:
+        return Source("live", float(min(req, cap)), float(min(req, cap)),
+                      "没有可用基线,累计计数器里没有历史,过去这段时间无法回看;"
+                      "改为现场采 %d 秒给出这一小段的增量。本次已留下基线,"
+                      "之后再问「最近这段时间」就能真的回看了。" % min(req, cap))
+
+    age = max(0.0, float(baseline_age_s))
+    if age < MIN_WINDOW_S:
+        return Source("live", float(min(req, cap)), float(min(req, cap)),
+                      "上次采样只过了 %d 秒,这么短的间隔里采样抖动比信号还大;"
+                      "改为现场采 %d 秒。" % (int(age), min(req, cap)))
+
+    if age > req * BASELINE_MAX_RATIO:
+        return Source("live", float(min(req, cap)), float(min(req, cap)),
+                      "最近的基线是 %s 前留下的,比你问的 %s 宽得多 —— 拿它相减算出来的是"
+                      "这一整段的平均,最近的冲高照样会被拉平;改为现场采 %d 秒,"
+                      "并留下新基线。要精确盯住某一段,用 --live-sample。"
+                      % (human_span(age), human_span(req), min(req, cap)))
+
+    return Source("baseline", age, 0.0,
+                  "实际覆盖的是最近 %s(上次采样到现在),不是你问的 %s —— "
+                  "累计计数器只能从已有基线往回算。" % (human_span(age), human_span(req)))
+
+
+def human_span(secs: float) -> str:
+    """秒 → 「45 秒」「8.5 分钟」「3.2 小时」。只用于呈现。"""
+    s = max(0.0, float(secs))
+    if s < 90:
+        return "%d 秒" % int(round(s))
+    if s < 90 * 60:
+        return _trim(s / 60.0) + " 分钟"
+    return _trim(s / 3600.0) + " 小时"
+
+
+def _trim(v: float) -> str:
+    """10.0 → 「10」,8.47 → 「8.5」。整数不带小数点 —— 「问的 10.0 分钟」读着像个测量值。"""
+    return "%d" % int(round(v)) if abs(v - round(v)) < 0.05 else "%.1f" % v
 
 
 def to_sample(at: str, rows) -> Sample:

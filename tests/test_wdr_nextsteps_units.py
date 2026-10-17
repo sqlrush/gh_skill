@@ -130,69 +130,69 @@ def test_a_short_cpu_bound_statement_is_not_flagged():
     assert "WDR_TOPSQL_CPU_HEAVY" not in [f.code for f in d.findings]
 
 
-# ---------------------------------------------------------------- 下一步
-
-def _model_with(findings, top_rows=(), headers=()):
-    m = FR._ReportModel()
-    m.ev_findings = list(findings)
-    m.top_sql_rows = list(top_rows)
-    m.top_sql_headers = list(headers)
-    return m
-
+# ------------------------------------------------- 报告里不许出现命令行
 
 def _f(code, sql_id=""):
     return Finding("Top SQL", code, Severity.NOTICE, "m", "v", "t", "e", sql_id=sql_id)
 
 
-def test_next_steps_fills_the_sql_id_into_the_command():
-    out = FR._emit_next_steps(_model_with([_f("WDR_TOPSQL_CPU_HEAVY", "4198238080")]))
-    assert "--sql-id 4198238080" in out
-    assert "{sql_id}" not in out and "<sql_id>" not in out
+def _report_model(findings=(), texts=None, plans=None):
+    m = FR._ReportModel()
+    m.findings = list(findings)
+    m.sql_texts = dict(texts or {})
+    m.plans = dict(plans or {})
+    return m
 
 
-def test_next_steps_points_lock_victims_away_from_plan_tuning():
-    out = FR._emit_next_steps(_model_with([_f("WDR_TOPSQL_LOW_CPU", "x")]))
-    assert "lockwait" in out
-    assert "不要" in out and "执行计划" in out
+def test_the_section_only_says_what_was_not_covered():
+    """**第一版在这里列的是 shell 命令,那是错的。**
 
-
-def test_next_steps_resolves_the_spill_culprit_from_the_top_sql_table():
-    """溢出那条发现来自库级计数器,本身不知道是哪条语句落的盘;
-    从 Top SQL 的 spill_MB 列里取最大的那条,才能把 sql_id 填进命令。"""
-    headers = ["sql_id", "calls", "elapsed_s", "cpu_s", "spill_MB", "物理读(块)", "占DB time%", "query"]
-    rows = [["a", "1", "10", "1", "12.00", "0", "1", "q"],
-            ["b", "1", "10", "1", "4483.68", "0", "1", "q"],
-            ["c", "1", "10", "1", "0.00", "0", "1", "q"]]
-    out = FR._emit_next_steps(_model_with([_f("WDR_TEMP_SPILL")], rows, headers))
-    assert "sqltune.py b" in out
-
-
-def test_next_steps_drops_a_command_it_cannot_fill():
-    """填不出 sql_id 就不给这条命令 —— 甩一个占位符等于让用户自己翻表。"""
-    out = FR._emit_next_steps(_model_with([_f("WDR_TEMP_SPILL")]))
-    assert "<sql_id>" not in out and "{sql_id}" not in out
-
-
-def test_next_steps_always_mentions_what_wdr_does_not_cover():
-    """膨胀/回收 WDR 根本不覆盖;一直没跑完的 SQL 也不在 dbe_perf 的统计里。
-    **每次都要提** —— 不提等于让用户以为已经查全了。"""
-    out = FR._emit_next_steps(_model_with([]))
-    assert "vacuum" in out and "膨胀" in out
-    assert "已完成" in out and "slowsql" in out
-
-
-def test_next_steps_reads_deterministic_findings_not_the_model_interpretation():
-    """「下一步」是确定性输出:模型漏解读某一条,不该让那条的命令也消失。
-
-    另外 recheck 把模型的解读按 **code** 对齐证据,同一个 code 有两条发现时
-    (两条语句都 CPU 占主导)只会锚定一条 —— 读锚定结果的话第二条语句就没有命令了。
+    报告逐字呈现给用户:给他一行 `python3 …/explain.py --sql-id 123`,
+    他在聊天窗口里跑不了,而模型渲染完报告就收工了、那条命令也不会被执行 —— 两头落空。
+    这一段只剩一件事:说清楚这份报告没看哪些东西。
     """
-    m = _model_with([_f("WDR_TOPSQL_CPU_HEAVY", "s1"), _f("WDR_TOPSQL_CPU_HEAVY", "s2")])
-    m.findings = []          # 模型一条都没解读
-    out = FR._emit_next_steps(m)
-    assert "--sql-id s1" in out and "--sql-id s2" in out
+    out = FR._emit_next_steps(_report_model())
+    assert "python3" not in out
+    assert "膨胀" in out and "已完成" in out
 
 
-def test_next_steps_does_not_repeat_the_same_command():
-    out = FR._emit_next_steps(_model_with([_f("WDR_DEADLOCK"), _f("WDR_TOPSQL_LOW_CPU", "x")]))
-    assert out.count("lockwait/scripts/lockwait.py") == 1
+def test_no_shell_command_survives_anywhere_in_the_rendered_report():
+    """守门测试:整份报告的任何一段都不许冒出命令行。
+
+    附录、图示、发现、没覆盖的 —— 任何一处加回一行 `python3 …` 都会被这条拦住。
+    """
+    m = _report_model(findings=[_f("WDR_TOPSQL_CPU_HEAVY", "s1")],
+                      texts={"s1": "SELECT 1"})
+    out = FR._emit_next_steps(m) + FR._emit_sql_appendix(m)
+    for bad in ("python3", "scripts/explain.py", "scripts/sqltune.py", "gsql "):
+        assert bad not in out, bad
+
+
+# ------------------------------------------------- 附录里放计划本身
+
+def test_the_appendix_shows_the_plan_the_model_fetched():
+    """用户要的是执行计划,不是取执行计划的命令。"""
+    m = _report_model(findings=[_f("WDR_TOPSQL_CPU_HEAVY", "s1")],
+                      texts={"s1": "SELECT 1"},
+                      plans={"s1": "Seq Scan on fl.orders  (cost=0.00..1.00 rows=1)"})
+    out = FR._emit_sql_appendix(m)
+    assert "Seq Scan on fl.orders" in out
+    assert "python3" not in out
+
+
+@pytest.mark.parametrize("plans", [None, {"s1": ""}, {"s1": "   "}, {"other": "x"}])
+def test_a_missing_plan_is_stated_not_left_blank(plans):
+    """取不到就如实写一行。空着会让人以为这条语句没有计划可看。"""
+    m = _report_model(findings=[_f("WDR_TOPSQL_CPU_HEAVY", "s1")],
+                      texts={"s1": "SELECT 1"}, plans=plans)
+    out = FR._emit_sql_appendix(m)
+    assert "未取到" in out
+
+
+def test_a_very_long_plan_is_clipped():
+    m = _report_model(findings=[_f("WDR_TOPSQL_CPU_HEAVY", "s1")],
+                      texts={"s1": "SELECT 1"},
+                      plans={"s1": "x" * (FR.APPENDIX_PLAN_MAX + 500)})
+    out = FR._emit_sql_appendix(m)
+    assert len(out) < FR.APPENDIX_PLAN_MAX + 400
+    assert "计划更长" in out

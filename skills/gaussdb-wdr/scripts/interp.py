@@ -66,6 +66,9 @@ class Interp:
     overall: InterpOverall = field(default_factory=InterpOverall)
     verification_badge: str = ""
     findings: list = field(default_factory=list)
+    # sql_id → 执行计划正文。模型在写 interp 之前跑 explain 取回来,附录里**直接展示计划**,
+    # 而不是给用户一条「你去跑 explain」的命令 —— 他要的是计划,不是取计划的办法。
+    plans: dict = field(default_factory=dict)
 
     @staticmethod
     def from_dict(d: dict) -> "Interp":
@@ -73,7 +76,33 @@ class Interp:
         return Interp(
             overall=InterpOverall(severity=ov.get("severity", ""), driver=ov.get("driver", "")),
             verification_badge=d.get("verificationBadge", ""),
-            findings=[InterpFinding.from_dict(f) for f in d.get("findings", []) or []])
+            findings=[InterpFinding.from_dict(f) for f in d.get("findings", []) or []],
+            plans=_plans_from_dict(d.get("plans")))
+
+
+def _plans_from_dict(raw) -> dict:
+    """interp 里的执行计划。两种写法都认:
+
+      `{"plans": {"<sql_id>": "<计划正文>"}}`
+      `{"plans": [{"sqlId": "...", "plan": "..."}]}`
+
+    两种都认是因为「写成对象还是数组」这种事值不得让一次分析失败重跑 ——
+    而写错了又恰好不报错、最后附录里静默地没有计划,是更坏的结果。
+    空值/坏类型一律丢掉(附录会如实写「本次未取到」),绝不把 None 塞进正文。
+    """
+    out: dict = {}
+    if isinstance(raw, dict):
+        items = raw.items()
+    elif isinstance(raw, list):
+        items = [(x.get("sqlId") or x.get("sql_id"), x.get("plan"))
+                 for x in raw if isinstance(x, dict)]
+    else:
+        return out
+    for sid, plan in items:
+        if not sid or not isinstance(plan, str) or not plan.strip():
+            continue
+        out[str(sid)] = plan
+    return out
 
 
 def parse_severity(s: str) -> Severity:

@@ -211,7 +211,7 @@ def test_health_announces_the_dashboard_link_on_stderr_and_keeps_stdout_pure_jso
     out, err = capsys.readouterr()
     json.loads(out)                                   # 多一行就不是合法 JSON 了
     run = json.loads((rdir / "health" / "og" / "index.json").read_text(encoding="utf-8"))[-1]["file"]
-    assert "已存入大盘:/dash/health?inst=og&run=%s" % run in err
+    assert "已存入大盘:[打开报告](/dash/health?inst=og&run=%s)" % run in err
 
 
 def test_partial_health_run_gives_no_link(rdir, monkeypatch, capsys):
@@ -232,7 +232,8 @@ def test_topsql_link_opens_the_same_sort_tab(rdir, monkeypatch, capsys):
     monkeypatch.setattr(topsql, "top_sql", lambda runner, by, limit: [])
     monkeypatch.setattr(topsql.common.config, "resolved_name", lambda c: "api/10-0-0-9-postgres")
     assert topsql.main(["-c", "x", "--by", "avg"]) == 0
-    assert "已存入大盘:/dash/topsql?inst=api_10-0-0-9-postgres&by=avg" in capsys.readouterr().err
+    assert ("已存入大盘:[打开报告](/dash/topsql?inst=api_10-0-0-9-postgres&by=avg)"
+            in capsys.readouterr().err)
 
 
 def test_wdr_collect_link_and_window_in_the_index(rdir, monkeypatch, capsys):
@@ -247,6 +248,6 @@ def test_wdr_collect_link_and_window_in_the_index(rdir, monkeypatch, capsys):
     assert wdr.main(["collect", "-c", "og", "--begin", "2936", "--end", "2937", "--format", "json"]) == 0
     out, err = capsys.readouterr()
     json.loads(out)
-    assert "已存入大盘:/dash/wdr?inst=og&run=" in err
+    assert "已存入大盘:[打开报告](/dash/wdr?inst=og&run=" in err
     idx = json.loads((rdir / "wdr" / "og" / "index.json").read_text(encoding="utf-8"))
     assert idx[-1]["window"]["begin_id"] == 2936 and idx[-1]["window"]["end_ts"] == "2026-10-16 15:26:46"

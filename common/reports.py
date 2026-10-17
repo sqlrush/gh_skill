@@ -256,17 +256,43 @@ def dash_link(skill: str, path: Optional[pathlib.Path], instance: str, by: str =
     return "/dash/%s?%s" % (page, urllib.parse.urlencode(q))
 
 
+# 大盘的对外地址。**只有部署方知道**用户是从哪个地址访问的(端口转发、Ingress、反代各不相同),
+# 所以由部署注入;没注入时退回根相对地址 —— 它在对话页同源下照样打得开。
+ENV_DASH_BASE = "GSDB_DASH_BASE_URL"
+
+
+def dash_url(link: str) -> str:
+    """相对地址 → 用户能直接打开的地址。
+
+    **为什么需要它。** `dash_link` 给的是 `/dash/wdr?inst=…` 这样的根相对地址。
+    把这一行原样贴进聊天记录,用户拿到的是一个**没有站点的路径** —— 点不开,
+    复制到浏览器地址栏也打不开(实测:用户要「这个时间段的 WDR 报告」,
+    拿到 `/dash/wdr?...` 之后无法跳转)。
+    注入了 `GSDB_DASH_BASE_URL` 就拼成完整地址;没注入就保留相对地址,
+    由下面的 Markdown 链接兜底 —— 对话页与大盘同源,相对地址点开就是对的那一份。
+    """
+    base = (os.environ.get(ENV_DASH_BASE) or "").strip().rstrip("/")
+    if not link:
+        return ""
+    return base + link if base else link
+
+
 def announce(skill: str, path: Optional[pathlib.Path], instance: str, by: str = "",
              span: Optional[tuple] = None) -> None:
-    """存档成功后在**标准错误**打一行大盘直达链接。
+    """存档成功后在**标准错误**打一行大盘直达链接,**已经是 Markdown 链接形态**。
 
     以前存档悄无声息,模型不知道有大盘(用户要「大盘」时它只能自己拼 Markdown)。走标准错误:
     JSON 模式的 stdout 必须是纯 JSON,WDR 的最终报告必须是 render 的原样输出,都不能多一行。
+
+    **给的是 `[文字](地址)` 而不是裸地址**:裸的根相对路径贴进聊天记录是点不开的,
+    而 Markdown 链接由对话页按同源解析,点一下就到那一份报告 —— 用户要的就是「能跳过去」。
     """
     link = dash_link(skill, path, instance, by, span)
-    if link:
-        print("已存入大盘:%s (在对话页同一个网址下打开;它是给用户看的页面,可以原样转给用户)" % link,
-              file=sys.stderr)
+    if not link:
+        return
+    md = "[打开报告](%s)" % dash_url(link)
+    print("已存入大盘:%s —— 这是给用户看的页面,**把这个 Markdown 链接原样放进回答里**"
+          "(不要只写路径,裸路径用户点不开)。" % md, file=sys.stderr)
 
 
 def append_jsonl(skill: str, name: str, row: Dict[str, Any]) -> bool:

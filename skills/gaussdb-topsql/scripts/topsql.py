@@ -143,8 +143,8 @@ def delta_table(title: str, res: "delta_mod.DeltaResult", by: str) -> str:
             render.table(["#", "SQL_ID", "窗口内调用", "窗口内平均(ms)", "窗口内耗时(s)",
                           "窗口内返回行", "窗口内新出现", "QUERY"], body) +
             "\n" + res.note + "\n" +
-            "\nNext: `python3 ../../gaussdb-sqlfetch/scripts/sqlfetch.py -c <conn> <SQL_ID>` "
-            "to get the full SQL text.\n")
+            "\n> QUERY 只截到 100 字。要看某条的全文或执行计划，"
+            "直接说「看 sql_id <SQL_ID> 的执行计划」。\n")
 
 
 def stmt_table(title: str, rows: list[StmtRow]) -> str:
@@ -156,8 +156,28 @@ def stmt_table(title: str, rows: list[StmtRow]) -> str:
             for i, r in enumerate(rows)]
     return ("## " + title + "\n\n" +
             render.table(["#", "SQL_ID", "CALLS", "AVG_MS", "TOTAL_S", "ROWS", "QUERY"], body) +
-            "\nNext: `python3 ../../gaussdb-sqlfetch/scripts/sqlfetch.py -c <conn> <SQL_ID>` "
-            "to get the full SQL text.\n")
+            "\n> QUERY 只截到 100 字。要看某条的全文或执行计划，"
+            "直接说「看 sql_id <SQL_ID> 的执行计划」。\n")
+
+
+def _leave_baseline(runner, conn_name: str) -> None:
+    """累计榜跑完也留一份基线。
+
+    **这是让「最近 10 分钟」真的能回看的前提。** 累计计数器没有历史,回看只能靠基线;
+    而基线原先只在增量模式下才留 —— 于是用户第一次问「最近 10 分钟谁最耗时」时必然
+    没有基线可用,只能现场采一小段,体验上像是功能不管用。累计榜本来就要取数,
+    顺手多取一次宽采样留下基线,下一次就答得上了。
+
+    失败完全静默:留不下基线不该影响这次的榜单(下次照样会再试)。
+    """
+    try:
+        base_dir = reports.reports_dir()
+        bpath = delta_mod.baseline_path(base_dir, reports.instance_key(conn_name))
+        if bpath is None:
+            return
+        delta_mod.save_baseline(bpath, _sample(runner, _now()))
+    except Exception:       # noqa: BLE001 —— 基线是锦上添花,任何失败都不能冒泡
+        return
 
 
 def _run_delta(runner, args, conn_name: str) -> int:
@@ -170,17 +190,48 @@ def _run_delta(runner, args, conn_name: str) -> int:
     inst_key = reports.instance_key(conn_name)
     bpath = delta_mod.baseline_path(base_dir, inst_key)
 
-    if args.window:
+    extra = ""
+    if args.live_sample:
+        # 显式「盯着采 N 秒」。**只有用户点名要等的时候才阻塞**,且有上限。
         try:
-            span = delta_mod.parse_window(args.window)
+            span = delta_mod.parse_window(args.live_sample)
         except ValueError as exc:
             print("error: %s" % exc, file=sys.stderr)
             return 2
+        if span > delta_mod.MAX_LIVE_EXPLICIT_S:
+            print("error: --live-sample 最多 %d 秒（再长会把对话挂死；要看更长的一段，"
+                  "先跑一次留下基线，过一会儿再用 --since-last）"
+                  % delta_mod.MAX_LIVE_EXPLICIT_S, file=sys.stderr)
+            return 2
         before = _sample(runner, _now())
-        print("已采第一次样,等 %d 秒后再采一次 …" % span, file=sys.stderr)
+        print("已采第一次样，等 %d 秒后再采一次 …" % span, file=sys.stderr)
         time.sleep(span)
         after = _sample(runner, _now())
-        label = "最近 %s" % args.window
+        label = "现场采样 %s" % args.live_sample
+    elif args.window:
+        try:
+            want = delta_mod.parse_window(args.window)
+        except ValueError as exc:
+            print("error: %s" % exc, file=sys.stderr)
+            return 2
+        cached, why = delta_mod.load_baseline(bpath)
+        age = _span_seconds(cached.at, _now()) if cached is not None else None
+        src = delta_mod.choose_source(want, age)
+        extra = src.note
+        if src.kind == "baseline":
+            before, after = cached, _sample(runner, _now())
+            span = src.span_s
+            label = "最近 %s" % delta_mod.human_span(src.span_s)
+        else:
+            # **不等满用户问的时长。** 过去回看不了就老实采一小段,并说明这是多长一段。
+            if cached is None and why:
+                extra = why + " " + extra
+            before = _sample(runner, _now())
+            print("无法回看，改为现场采 %d 秒 …" % int(src.wait_s), file=sys.stderr)
+            time.sleep(src.wait_s)
+            after = _sample(runner, _now())
+            span = _span_seconds(before.at, after.at) or src.span_s
+            label = "现场采样 %s" % delta_mod.human_span(span)
     else:
         before, why = delta_mod.load_baseline(bpath)
         after = _sample(runner, _now())
@@ -204,11 +255,16 @@ def _run_delta(runner, args, conn_name: str) -> int:
     payload = {"conn": conn_name, "by": args.by, "limit": args.limit,
                "mode": "delta", "window_s": int(res.span_s), "reset": res.reset,
                "sampled_at": after.at, "baseline_at": before.at,
+               "span_note": extra,          # 实际口径,大盘上也要看得到
                "rows": [r._asdict() for r in res.rows]}
     if args.format == "json":
         print(json.dumps(payload["rows"], ensure_ascii=False, indent=2))
     else:
         print(delta_table("Top SQL(%s,按%s)" % (label, args.by), res, args.by), end="")
+        # 口径说明要跟着表走 —— 用户问的是「最近 10 分钟」,拿到的可能是「最近 55 秒」,
+        # 不说清楚他会把这张表当成那 10 分钟的答案。
+        if extra:
+            print("\n口径：%s\n" % extra)
     saved = reports.archive("topsql", payload,
                             name="%s.%s.delta" % (reports.utc_stamp(), args.by),
                             instance=conn_name)
@@ -238,9 +294,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     # 不带这两个开关 = 原来的行为(累计榜)。带了就是**窗口增量**,回答「最近这段时间谁在冲高」。
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--window", default="", metavar="10m",
-                   help="现场采两次、相隔这么久,给出这段时间的增量(10s~6h)。命令会等满这段时间")
+                   help="回看最近这段时间的增量(10s~6h)。优先拿已有基线相减、**不阻塞**;"
+                        "回看不了时现场采一小段(最多 %d 秒)并如实标明实际覆盖多久"
+                        % delta_mod.MAX_LIVE_SAMPLE_S)
     g.add_argument("--since-last", action="store_true",
                    help="与上次运行留下的基线相减,给出「距上次」的增量(几乎不耗时)")
+    g.add_argument("--live-sample", default="", metavar="60s",
+                   help="现场盯着采这么久再出结果(**会阻塞**,最多 %d 秒)。"
+                        "只在确实要观察当下时用" % delta_mod.MAX_LIVE_EXPLICIT_S)
     args = ap.parse_args(argv)
     cli.apply_session_arg(args)
 
@@ -251,9 +312,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
     try:
         conn_name = common.config.resolved_name(args.conn)
-        if args.window or args.since_last:
+        if args.window or args.since_last or args.live_sample:
             return _run_delta(runner, args, conn_name)
         rows = top_sql(runner, args.by, args.limit)
+        _leave_baseline(runner, conn_name)
         # conn 一定要带:没有它报告没法归到实例目录,大盘也没法显示这是哪个库
         payload = {"conn": conn_name, "by": args.by, "limit": args.limit,
                    "mode": "cumulative",

@@ -70,13 +70,7 @@ class _ReportModel:
     unverified: list = field(default_factory=list)
     raw_tables: list = field(default_factory=list)
     sql_texts: dict = field(default_factory=dict)   # sql_id → 全文,给 SQL 附录用
-    # **全部确定性发现**(脚本判出来的,不管模型有没有解读)。「下一步」只认这一份:
-    # 它是确定性输出,不该因为模型漏解读某一条就少给一条命令。
-    # 另外 recheck 把 interp 按 **code** 对齐证据,同一个 code 有两条发现时(两条语句都
-    # CPU 占主导)只会锚定一条 —— 下一步若读锚定结果,第二条语句就没有命令了。
-    ev_findings: list = field(default_factory=list)
-    top_sql_rows: list = field(default_factory=list)     # 解析溢出元凶的 sql_id 用
-    top_sql_headers: list = field(default_factory=list)
+    plans: dict = field(default_factory=dict)       # sql_id → 执行计划正文(模型取回来的)
 
 
 def format_suggestion(s: Suggestion) -> str:
@@ -88,7 +82,7 @@ def format_suggestion(s: Suggestion) -> str:
     return out
 
 
-def build_model(ev: Evidence, r: Rechecked) -> _ReportModel:
+def build_model(ev: Evidence, r: Rechecked, in_: object = None) -> _ReportModel:
     m = _ReportModel(conn=ev.conn, target=ev.target, window=ev.window,
                      overall=r.overall, driver=r.driver, badge=r.badge)
     for d in ev.dims:
@@ -115,16 +109,13 @@ def build_model(ev: Evidence, r: Rechecked) -> _ReportModel:
             m.raw_tables.append(_RawTable(d.dimension, d.headline, d.headers, d.rows))
     m.raw_tables.sort(key=lambda t: _dim_rank(t.title))
     m.sql_texts = dict(getattr(ev, "sql_texts", {}) or {})   # SQL 附录用
-    m.ev_findings = list(ev.findings or [])                  # 「下一步」用,见字段注释
-    for d in ev.dims:
-        if d.dimension == "Top SQL" and d.rows:
-            m.top_sql_rows, m.top_sql_headers = d.rows, (d.headers or [])
+    m.plans = dict(getattr(in_, "plans", {}) or {})           # 附录里的执行计划
     return m
 
 
 def render_report(ev: Evidence, in_: Interp, fmt: str = "md", no_color: bool = False) -> str:
     r = recheck(ev, in_)
-    m = build_model(ev, r)
+    m = build_model(ev, r, in_)
     if fmt in ("md", ""):
         return _emit_markdown(m)
     if fmt == "ansi":
@@ -244,79 +235,33 @@ def _f(x) -> float:
 # 可 2026-10-17 实测那一轮,模型给的 8 条建议一条都没去实证,报告自己也写着
 # 「0 条建议经 hypopg/cost 实证」。规则在提示词里,就只是「希望它做」;
 # 落成报告里的一个段落,用户才看得见该跑什么、也看得出有没有跑。
-_NEXT_BY_CODE = {
-    "WDR_TOPSQL_CPU_HEAVY": ("这条在真干活(CPU 占主导)——看执行计划、做调优实证",
-                             ["python3 ../gaussdb-explain/scripts/explain.py --sql-id {sql_id}",
-                              "python3 ../gaussdb-sqltune/scripts/sqltune.py {sql_id}"]),
-    "WDR_TOPSQL_LOW_CPU": ("这条在等(CPU 近零)——查谁挡着它,**不要**去调执行计划",
-                           ["python3 ../gaussdb-lockwait/scripts/lockwait.py"]),
-    "WDR_WAIT_CLASS_SKEW": ("等待集中在某一类——按窗口拆开看是谁在争",
-                            ["python3 ../gaussdb-waitevent/scripts/waitevent.py"]),
-    "WDR_DEADLOCK": ("死锁——看阻塞链与具体死锁对",
-                     ["python3 ../gaussdb-lockwait/scripts/lockwait.py"]),
-    "WDR_TEMP_SPILL": ("临时文件溢出——定位落盘的语句并评估会话级 work_mem",
-                       ["python3 ../gaussdb-sqltune/scripts/sqltune.py {sql_id}"]),
-    "WDR_DBTIME_WAIT_HEAVY": ("时间主要花在等待上——真凶在等待事件里,不是 CPU 不够",
-                              ["python3 ../gaussdb-waitevent/scripts/waitevent.py"]),
-}
-
-# WDR 根本不覆盖的东西。**每次都要提**:不提等于让用户以为已经查全了。
-_ALWAYS_NEXT = [
-    ("WDR 不覆盖膨胀与回收水位(死元组、autovacuum 追不追得上、谁卡住了回收)",
-     ["python3 ../gaussdb-vacuum/scripts/vacuum.py"]),
-    ("WDR 只统计**已完成**的执行;一直没跑完的 SQL 在这里一行都没有,要看正在执行的会话",
-     ["python3 ../gaussdb-health/scripts/health.py --include slowsql"]),
+# WDR 这份数据根本看不到的东西。**每次都要写出来**:不写等于让用户以为已经查全了。
+# 这里只说「没看什么」,不说「你去跑哪条命令」—— 要跑的由 followup.py 交代给模型。
+_NOT_COVERED = [
+    "**膨胀与回收水位**：死元组、autovacuum 追不追得上、回收被谁卡住（长事务 / 两阶段事务 /"
+    "复制槽），WDR 的快照里都没有这些数 —— 实测一张有 540 万死元组的表，快照里记的是 0。",
+    "**一直没跑完的 SQL**：WDR 只统计**已完成**的执行，正卡着没返回的语句在这里一行都没有。",
+    "**窗口之前的历史**：快照只记当下的累计值，窗口开始前的膨胀程度、长事务已经开了多久，"
+    "事后都重建不出来。",
 ]
 
 
-def _spill_culprit(m: _ReportModel) -> str:
-    """Top SQL 表里落盘最多的那条的 sql_id。
-
-    临时文件溢出那条发现来自 Database Stat(库级计数器),它本身不知道是哪条语句落的盘。
-    但 Top SQL 表里有 spill_MB 这一列 —— 取最大的那条,「下一步」才能把 sql_id 填进命令里,
-    而不是甩一个 `<sql_id>` 让用户自己翻表。
-    """
-    try:
-        i_sid = m.top_sql_headers.index("sql_id")
-        i_spill = next(i for i, h in enumerate(m.top_sql_headers) if h.startswith("spill"))
-    except (ValueError, StopIteration):
-        return ""
-    best, best_v = "", 0.0
-    for r in m.top_sql_rows:
-        try:
-            v = float(r[i_spill])
-        except (TypeError, ValueError, IndexError):
-            continue
-        if v > best_v:
-            best, best_v = str(r[i_sid]), v
-    return best
-
-
 def _emit_next_steps(m: _ReportModel) -> str:
-    """下一步:按本次的**确定性发现**列出具体命令(sql_id 已填好)。"""
-    lines, seen = [], set()
-    spill_sid = _spill_culprit(m)
-    for f in m.ev_findings:
-        hit = _NEXT_BY_CODE.get(f.code)
-        if not hit:
-            continue
-        why, cmds = hit
-        sid = getattr(f, "sql_id", "") or (spill_sid if f.code == "WDR_TEMP_SPILL" else "")
-        for c in cmds:
-            if "{sql_id}" in c and not sid:
-                continue        # 填不出 sql_id 的命令不给 —— 甩个占位符等于让用户自己翻表
-            cmd = c.replace("{sql_id}", sid)
-            if cmd in seen:
-                continue
-            seen.add(cmd)
-            lines.append((why, cmd))
-    out = "## 下一步\n\n"
-    if lines:
-        for why, cmd in lines:
-            out += "- %s\n  `%s`\n" % (why, cmd)
-    for why, cmds in _ALWAYS_NEXT:
-        for c in cmds:
-            out += "- %s\n  `%s`\n" % (why, c)
+    """本报告没覆盖到的范围 —— **用人话说,不给命令**。
+
+    **第一版在这里列的是 `python3 ../gaussdb-explain/scripts/explain.py --sql-id 123`
+    这样的命令行,那是错的。** 报告是逐字呈现给用户的最终输出:
+      · 用户要的是执行计划本身,不是取执行计划的命令 —— 给命令等于把活推回给他,
+        而他在聊天窗口里也跑不了;
+      · 报告既然是最终输出,模型渲染完就收工,那几条命令一条都不会被执行。
+    具体要跑什么,由 `followup.py` 在 collect 阶段从**标准错误**交代给模型,
+    模型跑完把结论写进 interp.json,在这份报告里体现为根因与建议 —— 而不是一行待办。
+
+    这一段只保留一件事:**说清楚这份报告没看哪些东西**。不说等于让用户以为已经查全了。
+    """
+    out = "## 本报告没覆盖的\n\n"
+    for why in _NOT_COVERED:
+        out += "- %s\n" % why
     return out + "\n"
 
 
@@ -353,10 +298,35 @@ def _emit_sql_appendix(m: _ReportModel) -> str:
             body = body[:APPENDIX_SQL_MAX] + "\n…（全文更长，到大盘或用 gaussdb-sqlfetch 取）"
         out += "### sql_id `%s`\n\n" % sid
         out += render.code_block("sql", body)
-        out += ("\n- 执行计划：`python3 ../gaussdb-explain/scripts/explain.py --sql-id %s`"
-                "（计划要实时连库，报告里不预先生成）\n" % sid)
-        out += ("- 调优实证：`python3 ../gaussdb-sqltune/scripts/sqltune.py %s`\n\n" % sid)
+        out += "\n"
+        out += _emit_plan(m, sid)
     return out
+
+
+# 附录里每条执行计划最多展示这么长。超长的计划(几十层嵌套)贴全了没人读得完,
+# 关键永远在开头那几层 —— 真要逐层看,到大盘或重跑 explain。
+APPENDIX_PLAN_MAX = 2500
+
+
+def _emit_plan(m: _ReportModel, sid: str) -> str:
+    """这条语句的执行计划。
+
+    **计划是模型取回来放进 interp.json 的,不是报告里给一条命令让用户自己去跑。**
+    第一版这里写的是「执行计划：`python3 …/explain.py --sql-id 123`（计划要实时连库，
+    报告里不预先生成）」—— 那句话把本该做的事当成了做不到的事:计划确实要连库,
+    但连库的是模型,它在写 interp.json 之前就该把计划取回来。
+    (要跑哪些命令由 followup.py 在 collect 阶段从标准错误交代。)
+
+    取不到也要如实留一行,说明没取到 —— 空着会让人以为这条语句没有计划可看。
+    """
+    plan = (m.plans or {}).get(sid) or ""
+    if not str(plan).strip():
+        return ("- 执行计划：本次未取到（计划要实时连库；若语句已不在库里或权限不足，"
+                "会取不到）。\n\n")
+    body = str(plan).rstrip()
+    if len(body) > APPENDIX_PLAN_MAX:
+        body = body[:APPENDIX_PLAN_MAX] + "\n…（计划更长，到大盘或重跑 explain 看全）"
+    return "- 执行计划：\n\n" + render.code_block("text", body) + "\n"
 
 
 def _emit_quarantine_md(m: _ReportModel) -> str:

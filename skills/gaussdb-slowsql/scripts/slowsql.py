@@ -144,8 +144,8 @@ def stmt_table(title: str, rows: list[StmtRow]) -> str:
             for i, r in enumerate(rows)]
     return ("## " + title + "\n\n" +
             render.table(["#", "SQL_ID", "CALLS", "AVG_MS", "TOTAL_S", "ROWS", "QUERY"], body) +
-            "\nNext: `python3 ../../gaussdb-sqlfetch/scripts/sqlfetch.py -c <conn> <SQL_ID>` "
-            "to get the full SQL text.\n")
+            "\n> QUERY 只截到 100 字。要看某条的全文或执行计划，"
+            "直接说「看 sql_id <SQL_ID> 的执行计划」。\n")
 
 
 def build_parser() -> argparse.ArgumentParser:

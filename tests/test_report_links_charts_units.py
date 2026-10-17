@@ -143,3 +143,38 @@ def test_share_lines_is_empty_when_there_is_nothing_to_draw():
     """宁可没有图,也不要画一张空图。"""
     assert R.share_lines([]) == ""
     assert R.share_lines([("", 10)]) == ""
+
+
+# ---------------------------------------------------------------- 链接要能点开
+
+def test_the_announced_link_is_a_markdown_link_not_a_bare_path(capsys, tmp_path, monkeypatch):
+    """**实测过的问题:** 用户要「这个时间段的 WDR 报告」,拿到的是
+    `/dash/wdr?inst=…&run=…` —— 一个**没有站点的路径**。点不开,复制到地址栏也打不开。
+
+    所以这一行给的必须是 `[文字](地址)`:对话页按同源解析它,点一下就到那一份报告。
+    """
+    monkeypatch.setenv(reports.ENV_DIR, str(tmp_path))
+    p = reports.archive("wdr", {"dims": []}, instance="og5")
+    reports.announce("wdr", p, "og5", span=("2026-10-17T10:45", "2026-10-17T11:09"))
+    err = capsys.readouterr().err
+    assert "[打开报告](/dash/wdr?" in err
+    assert "from=2026-10-17T10%3A45" in err
+
+
+def test_a_deployment_can_make_the_link_absolute(monkeypatch):
+    """部署方注入对外地址时给出完整地址 —— 只有部署方知道用户从哪个地址访问
+    (端口转发 / Ingress / 反代各不相同),skill 自己猜不出来。"""
+    monkeypatch.setenv(reports.ENV_DASH_BASE, "https://dba.example.com/")
+    assert reports.dash_url("/dash/wdr?inst=og5") == "https://dba.example.com/dash/wdr?inst=og5"
+
+
+def test_without_that_setting_the_link_stays_relative(monkeypatch):
+    """猜一个地址比给相对地址更糟:猜错的话链接指向一个不存在的站点,
+    而相对地址在对话页同源下一定是对的。"""
+    monkeypatch.delenv(reports.ENV_DASH_BASE, raising=False)
+    assert reports.dash_url("/dash/wdr?inst=og5") == "/dash/wdr?inst=og5"
+
+
+def test_no_link_means_no_announcement(capsys):
+    reports.announce("wdr", None, "og5")
+    assert capsys.readouterr().err == ""

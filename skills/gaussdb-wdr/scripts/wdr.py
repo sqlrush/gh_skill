@@ -38,7 +38,8 @@ from common import reports  # noqa: E402
 from collectors import collect_evidence  # noqa: E402
 from interp import load_evidence, load_interp  # noqa: E402
 from finalreport import render_report  # noqa: E402
-from model import Options  # noqa: E402
+import followup  # noqa: E402
+from model import DIM_TOPSQL, Options  # noqa: E402
 from report import render_evidence, render_evidence_json  # noqa: E402
 from snaps import snaps as run_snaps  # noqa: E402
 from thresholds import default_thresholds  # noqa: E402
@@ -85,6 +86,7 @@ def _cmd_collect(args) -> int:
         # 点开就该是那一段,而不是全部历史再让他自己去顶栏选一次。
         # 快照时间形如 `2026-10-17 10:46:29`,大盘的时间段参数要 `2026-10-17T10:46`。
         reports.announce("wdr", saved, ev.conn, span=_dash_span(ev.window))
+        _announce_followup(ev)
         return 0
     except common.DBError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -147,6 +149,26 @@ def default_native_path(instance: str, now: Optional[str] = None) -> str:
     except OSError:
         return ""
     return str(d / (reports.utc_stamp(now) + ".native.html"))
+
+
+def _announce_followup(ev) -> None:
+    """在**标准错误**给出下一步要执行的检查。
+
+    为什么走标准错误、而不是写进报告:见 `followup.py` 的模块说明。一句话是 ——
+    报告是给用户看的最终输出,把 `python3 …/explain.py --sql-id 123` 写进去,
+    用户拿到的是一行命令而不是执行计划,而模型渲染完报告就收工了,那条命令也不会被执行。
+    这里在 collect 阶段就交代清楚,模型还没写 interp.json,正好拿去跑、把结论写进来。
+    """
+    stale = followup.staleness_s(getattr(ev.window, "end_ts", ""))
+    fresh = stale is not None and stale <= followup.STALE_AFTER_S
+    top = next((d for d in (ev.dims or []) if d.dimension == DIM_TOPSQL), None)
+    steps = followup.plan(ev.findings, ev.window,
+                          top_sql_headers=getattr(top, "headers", []) if top else [],
+                          top_sql_rows=getattr(top, "rows", []) if top else [],
+                          fresh=fresh)
+    text = followup.render_plan(steps, stale)
+    if text:
+        print(text, end="", file=sys.stderr)
 
 
 def _dash_span(w) -> tuple:
