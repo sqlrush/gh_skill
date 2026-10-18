@@ -152,3 +152,74 @@ def test_dry_run_refuses_to_pretend_it_exported():
                              "--exclude-unused", "--dml-out", "/tmp/never.sql"])
     assert rc == 2, "--dry-run 配 --dml-out 必须报错，不能静默成功"
     assert not pathlib.Path("/tmp/never.sql").exists()
+
+
+# --- scripts.sql 的 DML 外壳 -------------------------------------------------
+#
+# **这道闸是 2026-10-18 的事故补的。** 那天我给 registry 加了新脚本后，用
+# `grmp_register --dml-out docs/delivery/scripts.sql` 重新生成了交付物 ——
+# 而 scripts.sql 是**手工维护成客户真实 DML 形态**的（见文件头那几行注释），
+# 生成器的默认形态和它差六处：
+#
+#   | 项           | 客户真实形态                     | 生成器默认      |
+#   |--------------|----------------------------------|-----------------|
+#   | 表名         | grmp.script_config               | grmp.grmp.script_config |
+#   | id           | grmp.script_config_seq.nextval   | 硬编码 '130'    |
+#   | database_type| 'appbusiness'                    | 'postgres'      |
+#   | create_user  | '999999999'                      | 'grmp-register' |
+#   | create_time  | now()                            | 硬编码时间戳    |
+#   | uuid 列      | 有，值 uuid()                    | **整列缺失**    |
+#
+# 上面那三道闸（脚本名集合 / SQL 正文 / 条数）**全部通过** —— 它们只比
+# 脚本名和 script_content，不看 DML 外壳。于是一份客户导不进去的文件
+# 一路绿灯走到了「发给客户」那一步。
+#
+# scripts-full.sql 不在这道闸的范围内：它本来就是生成器形态，只供本地复现。
+
+_SHIPPED = _DELIVERY / "scripts.sql"
+
+
+def _shipped_text():
+    return _SHIPPED.read_text(encoding="utf-8")
+
+
+def test_the_table_name_is_not_double_schema_qualified():
+    """`grmp.grmp.script_config` 是生成器的默认形态，客户库里没有这个对象。"""
+    text = _shipped_text()
+    assert "grmp.grmp.script_config" not in text, \
+        "scripts.sql 被生成器覆盖过了：表名多了一层 schema，客户导入会直接报对象不存在"
+    assert "INSERT INTO grmp.script_config (" in text
+
+
+def test_ids_come_from_the_sequence_not_hardcoded():
+    """硬编码 id 会和客户库里已有记录冲突 —— 而且冲突是在客户那边才暴露。"""
+    assert "grmp.script_config_seq.nextval" in _shipped_text()
+    bad = re.findall(r"VALUES \('(\d+)', 'SQL'", _shipped_text())
+    assert not bad, "有 %d 条硬编码了 id：%s" % (len(bad), bad[:5])
+
+
+def test_the_uuid_column_is_present_in_every_insert():
+    """生成器不写 uuid 列。列数对不上，整份 DML 都会被拒。"""
+    text = _shipped_text()
+    inserts = re.findall(r"^INSERT INTO grmp\.script_config \(([^)]*)\)", text, re.M)
+    assert inserts, "一条 INSERT 都没解析出来"
+    for cols in inserts:
+        assert "uuid" in cols, "这条 INSERT 的列里没有 uuid：%s" % cols[:80]
+    assert text.count("uuid());") == len(inserts)
+
+
+@pytest.mark.parametrize("token,why", [
+    ("'appbusiness'", "database_type 客户用 appbusiness，生成器默认 postgres"),
+    ("'999999999'", "create_user 客户用 999999999，生成器默认 grmp-register"),
+    ("now()", "create_time 客户用 now()，生成器写死时间戳"),
+])
+def test_the_customer_envelope_fields_are_kept(token, why):
+    assert token in _shipped_text(), why
+
+
+def test_the_generator_header_never_lands_in_the_shipped_file():
+    """生成器会在头部写一段「由 … 生成，请勿手工编辑」和 `-- name -> id=` 清单。
+    它出现在这份文件里，就说明这份文件刚被生成器覆盖过。"""
+    head = _shipped_text()[:400]
+    assert "由 grmp_middleware" not in head
+    assert "-> id=" not in head
