@@ -61,6 +61,20 @@ class Thresholds:
     active_conc_floor: int = 5      # 活跃总数下限才判集中
     repl_lag_notice: int = 16 << 20  # 复制 replay 延迟字节
     repl_lag_warn: int = 64 << 20
+    # 复制槽落后的 WAL 字节。槽不消费时 WAL 只增不减，直到把盘填满 ——
+    # 这和上面的 replay 延迟是两件事：那个是备库追不上，这个是**槽钉住了回收**。
+    # 1 GiB 关注 / 8 GiB 告警：按常见 16 MB 一个段算，8 GiB 已经是 500 多个段。
+    slot_lag_notice: int = 1 << 30
+    slot_lag_warn: int = 8 << 30
+    # 线程池用量百分比。开了线程池时真正的并发上限是池大小，不是 max_connections；
+    # 池满后新请求排队，现场表现是「库没响应」而连接数维度一片绿。
+    thread_pool_notice: float = 70
+    thread_pool_warn: float = 85
+    # 单个库/表空间占用多少算该说一声。**这不是「盘快满了」** ——
+    # 剩余空间在这个内核上取不到（pg_stat_file 要 initial account，实测被拒），
+    # 所以只能按绝对量提示「这个库很大，注意它所在的盘」，不能下「水位告警」的结论。
+    storage_notice: int = 200 << 30   # 200 GiB
+    storage_warn: int = 500 << 30     # 500 GiB
     index_unused_bytes: int = 10 << 20  # 索引大小下限（小索引删了不值当）
     # idx_scan=0 至少要观测多久才算证据。统计重置或实例重启后窗口很短，
     # 此时全库索引都是 0 —— 不设这道门，报告会把整库索引点名建议删掉。

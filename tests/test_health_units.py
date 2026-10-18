@@ -28,12 +28,16 @@ import util  # noqa: E402
 from model import DimResult, Finding, HealthEvidence, Severity  # noqa: E402
 
 
-def test_registry_has_the_eight_local_collectors_in_order():
-    """waits/bloat/lwlock/locks moved to sub-skills (aggregate.py); the other
-    eight stay local, in this order — the order is the report's section order."""
+def test_registry_has_the_local_collectors_in_order():
+    """waits/bloat/lwlock/locks moved to sub-skills (aggregate.py); the rest
+    stay local, in this order — the order is the report's section order.
+
+    storage 是 2026-10-17 新增的一维（库/表空间占用量）。它排在 schema 之后、
+    concurrency 之前：对象体检完接着看这些对象占了多少地方，是读报告的自然顺序。
+    """
     keys = [k for k, _ in collectors.registry()]
     assert keys == ["overview", "slowsql", "xact", "conn", "logs", "repl",
-                    "schema", "concurrency"]
+                    "schema", "storage", "concurrency"]
 
 
 def test_go_duration_matches_go():

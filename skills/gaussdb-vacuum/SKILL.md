@@ -1,6 +1,6 @@
 ---
 name: gaussdb-vacuum
-version: 1.1.3
+version: 1.2.0
 description: "通过内置脚本对 OpenGauss/GaussDB 做死元组（dead tuple）与 autovacuum 健康度评估。用户想知道哪些表堆积了太多死元组、表膨胀（bloat）是不是严重、autovacuum 有没有追上、某张表是不是需要手工 VACUUM 时使用，包括“死元组多不多”“表膨胀严重吗”“autovacuum 追上了吗”“这张表要不要手工 vacuum”“死元组比例”“autovacuum 有没有卡住”等请求。触发后运行 scripts/vacuum.py，输出真实的风险表、命中的规则与证据、autovacuum 近期运行情况；不要只解释 vacuum/dead tuple 的概念。本 skill 只评估，不执行任何 VACUUM/ANALYZE。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -110,6 +110,33 @@ python3 {baseDir}/scripts/vacuum.py -c <连接名> [--limit 20] [--format json] 
    **每行是一个指标（如 `recent_global_xmin`、`global_recycle_xid`），不是一个事务**。它回答"水位卡在哪个 xid"，回收阻塞源那一段回答"是谁卡的"，两段互补；
    这一段脚本只原样列出、不判定，你也不要凭指标名自行推断含义。openGauss 没有该函数，整段不出现；GaussDB 该有而没有时会给出中文说明，原样转达。
 3. **手工清理评估** —— 逐表列出命中了哪几条规则、各自代表什么；某张表命中 R4 时，**先给出"先处理该事务，现在跑 VACUUM 不会有效果"这句提示，再列其余规则**。
+
+## 事务号冻结水位（`VACUUM_FREEZE_AGE`）——**不要照搬 PostgreSQL 的结论**
+
+报告里多出一节「事务号冻结水位」，给出每个库的 frozenxid 落后当前快照多少、
+占 `autovacuum_freeze_max_age` 的百分比。
+
+**读它时第一件事：这个内核不会因为水位高而停止写入。** PostgreSQL 上 frozenxid
+追到 2^31 会让库强制停写、抢救要停机，这个结论**对本内核不成立** —— 实测
+openGauss 5.0.3 的 `autovacuum_freeze_max_age` 默认 4000000000、
+`vacuum_freeze_min_age` 默认 2000000000（两个都超过 2^31），也没有
+`xid_stop_limit` / `xid_warn_limit` 这两个 GUC：它用的是 64 位事务号。
+
+所以看到「冻结水位 85%」时**绝不要**说「库即将停止写入」「需要停机做单用户
+VACUUM FREEZE」—— 那会把 DBA 推去做一次没必要的停机。真实后果只有两条，
+如实说这两条就够：
+
+1. 占比接近 100% 时，autovacuum 会对大表触发**全表冻结扫描**。它不看业务高峰、
+   时点不可预测，在大表上就是一场 IO 风暴 —— 现场表现是「某天夜里库突然很慢，
+   却没有慢 SQL、没有锁」。处置是**主动在低峰期**对水位高的库/大表手工
+   `VACUUM FREEZE`，把这件事挪到可控的时间窗里。
+2. 水位一直不推进，clog / csnlog 就一直不能截断，持续占盘。
+
+严重度最高只到 🟠（WARN）。脚本不会给这一项报 🔴 —— 虚报一次之后，
+真正该紧张的时候就没人会再看这条发现了。
+
+占比的分母是**这个库自己配的** `autovacuum_freeze_max_age`（客户常把它调小，
+让冻结更早更分散），分母取不到时脚本**不判**，而不是退回一个猜的常数。
 
 ## 安全红线
 

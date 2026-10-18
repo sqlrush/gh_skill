@@ -25,6 +25,9 @@ DIM_LOGS = "Checkpoint / WAL / Archiving"
 DIM_REPL = "Replication / Standby"
 DIM_SCHEMA = "Schema / Objects"
 DIM_CONCURRENCY = "Transactions / Concurrency"
+# 占用量,不是「剩余水位」—— 剩余空间在这个内核上取不到
+# (pg_stat_file 要 initial account,实测被拒),维度名也要如实反映这一点。
+DIM_STORAGE = "Storage Usage"
 
 
 @dataclass

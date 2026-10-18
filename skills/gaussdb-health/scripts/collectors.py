@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from model import (
     DIM_CONCURRENCY, DIM_CONN, DIM_LOGS, DIM_OVERVIEW, DIM_REPL, DIM_SCHEMA,
-    DIM_SLOWSQL, DIM_XACT, DimResult, Finding, Severity, degraded,
+    DIM_SLOWSQL, DIM_STORAGE, DIM_XACT, DimResult, Finding, Severity, degraded,
 )
 from thresholds import Thresholds, go_duration
 from util import f2, human_bytes, i64, sev_by_duration, summarize_err, trunc
@@ -256,8 +256,60 @@ def collect_conn(runner, th: Thresholds, _top: int) -> DimResult:
                         DIM_CONN, "ACTIVE_SQL_HOT", Severity.NOTICE, "活跃集中在单条 SQL",
                         f"{conc:.0f}% ({top_c}/{real_total}) 在: {trunc(top_q, 40)}",
                         f">{th.active_conc_pct:.0f}%", "pg_stat_activity active client SQL"))
+    _thread_pool(runner, th, d)
     d.headline = f"共 {total}：active {active}、idle {idle}、IIT {iit}"
     return d
+
+
+def _thread_pool(runner, th: Thresholds, d: DimResult) -> None:
+    """线程池用量。**开了线程池时真正的并发上限是池大小,不是 max_connections。**
+
+    og5 实测:max_connections=1000 而 thread_pool_attr='800, 2, (nobind)' ——
+    先碰到的是 800。池满之后新请求排队,现场表现是「库没响应」,而连接数看着
+    离 1000 还远,于是这个维度一片绿。
+
+    池大小的解析放在这里而不是 SQL 里:格式是 '<线程数>, <组数>, (绑核策略)',
+    在 SQL 里 split_part 一层层剥,格式一变就静默给出错的分母。解析不出来
+    就不判(并说明),不要拿 max_connections 顶上去当分母 —— 那个分母是错的。
+    """
+    try:
+        rows = runner.run("health.thread_pool")
+    except access.QueryError as exc:
+        d.rows.append(["线程池", "取不到（%s）" % summarize_err(exc)])
+        return
+    kv = {r["item"]: r["value"] for r in rows}
+    if str(kv.get("enable_thread_pool", "")).lower() not in ("on", "true", "t", "1"):
+        d.rows.append(["线程池", "未开启（并发上限看 max_connections）"])
+        return
+    attr = str(kv.get("thread_pool_attr") or "")
+    size = _pool_size(attr)
+    if size is None:
+        d.rows.append(["线程池", "已开启，但池大小解析不出来：thread_pool_attr=%s" % attr])
+        return
+    used = as_int(kv.get("real_sessions"))
+    pct = 100.0 * used / size if size > 0 else 0.0
+    d.rows.append(["线程池用量", "%d/%d（%.0f%%）" % (used, size, pct)])
+    sev, thr = None, 0.0
+    if pct >= th.thread_pool_warn:
+        sev, thr = Severity.WARN, th.thread_pool_warn
+    elif pct >= th.thread_pool_notice:
+        sev, thr = Severity.NOTICE, th.thread_pool_notice
+    if sev is not None:
+        d.findings.append(Finding(
+            DIM_CONN, "THREAD_POOL_HIGH", sev, "线程池用量",
+            "%.0f%%（%d/%d）" % (pct, used, size), f">{thr:.0f}%",
+            "thread_pool_attr 的池大小 %d，pg_stat_activity 里 sessionid<>0 的真实会话 %d。"
+            "池满后新连接排队，表现为「库没响应」，而连接数离 max_connections 还远"
+            % (size, used)))
+
+
+def _pool_size(attr: str):
+    """'800, 2, (nobind)' → 800。解析不出来返回 None(调用方如实说明,不猜)。"""
+    head = str(attr or "").split(",", 1)[0].strip()
+    if not head.isdigit():
+        return None
+    n = int(head)
+    return n if n > 0 else None
 
 
 # --- checkpoint / WAL / archiving --------------------------------------------
@@ -291,8 +343,55 @@ def collect_logs(runner, th: Thresholds, _top: int) -> DimResult:
             d.rows.append(["archive_mode", am])
     except access.QueryError:
         pass
-    d.headline = f"checkpoint req 占比 {req_pct:.0f}%、归档 {am}"
+    slots = _wal_slots(runner, th, d)
+    d.headline = (f"checkpoint req 占比 {req_pct:.0f}%、归档 {am}"
+                  + (f"、复制槽 {slots} 个" if slots else ""))
     return d
+
+
+def _wal_slots(runner, th: Thresholds, d: DimResult) -> int:
+    """复制槽钉住了多少 WAL。返回槽数量(给 headline 用)。
+
+    **和 REPL_LAG 是两件事,两个都要有。** REPL_LAG 是「备库追不上」;
+    这里是「槽钉住了 WAL 回收」—— 槽不消费,WAL 只增不减,直到把盘填满。
+    一个 active 但消费很慢的槽会堆 WAL 却不一定挡 xmin;一个 inactive 的槽
+    两样都挡,而且没有任何东西会自动清掉它。
+
+    零行 = 没有槽(og5 这种单机库就是),不是取数失败 —— 不报任何东西。
+    """
+    try:
+        rows = runner.run("health.wal_slots")
+    except access.QueryError:
+        return 0        # 脚本未登记(现场还没重导白名单)时静默跳过,不污染这一维
+    for row in rows or []:
+        name = str(row.get("slot_name") or "?")
+        lag = row.get("lag_bytes")
+        active = str(row.get("active") or "").lower() in ("t", "true", "on", "1")
+        lag_n = as_int(lag) if not is_null(lag) else 0
+        d.rows.append(["复制槽 " + trunc(name, 20),
+                       "%s，落后 %s" % ("活跃" if active else "**未活跃**",
+                                        human_bytes(lag_n))])
+        # 未活跃的槽单独报:消费端已经没了,槽却还钉着回收下限。
+        # 这一条不看落后量 —— 一个刚建的 inactive 槽落后很少,但它会一直涨。
+        if not active:
+            d.findings.append(Finding(
+                DIM_LOGS, "WAL_SLOT_INACTIVE", Severity.WARN, "复制槽 %s" % name,
+                "未活跃，落后 " + human_bytes(lag_n), "应为活跃",
+                "pg_replication_slots.active=false —— 消费端已不在，但槽仍钉住 WAL 回收，"
+                "WAL 会一直堆积直到填满磁盘；确认下游不再需要后由 DBA 删除该槽"))
+            continue
+        sev, thr = None, 0
+        if lag_n > th.slot_lag_warn:
+            sev, thr = Severity.WARN, th.slot_lag_warn
+        elif lag_n > th.slot_lag_notice:
+            sev, thr = Severity.NOTICE, th.slot_lag_notice
+        if sev is not None:
+            d.findings.append(Finding(
+                DIM_LOGS, "WAL_SLOT_LAG", sev, "复制槽 %s 落后" % name,
+                human_bytes(lag_n), ">" + human_bytes(thr),
+                "pg_current_xlog_location() 与 restart_lsn 的差值 —— 这段 WAL 不能回收，"
+                "下游消费跟不上就会持续占盘（与备库 replay 延迟是两件事）"))
+    return len(rows or [])
 
 
 # --- replication / standby ---------------------------------------------------
@@ -325,8 +424,69 @@ def collect_repl(runner, th: Thresholds, _top: int) -> DimResult:
             d.findings.append(Finding(DIM_REPL, "REPL_LAG", sev, f"备库 {app} replay 延迟",
                                       human_bytes(int(lag)), ">" + human_bytes(thr),
                                       "pg_stat_replication sent vs replay"))
-    d.headline = "无下游备库（单机，或本节点为备库）" if n == 0 else f"{n} 个备库"
+    sync_note = _sync_commit(runner, d, rows)
+    d.headline = ("无下游备库（单机，或本节点为备库）" if n == 0 else f"{n} 个备库")
+    if sync_note:
+        d.headline += "；" + sync_note
     return d
+
+
+# 会等同步备确认的 synchronous_commit 取值。local / off 不等。
+_SYNC_WAITS = ("on", "remote_write", "remote_apply")
+
+
+def _sync_commit(runner, d: DimResult, repl_rows: list) -> str:
+    """同步提交会不会把主库卡住。返回一句给 headline 的话(没结论就空串)。
+
+    **必须先分辨单机/集群,这是这段代码存在的全部理由。** og5 实测:
+    `synchronous_commit=on`、`synchronous_standby_names='*'`、
+    `pg_stat_replication` 一个备库都没有 —— 按 PostgreSQL 的语义每次提交都该
+    无限等待,但 og5 写入完全正常。原因是 openGauss 的同步复制要靠
+    `replconninfo1..N` 定义对端才生效,而单机部署上那些全是空的。
+
+    所以只看两个 GUC 就报警,会在**每一个单机库上乱报** —— 而单机库是客户
+    环境里最多的一类。虚报一次之后,真的配错时也没人会再看这条。
+    """
+    try:
+        rows = runner.run("health.sync_commit")
+    except access.QueryError:
+        return ""       # 脚本未登记时静默跳过
+    kv = {r["item"]: str(r["value"] or "") for r in rows or []}
+    if not kv:
+        return ""
+    peers = as_int(kv.get("peers_configured"))
+    commit = kv.get("sync_commit", "").lower()
+    names = kv.get("standby_names", "").strip()
+    in_recovery = kv.get("in_recovery", "").lower() in ("t", "true", "on", "1")
+
+    # **不往 d.rows 里塞这些。** 这一维的表是「每行一个备库」,表头是
+    # standby/client/state/sync/replay_lag 五列;塞一行 ["synchronous_commit","on"]
+    # 会被补成五格、标签落在 standby 那一列下面,读起来像有个叫
+    # synchronous_commit 的备库(自测时实际渲染成这样了)。
+    # 配置事实放进抬头,真有风险时由 finding 带全部细节。
+    cfg = "synchronous_commit=%s、standby_names=%s" % (commit or "未知", names or "(空)")
+
+    if peers <= 0:
+        # 单机:这一项整体不适用。**明说不适用,而不是「健康」** ——
+        # 说成健康,会让人以为"同步复制这块已经检查过并且没问题"。
+        return ("单机部署（replconninfo 未配置），同步提交不生效、本项不适用（%s）" % cfg)
+    if in_recovery:
+        return "本节点为备库，同步提交的风险在主库那边（%s）" % cfg
+    if commit not in _SYNC_WAITS or not names:
+        return "集群，异步提交、不等备库确认（%s）" % cfg
+
+    synced = sum(1 for r in repl_rows or []
+                 if str(r.get("sync_state") or "").lower() == "sync")
+    if synced == 0:
+        d.findings.append(Finding(
+            DIM_REPL, "SYNC_COMMIT_NO_STANDBY", Severity.CRITICAL, "同步提交无可用同步备",
+            "synchronous_commit=%s、standby_names=%s，但当前 0 个 sync 备库"
+            % (commit, trunc(names, 30)), "至少 1 个",
+            "集群已配置 replconninfo（%d 个对端）且要求同步确认，而 pg_stat_replication 里"
+            "没有 sync_state=sync 的备库 —— **主库的提交会一直等下去**，表现为写入全部挂住。"
+            "处置：恢复备库，或由 DBA 临时把 synchronous_commit 降为 local" % peers))
+        return "⚠ 要求同步确认但没有同步备"
+    return "集群，%d 个同步备在线（%s）" % (synced, cfg)
 
 
 # --- schema / objects --------------------------------------------------------
@@ -512,6 +672,59 @@ def collect_concurrency(runner, th: Thresholds, _top: int) -> DimResult:
 
 # --- registry ----------------------------------------------------------------
 
+def collect_storage(runner, th: Thresholds, top: int) -> DimResult:
+    """库与表空间的占用量。
+
+    **刻意不叫「磁盘水位」,也绝不说「盘快满了」。** 剩余空间在这个内核上取不到:
+    `pg_stat_file` / `pg_ls_dir` 要 initial account(omm),诊断账号是 sysadmin
+    也被拒(实测:"must be initial account to get file information")。
+    所以这一维只能回答「占了多少」,回答不了「还剩多少」——
+    按一个取不到的事实下「磁盘告警」的结论,正是这套工具一直在修的那类错。
+
+    判定因此只按**绝对量**提示「这个库/表空间很大,注意它所在的盘」,
+    并在证据里写明剩余空间不可知。
+    """
+    try:
+        rows = runner.run("health.storage")
+    except access.QueryError as exc:
+        return degraded(DIM_STORAGE, summarize_err(exc))
+    d = DimResult(dimension=DIM_STORAGE, available=True,
+                  headers=["类型", "名称", "占用"])
+    dbs = tss = 0
+    biggest = 0
+    for row in rows or []:
+        kind = str(row.get("kind") or "")
+        name = str(row.get("name") or "")
+        n = as_int(row.get("bytes"))
+        if kind == "database":
+            dbs += 1
+        else:
+            tss += 1
+        biggest = max(biggest, n)
+        d.rows.append([("库" if kind == "database" else "表空间"),
+                       trunc(name, 32), human_bytes(n)])
+        sev, thr = None, 0
+        if n > th.storage_warn:
+            sev, thr = Severity.WARN, th.storage_warn
+        elif n > th.storage_notice:
+            sev, thr = Severity.NOTICE, th.storage_notice
+        if sev is not None:
+            d.findings.append(Finding(
+                DIM_STORAGE, "STORAGE_LARGE", sev,
+                ("库 " if kind == "database" else "表空间 ") + name,
+                human_bytes(n), ">" + human_bytes(thr),
+                "pg_%s_size —— 只是占用量；**本内核取不到文件系统剩余空间**"
+                "（pg_stat_file 需 initial account），所以这不是「盘快满了」的判定，"
+                "请结合操作系统侧的磁盘监控看"
+                % ("database" if kind == "database" else "tablespace")))
+    if not d.rows:
+        d.headline = "取不到占用量"
+        return d
+    d.headline = ("%d 个库、%d 个表空间，最大 %s（剩余空间不可知，见证据）"
+                  % (dbs, tss, human_bytes(biggest)))
+    return d
+
+
 def registry():
     """Ordered (key, collector_fn) list — order is the report's section order.
 
@@ -527,5 +740,6 @@ def registry():
         ("logs", collect_logs),
         ("repl", collect_repl),
         ("schema", collect_schema),
+        ("storage", collect_storage),
         ("concurrency", collect_concurrency),
     ]

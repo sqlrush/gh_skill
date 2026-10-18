@@ -77,11 +77,15 @@ def test_the_four_dimensions_are_no_longer_collected_locally():
         assert gone not in src, "collectors.py 还在自己查 %s" % gone
 
 
-def test_the_other_eight_dimensions_are_untouched():
-    """本任务唯一该动的是那 4 个维度；其余 8 个的 registry key 一个都不能少。"""
+def test_the_other_local_dimensions_are_untouched():
+    """交接任务唯一该动的是那 4 个维度；本地维度一个都不能少。
+
+    storage 是后来（2026-10-17）新增的一维，不是这次交接动的 ——
+    列在这里是为了让"少了一维"依然能被这条测试抓住。
+    """
     keys = [k for k, _ in collectors.registry()]
     assert keys == ["overview", "slowsql", "xact", "conn", "logs", "repl",
-                    "schema", "concurrency"]
+                    "schema", "storage", "concurrency"]
     for gone in ("waits", "bloat", "lwlock", "locks"):
         assert gone not in keys
 

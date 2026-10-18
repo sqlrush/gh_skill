@@ -57,13 +57,19 @@ def _worker_row(**kw):
 
 class _Runner:
     def __init__(self, dead=None, settings=None, workers=None, xmin=None,
-                 version="(openGauss-lite 5.0.3 build x)", kernel_info=None):
+                 version="(openGauss-lite 5.0.3 build x)", kernel_info=None,
+                 freeze=None):
         self._dead = dead if dead is not None else []
         self._settings = settings if settings is not None else _SETTINGS_ROWS
         self._workers = workers if workers is not None else []
         self._xmin = xmin if xmin is not None else []
         self._version = version
         self._kernel = kernel_info            # None = 内核没有 gs_get_kernel_info
+        # 冻结水位。默认给一行很低的水位（og5 实测 3.71%）—— 默认不该触发任何
+        # finding，否则每个既有用例都会多出一条与它无关的发现。
+        self._freeze = freeze if freeze is not None else [
+            {"datname": "postgres", "freeze_age": "148366977",
+             "max_age": "4000000000", "freeze_table_age": "4000000000"}]
 
     def run(self, script, values=None):
         if script == vacuum.DEAD_SCRIPT:
@@ -74,6 +80,8 @@ class _Runner:
             return self._workers
         if script == vacuum.XMIN_SCRIPT:
             return self._xmin
+        if script == vacuum.FREEZE_SCRIPT:
+            return self._freeze
         if script == vacuum.kf.PROBE_SCRIPT:
             rows = [{"item": "version", "detail": self._version}]
             if self._kernel is not None:

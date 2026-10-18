@@ -12,8 +12,8 @@ python3 -m grmp_middleware.dump_whitelist
 
 | 项 | 值 |
 |---|---|
-| 脚本总数 | 118 |
-| id 范围 | 1 ~ 124 |
+| 脚本总数 | 123 |
+| id 范围 | 1 ~ 129 |
 
 > `id` 是**环境相关数据，不是契约**。skill 从不持有它 —— 运行时调
 > 接口一按 `cmd_name` 现查。客户环境重新发布后 id 会不同，属正常。
@@ -23,7 +23,7 @@ python3 -m grmp_middleware.dump_whitelist
 | 命名空间 | 条数 | 脚本 |
 |---|---|---|
 | **explain** | 13 | `plan_text`, `plan_text_analyze`, `active_pid`, `kernel_funcs`, `runtime_plan`, `session_by_pid`, `runtime_plan_int4`, `multi_stmt_probe`, `plan_text_analyze_schema`, `plan_text_schema`, `from_history`, `from_statement`, `relation_schemas` |
-| **health** | 15 | `archive_mode`, `bgwriter`, `conn_concentration`, `conn_states`, `db_concurrency`, `db_info`, `invalid_index`, `long_xact`, `overview`, `prepared_xacts`, `replication`, `slow_sql`, `stale_stats`, `unused_index`, `stats_window` |
+| **health** | 19 | `archive_mode`, `bgwriter`, `conn_concentration`, `conn_states`, `db_concurrency`, `db_info`, `invalid_index`, `long_xact`, `overview`, `prepared_xacts`, `replication`, `slow_sql`, `stale_stats`, `unused_index`, `stats_window`, `storage`, `sync_commit`, `thread_pool`, `wal_slots` |
 | **lockwait** | 2 | `chain`, `pairs` |
 | **memanalyze** | 11 | `activity`, `cols_bare`, `cols_qualified`, `context`, `gucs`, `instance`, `session`, `wlm_operator`, `wlm_operator_hist`, `wlm_sql`, `wlm_sql_hist` |
 | **perf** | 9 | `bgwriter`, `db_stat`, `instance_time`, `locks`, `memory`, `sessions`, `table_stat`, `wait_events`, `wait_status` |
@@ -36,7 +36,7 @@ python3 -m grmp_middleware.dump_whitelist
 | **sqltune** | 15 | `column_stats`, `from_history`, `from_statement`, `indexes`, `key_gucs`, `plan_json`, `plan_text`, `plan_text_analyze`, `tables`, `version`, `stats_freshness`, `column_types`, `plan_json_schema`, `plan_text_analyze_schema`, `plan_text_schema` |
 | **topproc** | 1 | `top_procs` |
 | **topsql** | 1 | `top_sql` |
-| **vacuum** | 5 | `autovac_settings`, `autovac_workers`, `dead_tuples`, `oldest_xmin`, `kernel_info` |
+| **vacuum** | 6 | `autovac_settings`, `autovac_workers`, `dead_tuples`, `oldest_xmin`, `kernel_info`, `freeze_age` |
 | **waitevent** | 2 | `events`, `instance_time` |
 | **wdr** | 13 | `cache`, `checkpoint`, `db_stat`, `db_summary`, `file_io`, `load_profile`, `native_report`, `node_name`, `snapshots`, `top_sql`, `waits`, `wdr_enabled`, `window` |
 
@@ -1424,13 +1424,13 @@ WITH b AS (SELECT snap_unique_sql_id AS sid, max(snap_query) AS query,
                   sum(snap_n_blocks_fetched-snap_n_blocks_hit) AS phys
              FROM snapshot.snap_summary_statement WHERE snapshot_id={{e}} GROUP BY snap_unique_sql_id)
 SELECT e.sid, e.query,
-       (e.calls-b.calls)       AS calls,
-       (e.elapsed-b.elapsed)   AS elapsed_us,
-       (e.cpu-b.cpu)           AS cpu_us,
-       (e.spill-b.spill)       AS spill_kb,
-       (e.phys-b.phys)         AS phys_blocks
-FROM e JOIN b USING (sid)
-WHERE (e.elapsed-b.elapsed) > 0
+       (e.calls   - COALESCE(b.calls,   0)) AS calls,
+       (e.elapsed - COALESCE(b.elapsed, 0)) AS elapsed_us,
+       (e.cpu     - COALESCE(b.cpu,     0)) AS cpu_us,
+       (e.spill   - COALESCE(b.spill,   0)) AS spill_kb,
+       (e.phys    - COALESCE(b.phys,    0)) AS phys_blocks
+FROM e LEFT JOIN b USING (sid)
+WHERE (e.elapsed - COALESCE(b.elapsed, 0)) > 0
 ORDER BY elapsed_us DESC LIMIT {{top}};
 ```
 
@@ -2066,5 +2066,101 @@ SELECT n.nspname, c.relname
 FROM pg_class c
 LEFT JOIN pg_namespace n ON c.relnamespace = n.oid
 WHERE c.relname IN ({{names}}) AND c.relkind IN ('r','v','p','m','f');
+```
+
+### `health.storage`
+
+- id `125` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+无参数
+
+```sql
+SELECT 'database' AS kind,
+       d.datname  AS name,
+       pg_database_size(d.oid)::bigint AS bytes
+  FROM pg_database d
+ WHERE d.datallowconn
+UNION ALL
+SELECT 'tablespace' AS kind,
+       t.spcname    AS name,
+       pg_tablespace_size(t.oid)::bigint AS bytes
+  FROM pg_tablespace t
+ ORDER BY bytes DESC;
+```
+
+### `health.sync_commit`
+
+- id `126` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+无参数
+
+```sql
+SELECT 'peers_configured' AS item,
+       (SELECT count(*)::text FROM pg_settings
+         WHERE name LIKE 'replconninfo%' AND COALESCE(setting,'') <> '') AS value
+UNION ALL
+SELECT 'in_recovery' AS item, pg_is_in_recovery()::text AS value
+UNION ALL
+SELECT 'sync_commit' AS item,
+       COALESCE((SELECT setting FROM pg_settings WHERE name='synchronous_commit'),'') AS value
+UNION ALL
+SELECT 'standby_names' AS item,
+       COALESCE((SELECT setting FROM pg_settings WHERE name='synchronous_standby_names'),'') AS value;
+```
+
+### `health.thread_pool`
+
+- id `127` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+无参数
+
+```sql
+SELECT 'enable_thread_pool' AS item,
+       COALESCE((SELECT setting FROM pg_settings WHERE name='enable_thread_pool'),'') AS value
+UNION ALL
+SELECT 'thread_pool_attr' AS item,
+       COALESCE((SELECT setting FROM pg_settings WHERE name='thread_pool_attr'),'') AS value
+UNION ALL
+SELECT 'max_connections' AS item,
+       COALESCE((SELECT setting FROM pg_settings WHERE name='max_connections'),'') AS value
+UNION ALL
+SELECT 'real_sessions' AS item,
+       (SELECT count(*)::text FROM pg_stat_activity WHERE sessionid <> 0) AS value;
+```
+
+### `health.wal_slots`
+
+- id `128` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+无参数
+
+```sql
+SELECT slot_name,
+       COALESCE(slot_type,'')  AS slot_type,
+       COALESCE(database,'')   AS database,
+       active::text            AS active,
+       pg_xlog_location_diff(pg_current_xlog_location(), restart_lsn)::bigint AS lag_bytes
+  FROM pg_replication_slots
+ WHERE restart_lsn IS NOT NULL
+ ORDER BY lag_bytes DESC;
+```
+
+### `vacuum.freeze_age`
+
+- id `129` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+无参数
+
+```sql
+SELECT d.datname,
+       (txid_snapshot_xmin(txid_current_snapshot())
+        - d.datfrozenxid64::text::numeric)::bigint      AS freeze_age,
+       (SELECT setting::numeric FROM pg_settings
+         WHERE name = 'autovacuum_freeze_max_age')::bigint AS max_age,
+       (SELECT setting FROM pg_settings
+         WHERE name = 'vacuum_freeze_table_age')         AS freeze_table_age
+  FROM pg_database d
+ WHERE d.datallowconn
+ ORDER BY freeze_age DESC;
 ```
 

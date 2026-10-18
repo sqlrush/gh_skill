@@ -60,6 +60,7 @@ from common.grmp.hints import with_hint  # noqa: E402
 # 结果值全是字符串：bool("f") 是 True、NULL 渲染成空串而不是 None。
 # 类型/空值还原一律走这里，不用裸 int()/float()/`is None`/`or 默认值`。
 from common.grmp.values import as_float, is_null  # noqa: E402
+import freeze as freeze_mod  # noqa: E402
 import render  # noqa: E402
 import rules  # noqa: E402
 from rules import default_thresholds  # noqa: E402
@@ -71,6 +72,7 @@ DEAD_SCRIPT = "vacuum.dead_tuples"
 SETTINGS_SCRIPT = "vacuum.autovac_settings"
 WORKERS_SCRIPT = "vacuum.autovac_workers"
 XMIN_SCRIPT = "vacuum.oldest_xmin"
+FREEZE_SCRIPT = "vacuum.freeze_age"
 # 内核事务水位(GaussDB 私有,先探测再用;交付闸按脚本名全串在 skills/ 里检索,故写全):
 #   explain.kernel_funcs —— 探测;vacuum.kernel_info —— gs_get_kernel_info() 原样四列
 # openGauss 没有这个函数,报告不出这一节;GaussDB 该有而没有,用中文说明原因。
@@ -87,6 +89,8 @@ class VacuumReport:
     findings: list = field(default_factory=list)
     kernel_info: list = field(default_factory=list)   # gs_get_kernel_info 的 node/module/name/value 行
     kernel_note: str = ""                              # 没取到时的原因(中文);openGauss 为空
+    freeze: list = field(default_factory=list)         # 每个库一行:datname/freeze_age/max_age
+    freeze_note: str = ""                              # 取不到时的原因(中文);取到了为空
 
 
 def _kernel_info(runner) -> tuple:
@@ -101,6 +105,18 @@ def _kernel_info(runner) -> tuple:
         return [], "gs_get_kernel_info 调用失败:" + (msg if "提示:" in msg else with_hint(msg))
 
 
+def _freeze(runner) -> tuple:
+    """冻结水位。取不到只记原因,不影响主报告 —— 死元组那部分照常出。
+
+    这条脚本是后加的(2026-10-17),现场可能还没重导白名单,那时会报
+    「脚本未登记」。这种情况要如实说明,不能静默当成「水位正常」。
+    """
+    try:
+        return runner.run(FREEZE_SCRIPT, {}), ""
+    except (access.QueryError, common.DBError) as exc:
+        return [], "冻结水位取不到:" + str(exc)
+
+
 def collect(runner, limit: int, th) -> VacuumReport:
     settings = {r["name"]: r["setting"]
                 for r in runner.run(SETTINGS_SCRIPT, {})}
@@ -108,6 +124,7 @@ def collect(runner, limit: int, th) -> VacuumReport:
     workers = runner.run(WORKERS_SCRIPT, {})
     xmin = runner.run(XMIN_SCRIPT, {})
     kernel_rows, kernel_note = _kernel_info(runner)
+    freeze_rows, freeze_note = _freeze(runner)
     tables = []
     for row in raw:
         line = rules.trigger_line(as_float(row["reltuples"]), settings,
@@ -116,8 +133,10 @@ def collect(runner, limit: int, th) -> VacuumReport:
                            hits=rules.evaluate(row, settings, xmin, th)))
     return VacuumReport(tables=tables, settings=settings, workers=workers,
                         oldest_xmin=xmin,
-                        findings=rules.judge_tables(raw, settings, xmin, th),
-                        kernel_info=kernel_rows, kernel_note=kernel_note)
+                        findings=(rules.judge_tables(raw, settings, xmin, th)
+                                  + freeze_mod.judge(freeze_rows)),
+                        kernel_info=kernel_rows, kernel_note=kernel_note,
+                        freeze=freeze_rows, freeze_note=freeze_note)
 
 
 # ---------------------------------------------------------------------------
@@ -282,10 +301,46 @@ def _kernel_info_section(rep: VacuumReport) -> str:
     return ""
 
 
+def _i64(n: int) -> str:
+    """事务号这种量级必须带千分位 —— 148366977 和 1483669770 裸着看一眼分不出差一个数量级。"""
+    return "{:,}".format(int(n))
+
+
+def _freeze_section(rep: VacuumReport) -> str:
+    """冻结水位。按百分比列出每个库,并把这个内核的语义写清楚。
+
+    **那句「不会像 PostgreSQL 那样停写」必须留着。** 读报告的 DBA 多数是
+    PG 背景,看到「冻结水位 85%」第一反应是「库要停写了」,会去做一次没必要的
+    停机抢救。这个内核是 64 位事务号,实测 `autovacuum_freeze_max_age` 默认
+    4000000000(超过 2^31)、也没有 xid_stop_limit —— 真实后果是全表冻结扫描
+    的 IO 风暴与 clog 不能截断,不是停写。
+    """
+    if rep.freeze_note:
+        return "\n### 事务号冻结水位\n\n> " + rep.freeze_note + "\n"
+    if not rep.freeze:
+        return ""
+    rows = []
+    for r in rep.freeze:
+        pct = freeze_mod.freeze_pct(r)
+        rows.append([str(r.get("datname", "")),
+                     _i64(as_float(r.get("freeze_age")) or 0),
+                     _i64(as_float(r.get("max_age")) or 0),
+                     "算不出" if pct < 0 else "%.1f%%" % pct])
+    worst = freeze_mod.worst_pct(rep.freeze)
+    head = "最高 %.1f%%" % worst if worst >= 0 else "算不出占比"
+    return ("\n### 事务号冻结水位（%s）\n\n"
+            "> 占比到 100%% 时 autovacuum 会对大表做**全表冻结扫描** —— 不择时的 IO 风暴，"
+            "现场表现是「某天夜里突然很慢，却没有慢 SQL、没有锁」；水位不推进时 clog/csnlog "
+            "也一直不能截断、持续占盘。\n"
+            "> **本内核是 64 位事务号，不会像 PostgreSQL 那样到 2^31 就拒绝写入** —— "
+            "看到占比高不必做停机抢救，在低峰期手工 `VACUUM FREEZE` 即可。\n\n"
+            % head + render.table(["库", "水位", "max_age", "占比"], rows))
+
+
 def _autovac_status_section(rep: VacuumReport) -> str:
     return ("\n## autovacuum 近期运行情况\n\n" + _guc_section(rep) + "\n" +
             _workers_section(rep) + "\n" + _xmin_blockers_section(rep) +
-            _kernel_info_section(rep))
+            _freeze_section(rep) + _kernel_info_section(rep))
 
 
 def _manual_cleanup_section(rep: VacuumReport) -> str:

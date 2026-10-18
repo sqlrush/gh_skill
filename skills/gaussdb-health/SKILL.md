@@ -1,6 +1,6 @@
 ﻿---
 name: gaussdb-health
-version: 3.2.0
+version: 3.3.0
 description: "通过内置脚本执行 OpenGauss/GaussDB 数据库健康检查。用户询问库是否健康、为什么慢或卡、是否有阻塞、长事务、膨胀、复制延迟、checkpoint 压力、归档问题、空闲会话、连接压力或无用索引时使用，包括“库健康吗”“为什么卡”“有没有阻塞”“有没有长事务”“有没有膨胀”“复制有没有延迟”等请求。触发后运行 scripts/health.py，采集真实证据和确定性发现，不要只给泛化排查建议。"
 allowed-tools: ["exec", "read"]
 compatibility: opencode
@@ -14,7 +14,7 @@ metadata:
 
 一次性、只读、可信的数据库健康检查。**确定性归脚本（采集 + 阈值发现），判断归你（LLM），但你的判断必须对脚本的 `## Deterministic Findings` 做证据锚定校验。** 报告抬头用确定性状态带，不编造单一分数。
 
-**本技能是汇总层，不是唯一的证据来源。** `{baseDir}/scripts/health.py` 自己只读采集 8 个本地维度（Overview / Slow SQL / 长事务 / 连接 / Checkpoint·WAL·归档 / 复制 / Schema / 并发），另外以子进程方式各跑一次 `gaussdb-lockwait`、`gaussdb-waitevent`、`gaussdb-vacuum` 三个 skill 的 `--format json` 输出，把它们的 `Deterministic Findings` 并入本报告——锁堵塞、等待事件/DB time、死元组/膨胀这三块的**完整证据、原始表、阻塞链/下钻分析都在对应子 skill 里**，本技能只搬运它们已经算出来的风险结论，并在每条这样的 finding 后面标注来源（`（详见 gaussdb-xxx）`）。**要看某一块的全部细节，直接单独跑那个子 skill，不要指望 health 的报告重现它。** 连接元数据读取 `$GSDB_HOME/config.yaml`，凭据由脚本从 `{baseDir}/../common/credentials/` 自动解密。
+**本技能是汇总层，不是唯一的证据来源。** `{baseDir}/scripts/health.py` 自己只读采集 9 个本地维度（Overview / Slow SQL / 长事务 / 连接 / Checkpoint·WAL·归档 / 复制 / Schema / 占用量 / 并发），另外以子进程方式各跑一次 `gaussdb-lockwait`、`gaussdb-waitevent`、`gaussdb-vacuum` 三个 skill 的 `--format json` 输出，把它们的 `Deterministic Findings` 并入本报告——锁堵塞、等待事件/DB time、死元组/膨胀这三块的**完整证据、原始表、阻塞链/下钻分析都在对应子 skill 里**，本技能只搬运它们已经算出来的风险结论，并在每条这样的 finding 后面标注来源（`（详见 gaussdb-xxx）`）。**要看某一块的全部细节，直接单独跑那个子 skill，不要指望 health 的报告重现它。** 连接元数据读取 `$GSDB_HOME/config.yaml`，凭据由脚本从 `{baseDir}/../common/credentials/` 自动解密。
 
 命中以下请求时，必须使用本 skill 并实际执行脚本，不要只做概念解释：
 
@@ -53,7 +53,7 @@ metadata:
    - **`## 本次未采集到的维度`**：点名本次哪个子 skill 没采集成功、原因是什么；三个都成功时写清楚"全部采集成功"。
    - **`## 未纳入汇总的能力`**：无条件列出 `gaussdb-explain`、`gaussdb-sqltune`、`gaussdb-sqlreview`、`gaussdb-sqlfetch`、`gaussdb-proctune` 这 5 个 skill——它们都需要用户指定具体 SQL / sql_id / 存储过程才能跑，health 拿不到这类输入，**这 5 项永远不在本报告覆盖范围内**；报告本身会说明这一点，不要等用户问起来才提，也不要因为这次报告很干净就暗示"都查过了"。
 
-   选项：`--include/--exclude <dims>` 裁剪维度。本地维度名：`overview,slowsql,xact,conn,logs,repl,schema,concurrency`；另外 `locks`、`waits`、`lwlock`、`bloat` 这四个名字继续有效，只是不再对应本地 collector，而是路由到子 skill（`locks`→`gaussdb-lockwait`，`waits`/`lwlock`→`gaussdb-waitevent`，`bloat`→`gaussdb-vacuum`）——已有的命令行不受影响。`--top N` 调列表条数；`--format json` 取结构化（额外带 `sub_skills`、`uncovered_capabilities` 两个字段）。**不要**为某一维度单独多跑命令；也不要看到 `--include locks` 就自己再单独跑一遍 lockwait——health 已经替你跑过了。
+   选项：`--include/--exclude <dims>` 裁剪维度。本地维度名：`overview,slowsql,xact,conn,logs,repl,schema,storage,concurrency`；另外 `locks`、`waits`、`lwlock`、`bloat` 这四个名字继续有效，只是不再对应本地 collector，而是路由到子 skill（`locks`→`gaussdb-lockwait`，`waits`/`lwlock`→`gaussdb-waitevent`，`bloat`→`gaussdb-vacuum`）——已有的命令行不受影响。`--top N` 调列表条数；`--format json` 取结构化（额外带 `sub_skills`、`uncovered_capabilities` 两个字段）。**不要**为某一维度单独多跑命令；也不要看到 `--include locks` 就自己再单独跑一遍 lockwait——health 已经替你跑过了。
 
 3. **加载方法论。** 阅读 `{baseDir}/references/gaussdb-health-methodology.md`，逐维度按其检查清单解读，并做跨维度关联。阈值口径查 `{baseDir}/references/health-thresholds.md`。涉及具体慢 SQL 深调时导向 `/gaussdb-sqltune`，存储过程导向 `/gaussdb-proctune`。
 
@@ -118,6 +118,37 @@ metadata:
   不能回看过去，这一点要跟用户说清楚。它是给用户看的页面地址（和对话页同一个网址），不是内部接口。
   **脚本给的是 Markdown 链接形态 `[打开报告](…)`，就按这个形态放进回答，不要把它改写成裸路径。** 裸的 `/dash/wdr?...` 用户点不开、复制到地址栏也打不开（实测过：用户要某个时间段的 WDR 报告，拿到裸路径之后跳不过去）。
   没有这一行（非容器环境，或存档失败）就不提大盘，**不要自己拼一个「大盘」地址出来**。
+
+## 2026-10-17 新增的四项判定——读的时候有三件事不能搞混
+
+这四项补的都是**此前完全没有信号**的故障：配置看着正常、连接数正常、没有慢 SQL，
+但库会挂住或盘会被填满。
+
+- **`SYNC_COMMIT_NO_STANDBY`（🔴）——「要求同步确认，却一个同步备都没有」。**
+  主库的提交会**一直等下去**，表现是写入全部挂住。处置：恢复备库，或由 DBA 临时把
+  `synchronous_commit` 降为 `local`。
+  **反过来，在单机库上这一项会明说「不适用」，那不等于「健康」。**
+  openGauss 的同步复制要靠 `replconninfo` 定义对端才生效 —— og5 实测
+  `synchronous_commit=on` + `standby_names='*'` + 零个备库，写入完全正常。
+  所以看到「单机部署，同步提交不适用」时，**不要**替它补一句「配置有风险」。
+
+- **`WAL_SLOT_INACTIVE`（🟠）/ `WAL_SLOT_LAG`——复制槽钉住了 WAL 回收。**
+  这和 `REPL_LAG` 是**两件事**，处置方向相反：`REPL_LAG` 是备库追不上（看备库），
+  这两条是槽不消费、WAL 只增不减直到填满磁盘（看下游消费端，或删掉废槽）。
+  未活跃的槽**不看落后量就报** —— 消费端已经没了，落后量现在小但会一直涨，
+  而且没有任何东西会自动清掉它。
+
+- **`THREAD_POOL_HIGH`（🟠）——开了线程池时，真正的并发上限是池大小。**
+  og5 实测 `max_connections=1000` 而池只有 800，先碰到的是 800。池满后新请求排队，
+  现场表现是「库没响应」，而**连接维度此时是绿的** —— 用户说「库没反应」而你看到
+  连接数很正常时，先看这一条。占比的分母是 `thread_pool_attr` 的池大小，
+  解析不出来时脚本**不判**并说明原因（不会拿 `max_connections` 顶上去当分母）。
+
+- **`STORAGE_LARGE`（🟡/🟠）——只是占用量，不是「盘快满了」。**
+  **文件系统剩余空间在这个内核上取不到**（`pg_stat_file` 要 initial account，实测被拒）。
+  所以这一维回答的是「哪个库/表空间很大、涨得快」，**回答不了「还剩多少」**。
+  转述时必须带上这个边界，并提示用户结合操作系统侧的磁盘监控看 ——
+  照着一个取不到的事实说「磁盘即将耗尽」，是在编造证据。
 
 ## 安全红线
 
