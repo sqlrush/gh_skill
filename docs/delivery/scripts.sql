@@ -337,12 +337,21 @@ LIMIT {{limit}};
 ', '[{"key":"order","value":"","type":"STRING","autoAcquire":false},{"key":"limit","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'topsql.top_sql', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT
   unique_sql_id::text,
-  LEFT(REGEXP_REPLACE(query, ''\s+'', '' '', ''g''), 80) AS query,
+  LEFT(REGEXP_REPLACE(COALESCE(NULLIF(REGEXP_REPLACE(query, ''^(\s*(--[^\n]*(\n|$)|/\*([^*]|\*+[^*/])*\*+/))+\s*'', ''''), ''''), query),
+                     ''\s+'', '' '', ''g''), 80) AS query,
   n_calls AS calls,
   ROUND(total_elapse_time/1000000::numeric, 2) AS total_sec,
   ROUND((total_elapse_time/NULLIF(n_calls,0))/1000::numeric, 2) AS avg_ms,
   n_returned_rows AS rows
-FROM dbe_perf.statement
+FROM (SELECT unique_sql_id,
+             max(query)             AS query,
+             sum(n_calls)           AS n_calls,
+             sum(total_elapse_time) AS total_elapse_time,
+             sum(n_returned_rows)   AS n_returned_rows,
+             sum(n_blocks_hit)      AS n_blocks_hit,
+             sum(n_blocks_fetched)  AS n_blocks_fetched
+        FROM dbe_perf.statement
+       GROUP BY unique_sql_id) s
 WHERE n_calls > 0
 ORDER BY {{order}}
 LIMIT {{limit}};
@@ -418,8 +427,8 @@ INSERT INTO grmp.script_config (id, script_type, script_name, database_type, ref
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'wdr.node_name', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SHOW pgxc_node_name;
 ', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'wdr.snapshots', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT snapshot_id,
-       to_char(start_ts,''YYYY-MM-DD HH24:MI'') AS start_ts,
-       to_char(end_ts,''YYYY-MM-DD HH24:MI'')   AS end_ts,
+       to_char(start_ts,''YYYY-MM-DD HH24:MI:SS'') AS start_ts,
+       to_char(end_ts,''YYYY-MM-DD HH24:MI:SS'')   AS end_ts,
        round(EXTRACT(EPOCH FROM (end_ts-start_ts))/60)::bigint AS dur_min
 FROM snapshot.snapshot ORDER BY snapshot_id DESC LIMIT {{limit}};
 ', '[{"key":"limit","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
@@ -889,3 +898,100 @@ INSERT INTO grmp.script_config (id, script_type, script_name, database_type, ref
  WHERE d.datallowconn
  ORDER BY freeze_age DESC;
 ', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.snap_counters', 'appbusiness', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT ''snap_at'' AS item,
+       to_char((SELECT start_ts FROM snapshot.snapshot WHERE snapshot_id = {{snap}}),
+               ''YYYY-MM-DD HH24:MI:SS'') AS value
+UNION ALL
+SELECT ''db_time_us'', COALESCE(sum(snap_value), 0)::text
+  FROM snapshot.snap_global_instance_time WHERE snapshot_id = {{snap}} AND snap_stat_name = ''DB_TIME''
+UNION ALL
+SELECT ''cpu_time_us'', COALESCE(sum(snap_value), 0)::text
+  FROM snapshot.snap_global_instance_time WHERE snapshot_id = {{snap}} AND snap_stat_name = ''CPU_TIME''
+UNION ALL
+SELECT ''xact_commit'', COALESCE(sum(snap_xact_commit), 0)::text
+  FROM snapshot.snap_summary_stat_database WHERE snapshot_id = {{snap}}
+UNION ALL
+SELECT ''xact_rollback'', COALESCE(sum(snap_xact_rollback), 0)::text
+  FROM snapshot.snap_summary_stat_database WHERE snapshot_id = {{snap}}
+UNION ALL
+SELECT ''deadlocks'', COALESCE(sum(snap_deadlocks), 0)::text
+  FROM snapshot.snap_summary_stat_database WHERE snapshot_id = {{snap}}
+UNION ALL
+SELECT ''temp_bytes'', COALESCE(sum(snap_temp_bytes), 0)::text
+  FROM snapshot.snap_summary_stat_database WHERE snapshot_id = {{snap}}
+UNION ALL
+SELECT ''blks_read'', COALESCE(sum(snap_blks_read), 0)::text
+  FROM snapshot.snap_summary_stat_database WHERE snapshot_id = {{snap}}
+UNION ALL
+SELECT ''blks_hit'', COALESCE(sum(snap_blks_hit), 0)::text
+  FROM snapshot.snap_summary_stat_database WHERE snapshot_id = {{snap}}
+UNION ALL
+SELECT ''ckpt_timed'', COALESCE(sum(snap_checkpoints_timed), 0)::text
+  FROM snapshot.snap_global_bgwriter_stat WHERE snapshot_id = {{snap}}
+UNION ALL
+SELECT ''ckpt_req'', COALESCE(sum(snap_checkpoints_req), 0)::text
+  FROM snapshot.snap_global_bgwriter_stat WHERE snapshot_id = {{snap}};
+', '[{"key":"snap","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.live_counters', 'appbusiness', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT ''now'' AS item, to_char(now(), ''YYYY-MM-DD HH24:MI:SS'') AS value
+UNION ALL
+SELECT ''postmaster_start'', to_char(pg_postmaster_start_time(), ''YYYY-MM-DD HH24:MI:SS'')
+UNION ALL
+SELECT ''stats_reset'', COALESCE(to_char(max(stats_reset), ''YYYY-MM-DD HH24:MI:SS''), '''')
+  FROM pg_stat_database
+UNION ALL
+SELECT ''db_time_us'', COALESCE(sum(value), 0)::text
+  FROM dbe_perf.global_instance_time WHERE stat_name = ''DB_TIME''
+UNION ALL
+SELECT ''cpu_time_us'', COALESCE(sum(value), 0)::text
+  FROM dbe_perf.global_instance_time WHERE stat_name = ''CPU_TIME''
+UNION ALL
+SELECT ''xact_commit'', COALESCE(sum(xact_commit), 0)::text FROM pg_stat_database
+UNION ALL
+SELECT ''xact_rollback'', COALESCE(sum(xact_rollback), 0)::text FROM pg_stat_database
+UNION ALL
+SELECT ''deadlocks'', COALESCE(sum(deadlocks), 0)::text FROM pg_stat_database
+UNION ALL
+SELECT ''temp_bytes'', COALESCE(sum(temp_bytes), 0)::text FROM pg_stat_database
+UNION ALL
+SELECT ''blks_read'', COALESCE(sum(blks_read), 0)::text FROM pg_stat_database
+UNION ALL
+SELECT ''blks_hit'', COALESCE(sum(blks_hit), 0)::text FROM pg_stat_database
+UNION ALL
+SELECT ''ckpt_timed'', COALESCE(sum(checkpoints_timed), 0)::text FROM pg_stat_bgwriter
+UNION ALL
+SELECT ''ckpt_req'', COALESCE(sum(checkpoints_req), 0)::text FROM pg_stat_bgwriter;
+', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.snap_waits', 'appbusiness', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT snap_type  AS wait_class,
+       snap_event AS event,
+       sum(snap_wait)            AS waits,
+       sum(snap_total_wait_time) AS wait_us
+  FROM snapshot.snap_global_wait_events
+ WHERE snapshot_id = {{snap}}
+   AND upper(snap_type) NOT IN (''STATUS'',''NONE'')
+ GROUP BY snap_type, snap_event
+HAVING sum(snap_wait) > 0;
+', '[{"key":"snap","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.live_waits', 'appbusiness', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT type  AS wait_class,
+       event AS event,
+       sum(wait)            AS waits,
+       sum(total_wait_time) AS wait_us
+  FROM dbe_perf.global_wait_events
+ WHERE upper(type) NOT IN (''STATUS'',''NONE'')
+ GROUP BY type, event
+HAVING sum(wait) > 0;
+', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'topsql.snap_statement', 'appbusiness', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT
+  snap_unique_sql_id::text AS unique_sql_id,
+  LEFT(REGEXP_REPLACE(COALESCE(NULLIF(REGEXP_REPLACE(max(snap_query), ''^(\s*(--[^\n]*(\n|$)|/\*([^*]|\*+[^*/])*\*+/))+\s*'', ''''), ''''), max(snap_query)),
+                     ''\s+'', '' '', ''g''), 80) AS query,
+  sum(snap_n_calls) AS calls,
+  ROUND(sum(snap_total_elapse_time)/1000000::numeric, 2) AS total_sec,
+  ROUND((sum(snap_total_elapse_time)/NULLIF(sum(snap_n_calls),0))/1000::numeric, 2) AS avg_ms,
+  sum(snap_n_returned_rows) AS rows
+FROM snapshot.snap_summary_statement
+WHERE snapshot_id = {{snap}}
+GROUP BY snap_unique_sql_id
+HAVING sum(snap_n_calls) > 0
+ORDER BY sum(snap_total_elapse_time) DESC
+LIMIT {{limit}};
+', '[{"key":"snap","value":"","type":"INTEGER","autoAcquire":false},{"key":"limit","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());

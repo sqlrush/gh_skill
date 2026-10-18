@@ -3,10 +3,10 @@
 -- =====================================================================
 --
 -- 适用前提：已导入过上一版的 105 条脚本。本文件只含相对那一版的**增量**，
--- 不要整份重导（整份见同目录 scripts.sql，共 113 条）。
+-- 不要整份重导（整份见同目录 scripts.sql，共 118 条）。
 --
---   新增   8 条 INSERT
---   更新   7 条 UPDATE
+--   新增   13 条 INSERT
+--   更新   9 条 UPDATE
 --
 -- 全部脚本均为**只读查询**，只访问系统视图与系统表，不读业务数据、
 -- 不含 DML/DDL、不修改任何对象。
@@ -17,7 +17,7 @@
 --   2. id 用 `grmp.script_config_seq.nextval`，不硬编码，避免与现有记录冲突。
 --
 -- =====================================================================
--- 一、新增 8 条
+-- 一、新增 13 条
 -- =====================================================================
 
 -- [config.settings] 全量运行参数
@@ -40,6 +40,52 @@ INSERT INTO grmp.script_config (id, script_type, script_name, database_type, ref
  ORDER BY name;
 ', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 
+-- [health.live_counters] 此刻的库级累计计数器与数据库时钟
+--   读取：dbe_perf.global_instance_time / pg_stat_database / pg_stat_bgwriter / pg_postmaster_start_time()
+--   用途：时段体检「到此刻」的那一端；同时给出数据库的当前时间、实例启动与统计重置时刻，用来判断窗口有没有跨过重启（跨过重启的两端不能相减）
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.live_counters', 'appbusiness', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT ''now'' AS item, to_char(now(), ''YYYY-MM-DD HH24:MI:SS'') AS value
+UNION ALL
+SELECT ''postmaster_start'', to_char(pg_postmaster_start_time(), ''YYYY-MM-DD HH24:MI:SS'')
+UNION ALL
+SELECT ''stats_reset'', COALESCE(to_char(max(stats_reset), ''YYYY-MM-DD HH24:MI:SS''), '''')
+  FROM pg_stat_database
+UNION ALL
+SELECT ''db_time_us'', COALESCE(sum(value), 0)::text
+  FROM dbe_perf.global_instance_time WHERE stat_name = ''DB_TIME''
+UNION ALL
+SELECT ''cpu_time_us'', COALESCE(sum(value), 0)::text
+  FROM dbe_perf.global_instance_time WHERE stat_name = ''CPU_TIME''
+UNION ALL
+SELECT ''xact_commit'', COALESCE(sum(xact_commit), 0)::text FROM pg_stat_database
+UNION ALL
+SELECT ''xact_rollback'', COALESCE(sum(xact_rollback), 0)::text FROM pg_stat_database
+UNION ALL
+SELECT ''deadlocks'', COALESCE(sum(deadlocks), 0)::text FROM pg_stat_database
+UNION ALL
+SELECT ''temp_bytes'', COALESCE(sum(temp_bytes), 0)::text FROM pg_stat_database
+UNION ALL
+SELECT ''blks_read'', COALESCE(sum(blks_read), 0)::text FROM pg_stat_database
+UNION ALL
+SELECT ''blks_hit'', COALESCE(sum(blks_hit), 0)::text FROM pg_stat_database
+UNION ALL
+SELECT ''ckpt_timed'', COALESCE(sum(checkpoints_timed), 0)::text FROM pg_stat_bgwriter
+UNION ALL
+SELECT ''ckpt_req'', COALESCE(sum(checkpoints_req), 0)::text FROM pg_stat_bgwriter;
+', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+
+-- [health.live_waits] 此刻的等待事件累计值
+--   读取：dbe_perf.global_wait_events
+--   用途：时段体检「到此刻」那一端的等待分布；同样剔除空闲等待
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.live_waits', 'appbusiness', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT type  AS wait_class,
+       event AS event,
+       sum(wait)            AS waits,
+       sum(total_wait_time) AS wait_us
+  FROM dbe_perf.global_wait_events
+ WHERE upper(type) NOT IN (''STATUS'',''NONE'')
+ GROUP BY type, event
+HAVING sum(wait) > 0;
+', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+
 -- [health.partitions] 分区表的分区数量与策略
 --   读取：pg_partition / pg_class
 --   用途：分区数达到四位数时每次查询规划都要遍历分区元数据，规划开销明显上升
@@ -56,6 +102,58 @@ INSERT INTO grmp.script_config (id, script_type, script_name, database_type, ref
  GROUP BY n.nspname, c.relname
  ORDER BY parts DESC;
 ', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+
+-- [health.snap_counters] 某个 WDR 快照时刻的库级累计计数器
+--   读取：snapshot.snap_global_instance_time / snap_summary_stat_database / snap_global_bgwriter_stat
+--   用途：时段体检：用户问「某个时间段库怎么样」时，取包住这段时间的两个快照相减，得到这段时间的 DB time、提交 / 回滚 / 死锁、临时溢出、缓存命中、检查点
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.snap_counters', 'appbusiness', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT ''snap_at'' AS item,
+       to_char((SELECT start_ts FROM snapshot.snapshot WHERE snapshot_id = {{snap}}),
+               ''YYYY-MM-DD HH24:MI:SS'') AS value
+UNION ALL
+SELECT ''db_time_us'', COALESCE(sum(snap_value), 0)::text
+  FROM snapshot.snap_global_instance_time WHERE snapshot_id = {{snap}} AND snap_stat_name = ''DB_TIME''
+UNION ALL
+SELECT ''cpu_time_us'', COALESCE(sum(snap_value), 0)::text
+  FROM snapshot.snap_global_instance_time WHERE snapshot_id = {{snap}} AND snap_stat_name = ''CPU_TIME''
+UNION ALL
+SELECT ''xact_commit'', COALESCE(sum(snap_xact_commit), 0)::text
+  FROM snapshot.snap_summary_stat_database WHERE snapshot_id = {{snap}}
+UNION ALL
+SELECT ''xact_rollback'', COALESCE(sum(snap_xact_rollback), 0)::text
+  FROM snapshot.snap_summary_stat_database WHERE snapshot_id = {{snap}}
+UNION ALL
+SELECT ''deadlocks'', COALESCE(sum(snap_deadlocks), 0)::text
+  FROM snapshot.snap_summary_stat_database WHERE snapshot_id = {{snap}}
+UNION ALL
+SELECT ''temp_bytes'', COALESCE(sum(snap_temp_bytes), 0)::text
+  FROM snapshot.snap_summary_stat_database WHERE snapshot_id = {{snap}}
+UNION ALL
+SELECT ''blks_read'', COALESCE(sum(snap_blks_read), 0)::text
+  FROM snapshot.snap_summary_stat_database WHERE snapshot_id = {{snap}}
+UNION ALL
+SELECT ''blks_hit'', COALESCE(sum(snap_blks_hit), 0)::text
+  FROM snapshot.snap_summary_stat_database WHERE snapshot_id = {{snap}}
+UNION ALL
+SELECT ''ckpt_timed'', COALESCE(sum(snap_checkpoints_timed), 0)::text
+  FROM snapshot.snap_global_bgwriter_stat WHERE snapshot_id = {{snap}}
+UNION ALL
+SELECT ''ckpt_req'', COALESCE(sum(snap_checkpoints_req), 0)::text
+  FROM snapshot.snap_global_bgwriter_stat WHERE snapshot_id = {{snap}};
+', '[{"key":"snap","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+
+-- [health.snap_waits] 某个 WDR 快照时刻的等待事件累计值
+--   读取：snapshot.snap_global_wait_events
+--   用途：时段体检的等待分布（按等待类与事件）；已剔除 STATUS / NONE 这类空闲等待（会话在等客户端发下一条命令）
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.snap_waits', 'appbusiness', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT snap_type  AS wait_class,
+       snap_event AS event,
+       sum(snap_wait)            AS waits,
+       sum(snap_total_wait_time) AS wait_us
+  FROM snapshot.snap_global_wait_events
+ WHERE snapshot_id = {{snap}}
+   AND upper(snap_type) NOT IN (''STATUS'',''NONE'')
+ GROUP BY snap_type, snap_event
+HAVING sum(snap_wait) > 0;
+', '[{"key":"snap","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 
 -- [health.storage] 库与表空间占用量
 --   读取：pg_database / pg_tablespace
@@ -118,6 +216,25 @@ INSERT INTO grmp.script_config (id, script_type, script_name, database_type, ref
  ORDER BY lag_bytes DESC;
 ', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 
+-- [topsql.snap_statement] 某个 WDR 快照时刻的语句累计值（按 sql_id 聚合）
+--   读取：snapshot.snap_summary_statement
+--   用途：时段 Top SQL：用户问「某个时间段 / 最近 N 分钟哪些 SQL 最耗时」时，两个快照（或快照与此刻）相减得到这段时间内每条语句的调用次数与耗时
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'topsql.snap_statement', 'appbusiness', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT
+  snap_unique_sql_id::text AS unique_sql_id,
+  LEFT(REGEXP_REPLACE(COALESCE(NULLIF(REGEXP_REPLACE(max(snap_query), ''^(\s*(--[^\n]*(\n|$)|/\*([^*]|\*+[^*/])*\*+/))+\s*'', ''''), ''''), max(snap_query)),
+                     ''\s+'', '' '', ''g''), 80) AS query,
+  sum(snap_n_calls) AS calls,
+  ROUND(sum(snap_total_elapse_time)/1000000::numeric, 2) AS total_sec,
+  ROUND((sum(snap_total_elapse_time)/NULLIF(sum(snap_n_calls),0))/1000::numeric, 2) AS avg_ms,
+  sum(snap_n_returned_rows) AS rows
+FROM snapshot.snap_summary_statement
+WHERE snapshot_id = {{snap}}
+GROUP BY snap_unique_sql_id
+HAVING sum(snap_n_calls) > 0
+ORDER BY sum(snap_total_elapse_time) DESC
+LIMIT {{limit}};
+', '[{"key":"snap","value":"","type":"INTEGER","autoAcquire":false},{"key":"limit","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+
 -- [vacuum.bloat_estimate] 表膨胀估算的输入
 --   读取：pg_class / pg_stats
 --   用途：死元组比例回答「有多少可回收」，这条回答「空间比应占多了多少」——后者 VACUUM 不还盘，需要评估重建
@@ -156,7 +273,7 @@ INSERT INTO grmp.script_config (id, script_type, script_name, database_type, ref
 ', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 
 -- =====================================================================
--- 二、更新 7 条已有脚本的 SQL 正文
+-- 二、更新 9 条已有脚本的 SQL 正文
 -- =====================================================================
 
 -- [proctune.plan_text_analyze]
@@ -176,6 +293,34 @@ UPDATE grmp.script_config
        last_modify_user = '999999999',
        last_modify_time = now()
  WHERE script_name = 'sqltune.plan_text_analyze';
+
+-- [topsql.top_sql]
+--   **修正取数错误 + 显示修正**：① `dbe_perf.statement` 里同一条语句按执行用户拆成多行 （实测 217 行里 29 行重复），原 SQL 不聚合，同一个 sql_id 在榜上重复出现、两次取数相减时 还会拿到不同用户的那一行，算出凭空的增量。改为先按 unique_sql_id 聚合再排序（输出列名不变）。 ② SQL 文本开头的注释（如 `/* app=… */`、`-- …`）会占满 80 字的显示宽度、看不到真正的语句， 改为显示前剥掉**开头的**注释（中间的注释可能是 hint，不动；整条都是注释时显示原文）。
+UPDATE grmp.script_config
+   SET script_content   = 'SELECT
+  unique_sql_id::text,
+  LEFT(REGEXP_REPLACE(COALESCE(NULLIF(REGEXP_REPLACE(query, ''^(\s*(--[^\n]*(\n|$)|/\*([^*]|\*+[^*/])*\*+/))+\s*'', ''''), ''''), query),
+                     ''\s+'', '' '', ''g''), 80) AS query,
+  n_calls AS calls,
+  ROUND(total_elapse_time/1000000::numeric, 2) AS total_sec,
+  ROUND((total_elapse_time/NULLIF(n_calls,0))/1000::numeric, 2) AS avg_ms,
+  n_returned_rows AS rows
+FROM (SELECT unique_sql_id,
+             max(query)             AS query,
+             sum(n_calls)           AS n_calls,
+             sum(total_elapse_time) AS total_elapse_time,
+             sum(n_returned_rows)   AS n_returned_rows,
+             sum(n_blocks_hit)      AS n_blocks_hit,
+             sum(n_blocks_fetched)  AS n_blocks_fetched
+        FROM dbe_perf.statement
+       GROUP BY unique_sql_id) s
+WHERE n_calls > 0
+ORDER BY {{order}}
+LIMIT {{limit}};
+',
+       last_modify_user = '999999999',
+       last_modify_time = now()
+ WHERE script_name = 'topsql.top_sql';
 
 -- [wdr.cache]
 --   **修正取数错误**（同一问题，预防性）：内连接会丢掉窗口内新建的表。 实测窗口里两端对称、未丢行，但结构上与 wdr.file_io 相同，窗口内真新建表时会静默少算。 改为 LEFT JOIN + COALESCE。
@@ -255,6 +400,19 @@ ORDER BY reads DESC LIMIT {{top}};
        last_modify_time = now()
  WHERE script_name = 'wdr.file_io';
 
+-- [wdr.snapshots]
+--   **精度修正**：快照开始 / 结束时间从「到分钟」改为「到秒」。时段体检与时段 Top SQL 要按用户给的 时间挑快照，到分钟时同一分钟内的两个快照分不出先后。原有调用方只取前 16 位，不受影响。
+UPDATE grmp.script_config
+   SET script_content   = 'SELECT snapshot_id,
+       to_char(start_ts,''YYYY-MM-DD HH24:MI:SS'') AS start_ts,
+       to_char(end_ts,''YYYY-MM-DD HH24:MI:SS'')   AS end_ts,
+       round(EXTRACT(EPOCH FROM (end_ts-start_ts))/60)::bigint AS dur_min
+FROM snapshot.snapshot ORDER BY snapshot_id DESC LIMIT {{limit}};
+',
+       last_modify_user = '999999999',
+       last_modify_time = now()
+ WHERE script_name = 'wdr.snapshots';
+
 -- [wdr.top_sql]
 --   **修正取数错误**：原 SQL 用 `FROM e JOIN b USING (sid)` 内连接，窗口内**新出现**的语句 （起始快照里没有它）会被整批丢掉。实测一个 20 分钟窗口里 147 条语句只保留了 55 条， 导致 DB time 少报约 8800 倍（报 2.67 秒，实际 23518 秒）。改为 LEFT JOIN + COALESCE。
 UPDATE grmp.script_config
@@ -285,10 +443,10 @@ ORDER BY elapsed_us DESC LIMIT {{top}};
 -- =====================================================================
 -- 三、导入后自检
 -- =====================================================================
--- 应为 113：
+-- 应为 118：
 --   SELECT count(*) FROM grmp.script_config WHERE scene = 'AGENT';
--- 新增的 8 条应全部在列：
---   SELECT script_name FROM grmp.script_config WHERE script_name IN ('config.settings','health.partitions','health.storage','health.sync_commit','health.thread_pool','health.wal_slots','vacuum.bloat_estimate','vacuum.freeze_age');
+-- 新增的 13 条应全部在列：
+--   SELECT script_name FROM grmp.script_config WHERE script_name IN ('config.settings','health.live_counters','health.live_waits','health.partitions','health.snap_counters','health.snap_waits','health.storage','health.sync_commit','health.thread_pool','health.wal_slots','topsql.snap_statement','vacuum.bloat_estimate','vacuum.freeze_age');
 -- 更新应已生效（下面两条都应返回 0 行）：
 --   SELECT script_name FROM grmp.script_config
 --    WHERE script_name LIKE '%plan_text_analyze' AND script_content LIKE '%fasle%';

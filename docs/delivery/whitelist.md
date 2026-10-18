@@ -12,8 +12,8 @@ python3 -m grmp_middleware.dump_whitelist
 
 | 项 | 值 |
 |---|---|
-| 脚本总数 | 126 |
-| id 范围 | 1 ~ 132 |
+| 脚本总数 | 131 |
+| id 范围 | 1 ~ 137 |
 
 > `id` 是**环境相关数据，不是契约**。skill 从不持有它 —— 运行时调
 > 接口一按 `cmd_name` 现查。客户环境重新发布后 id 会不同，属正常。
@@ -24,7 +24,7 @@ python3 -m grmp_middleware.dump_whitelist
 |---|---|---|
 | **config** | 1 | `settings` |
 | **explain** | 13 | `plan_text`, `plan_text_analyze`, `active_pid`, `kernel_funcs`, `runtime_plan`, `session_by_pid`, `runtime_plan_int4`, `multi_stmt_probe`, `plan_text_analyze_schema`, `plan_text_schema`, `from_history`, `from_statement`, `relation_schemas` |
-| **health** | 20 | `archive_mode`, `bgwriter`, `conn_concentration`, `conn_states`, `db_concurrency`, `db_info`, `invalid_index`, `long_xact`, `overview`, `prepared_xacts`, `replication`, `slow_sql`, `stale_stats`, `unused_index`, `stats_window`, `storage`, `sync_commit`, `thread_pool`, `wal_slots`, `partitions` |
+| **health** | 24 | `archive_mode`, `bgwriter`, `conn_concentration`, `conn_states`, `db_concurrency`, `db_info`, `invalid_index`, `long_xact`, `overview`, `prepared_xacts`, `replication`, `slow_sql`, `stale_stats`, `unused_index`, `stats_window`, `storage`, `sync_commit`, `thread_pool`, `wal_slots`, `partitions`, `live_counters`, `live_waits`, `snap_counters`, `snap_waits` |
 | **lockwait** | 2 | `chain`, `pairs` |
 | **memanalyze** | 11 | `activity`, `cols_bare`, `cols_qualified`, `context`, `gucs`, `instance`, `session`, `wlm_operator`, `wlm_operator_hist`, `wlm_sql`, `wlm_sql_hist` |
 | **perf** | 9 | `bgwriter`, `db_stat`, `instance_time`, `locks`, `memory`, `sessions`, `table_stat`, `wait_events`, `wait_status` |
@@ -36,7 +36,7 @@ python3 -m grmp_middleware.dump_whitelist
 | **sqlreview** | 5 | `from_history`, `from_statement`, `indexes`, `tables`, `top_sql` |
 | **sqltune** | 15 | `column_stats`, `from_history`, `from_statement`, `indexes`, `key_gucs`, `plan_json`, `plan_text`, `plan_text_analyze`, `tables`, `version`, `stats_freshness`, `column_types`, `plan_json_schema`, `plan_text_analyze_schema`, `plan_text_schema` |
 | **topproc** | 1 | `top_procs` |
-| **topsql** | 1 | `top_sql` |
+| **topsql** | 2 | `top_sql`, `snap_statement` |
 | **vacuum** | 7 | `autovac_settings`, `autovac_workers`, `dead_tuples`, `oldest_xmin`, `kernel_info`, `freeze_age`, `bloat_estimate` |
 | **waitevent** | 2 | `events`, `instance_time` |
 | **wdr** | 13 | `cache`, `checkpoint`, `db_stat`, `db_summary`, `file_io`, `load_profile`, `native_report`, `node_name`, `snapshots`, `top_sql`, `waits`, `wdr_enabled`, `window` |
@@ -1220,12 +1220,21 @@ LIMIT {{limit}};
 ```sql
 SELECT
   unique_sql_id::text,
-  LEFT(REGEXP_REPLACE(query, '\s+', ' ', 'g'), 80) AS query,
+  LEFT(REGEXP_REPLACE(COALESCE(NULLIF(REGEXP_REPLACE(query, '^(\s*(--[^\n]*(\n|$)|/\*([^*]|\*+[^*/])*\*+/))+\s*', ''), ''), query),
+                     '\s+', ' ', 'g'), 80) AS query,
   n_calls AS calls,
   ROUND(total_elapse_time/1000000::numeric, 2) AS total_sec,
   ROUND((total_elapse_time/NULLIF(n_calls,0))/1000::numeric, 2) AS avg_ms,
   n_returned_rows AS rows
-FROM dbe_perf.statement
+FROM (SELECT unique_sql_id,
+             max(query)             AS query,
+             sum(n_calls)           AS n_calls,
+             sum(total_elapse_time) AS total_elapse_time,
+             sum(n_returned_rows)   AS n_returned_rows,
+             sum(n_blocks_hit)      AS n_blocks_hit,
+             sum(n_blocks_fetched)  AS n_blocks_fetched
+        FROM dbe_perf.statement
+       GROUP BY unique_sql_id) s
 WHERE n_calls > 0
 ORDER BY {{order}}
 LIMIT {{limit}};
@@ -1400,8 +1409,8 @@ SHOW pgxc_node_name;
 
 ```sql
 SELECT snapshot_id,
-       to_char(start_ts,'YYYY-MM-DD HH24:MI') AS start_ts,
-       to_char(end_ts,'YYYY-MM-DD HH24:MI')   AS end_ts,
+       to_char(start_ts,'YYYY-MM-DD HH24:MI:SS') AS start_ts,
+       to_char(end_ts,'YYYY-MM-DD HH24:MI:SS')   AS end_ts,
        round(EXTRACT(EPOCH FROM (end_ts-start_ts))/60)::bigint AS dur_min
 FROM snapshot.snapshot ORDER BY snapshot_id DESC LIMIT {{limit}};
 ```
@@ -2239,5 +2248,149 @@ SELECT n.nspname AS schema,
    AND pg_relation_size(c.oid) > 8192 * 128
  ORDER BY pg_relation_size(c.oid) DESC
  LIMIT {{limit}};
+```
+
+### `health.live_counters`
+
+- id `133` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+无参数
+
+```sql
+SELECT 'now' AS item, to_char(now(), 'YYYY-MM-DD HH24:MI:SS') AS value
+UNION ALL
+SELECT 'postmaster_start', to_char(pg_postmaster_start_time(), 'YYYY-MM-DD HH24:MI:SS')
+UNION ALL
+SELECT 'stats_reset', COALESCE(to_char(max(stats_reset), 'YYYY-MM-DD HH24:MI:SS'), '')
+  FROM pg_stat_database
+UNION ALL
+SELECT 'db_time_us', COALESCE(sum(value), 0)::text
+  FROM dbe_perf.global_instance_time WHERE stat_name = 'DB_TIME'
+UNION ALL
+SELECT 'cpu_time_us', COALESCE(sum(value), 0)::text
+  FROM dbe_perf.global_instance_time WHERE stat_name = 'CPU_TIME'
+UNION ALL
+SELECT 'xact_commit', COALESCE(sum(xact_commit), 0)::text FROM pg_stat_database
+UNION ALL
+SELECT 'xact_rollback', COALESCE(sum(xact_rollback), 0)::text FROM pg_stat_database
+UNION ALL
+SELECT 'deadlocks', COALESCE(sum(deadlocks), 0)::text FROM pg_stat_database
+UNION ALL
+SELECT 'temp_bytes', COALESCE(sum(temp_bytes), 0)::text FROM pg_stat_database
+UNION ALL
+SELECT 'blks_read', COALESCE(sum(blks_read), 0)::text FROM pg_stat_database
+UNION ALL
+SELECT 'blks_hit', COALESCE(sum(blks_hit), 0)::text FROM pg_stat_database
+UNION ALL
+SELECT 'ckpt_timed', COALESCE(sum(checkpoints_timed), 0)::text FROM pg_stat_bgwriter
+UNION ALL
+SELECT 'ckpt_req', COALESCE(sum(checkpoints_req), 0)::text FROM pg_stat_bgwriter;
+```
+
+### `health.live_waits`
+
+- id `134` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+无参数
+
+```sql
+SELECT type  AS wait_class,
+       event AS event,
+       sum(wait)            AS waits,
+       sum(total_wait_time) AS wait_us
+  FROM dbe_perf.global_wait_events
+ WHERE upper(type) NOT IN ('STATUS','NONE')
+ GROUP BY type, event
+HAVING sum(wait) > 0;
+```
+
+### `health.snap_counters`
+
+- id `135` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `snap` | INTEGER |
+
+```sql
+SELECT 'snap_at' AS item,
+       to_char((SELECT start_ts FROM snapshot.snapshot WHERE snapshot_id = {{snap}}),
+               'YYYY-MM-DD HH24:MI:SS') AS value
+UNION ALL
+SELECT 'db_time_us', COALESCE(sum(snap_value), 0)::text
+  FROM snapshot.snap_global_instance_time WHERE snapshot_id = {{snap}} AND snap_stat_name = 'DB_TIME'
+UNION ALL
+SELECT 'cpu_time_us', COALESCE(sum(snap_value), 0)::text
+  FROM snapshot.snap_global_instance_time WHERE snapshot_id = {{snap}} AND snap_stat_name = 'CPU_TIME'
+UNION ALL
+SELECT 'xact_commit', COALESCE(sum(snap_xact_commit), 0)::text
+  FROM snapshot.snap_summary_stat_database WHERE snapshot_id = {{snap}}
+UNION ALL
+SELECT 'xact_rollback', COALESCE(sum(snap_xact_rollback), 0)::text
+  FROM snapshot.snap_summary_stat_database WHERE snapshot_id = {{snap}}
+UNION ALL
+SELECT 'deadlocks', COALESCE(sum(snap_deadlocks), 0)::text
+  FROM snapshot.snap_summary_stat_database WHERE snapshot_id = {{snap}}
+UNION ALL
+SELECT 'temp_bytes', COALESCE(sum(snap_temp_bytes), 0)::text
+  FROM snapshot.snap_summary_stat_database WHERE snapshot_id = {{snap}}
+UNION ALL
+SELECT 'blks_read', COALESCE(sum(snap_blks_read), 0)::text
+  FROM snapshot.snap_summary_stat_database WHERE snapshot_id = {{snap}}
+UNION ALL
+SELECT 'blks_hit', COALESCE(sum(snap_blks_hit), 0)::text
+  FROM snapshot.snap_summary_stat_database WHERE snapshot_id = {{snap}}
+UNION ALL
+SELECT 'ckpt_timed', COALESCE(sum(snap_checkpoints_timed), 0)::text
+  FROM snapshot.snap_global_bgwriter_stat WHERE snapshot_id = {{snap}}
+UNION ALL
+SELECT 'ckpt_req', COALESCE(sum(snap_checkpoints_req), 0)::text
+  FROM snapshot.snap_global_bgwriter_stat WHERE snapshot_id = {{snap}};
+```
+
+### `health.snap_waits`
+
+- id `136` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `snap` | INTEGER |
+
+```sql
+SELECT snap_type  AS wait_class,
+       snap_event AS event,
+       sum(snap_wait)            AS waits,
+       sum(snap_total_wait_time) AS wait_us
+  FROM snapshot.snap_global_wait_events
+ WHERE snapshot_id = {{snap}}
+   AND upper(snap_type) NOT IN ('STATUS','NONE')
+ GROUP BY snap_type, snap_event
+HAVING sum(snap_wait) > 0;
+```
+
+### `topsql.snap_statement`
+
+- id `137` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `snap` | INTEGER |
+| `limit` | INTEGER |
+
+```sql
+SELECT
+  snap_unique_sql_id::text AS unique_sql_id,
+  LEFT(REGEXP_REPLACE(COALESCE(NULLIF(REGEXP_REPLACE(max(snap_query), '^(\s*(--[^\n]*(\n|$)|/\*([^*]|\*+[^*/])*\*+/))+\s*', ''), ''), max(snap_query)),
+                     '\s+', ' ', 'g'), 80) AS query,
+  sum(snap_n_calls) AS calls,
+  ROUND(sum(snap_total_elapse_time)/1000000::numeric, 2) AS total_sec,
+  ROUND((sum(snap_total_elapse_time)/NULLIF(sum(snap_n_calls),0))/1000::numeric, 2) AS avg_ms,
+  sum(snap_n_returned_rows) AS rows
+FROM snapshot.snap_summary_statement
+WHERE snapshot_id = {{snap}}
+GROUP BY snap_unique_sql_id
+HAVING sum(snap_n_calls) > 0
+ORDER BY sum(snap_total_elapse_time) DESC
+LIMIT {{limit}};
 ```
 
