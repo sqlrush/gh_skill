@@ -64,10 +64,17 @@ _PLAN: Dict[str, Tuple[str, List[str], bool]] = {
         "时间主要花在等待上，真凶在等待事件里，不是 CPU 不够",
         ["python3 ../gaussdb-waitevent/scripts/waitevent.py --begin {begin} --end {end}"],
         False),
+    # **死锁不发 lockwait 当"看死锁对"的手段。** lockwait 是在 Python 里对
+    # pg_thread_wait_status 的边做环检测 —— 它只能抓**正在发生**的环,而 og5 的
+    # deadlock_timeout 是 1 秒,内核 1 秒内就杀掉牺牲者解开环。等命令跑起来环早没了。
+    # 发它只会让模型拿到一份"当前无死锁"然后说不出话。
+    # 真正的去处是数据库日志,而本工具读不到(pg_read_file 要 initial account),
+    # 所以这一条给的是**要告诉用户去哪看**,不是一条命令 —— 见 render_plan 里的 _MANUAL。
     "WDR_DEADLOCK": (
-        "死锁，要看阻塞链与具体的死锁对",
-        ["python3 ../gaussdb-lockwait/scripts/lockwait.py"],
-        True),
+        "死锁次数是硬数据，但环的明细 WDR 里没有；lockwait 只能抓正在发生的环"
+        "（内核 1 秒内就解开），所以这里不发命令 —— 要告诉用户去日志里看",
+        [],
+        False),
     "WDR_TEMP_SPILL": (
         "临时文件溢出，要定位落盘的语句并评估会话级 work_mem",
         ["python3 ../gaussdb-sqltune/scripts/sqltune.py {sql_id}"],
@@ -180,18 +187,45 @@ _UNKNOWN_NOTE = ("算不出窗口距今多久（快照时间取不到），只�
                  "宁可少一条，也不要拿可能无关的现场去解释这个窗口。")
 
 
-def render_plan(steps: List[Step], stale_s: Optional[float]) -> str:
+# 本工具做不到、但要**明确告诉用户去哪看**的事。按发现码挂。
+# 给不出命令时给精确的去处,比给一个看起来有根据的猜测有用得多。
+_MANUAL = {
+    "WDR_DEADLOCK": (
+        "死锁的完整明细（环上几个会话、各自持有/等待什么锁、完整语句、谁被选为牺牲者）"
+        "只在**数据库日志**里。本工具读不到日志文件（需 initial account 权限）——"
+        "请把这段话转给用户：到 `$PGDATA/pg_log/` 下找本窗口时间段的日志，"
+        "`grep -A 12 'deadlock detected'`，紧随其后的 DETAIL 段就是完整的环。"
+        "从 Top SQL 反推候选语句时**必须标明是候选、不是证据**。"),
+}
+
+
+def manual_notes(findings) -> List[str]:
+    """本次发现里,有哪些事要让用户自己去库外看。去重,保持发现的顺序。"""
+    out, seen = [], set()
+    for f in findings or []:
+        code = getattr(f, "code", "")
+        if code in _MANUAL and code not in seen:
+            seen.add(code)
+            out.append(_MANUAL[code])
+    return out
+
+
+def render_plan(steps: List[Step], stale_s: Optional[float],
+                manual: Optional[List[str]] = None) -> str:
     """给标准错误的文本。没有任何要执行的就返回空串（不打空段落）。"""
     note = ""
     if stale_s is None:
         note = _UNKNOWN_NOTE
     elif stale_s > STALE_AFTER_S:
         note = _STALE_NOTE % int(stale_s // 60)
+    extra = ""
+    for m in manual or []:
+        extra += "  · " + m + "\n"
     if not steps:
-        return note + "\n" if note else ""
+        return (note + "\n" if note else "") + extra
     out = _HEAD + "\n"
     for i, s in enumerate(steps, 1):
         out += "  %d) %s\n     %s\n" % (i, s.why, s.cmd)
     if note:
         out += "  注：" + note + "\n"
-    return out
+    return out + extra

@@ -419,7 +419,15 @@ def test_sql_id_not_found_is_a_clean_error(monkeypatch, capsys):
     monkeypatch.setattr(explain_mod.access, "for_conn", lambda *a, **k: _Empty())
     assert explain_mod.main(["--sql-id", "42"]) == 2
     err = capsys.readouterr().err
-    assert "not found" in err and "Traceback" not in err
+    assert "Traceback" not in err
+    assert "查不到" in err
+
+    # **报错要说清最可能的原因,并给出那条出路。** 只说 "not found ... check
+    # enable_stmt_track" 会把人往配置方向带 —— 而最常见的原因是实例重启把
+    # dbe_perf.statement 清零了(og5 实测重启后整个视图只剩 51 条),这时手上
+    # 往往已经有 SQL 文本(WDR 报告的 SQL 附录),该走 --sql-stdin 而不是再查一次 id。
+    assert "重启" in err, "没说出最常见的原因,用户会去查配置"
+    assert "--sql-stdin" in err, "没给出路,用户只能卡在这里"
 
 
 def test_sql_id_with_normalized_text_points_to_sqltune(monkeypatch, capsys):

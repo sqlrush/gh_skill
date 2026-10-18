@@ -196,3 +196,23 @@ def test_a_very_long_plan_is_clipped():
     out = FR._emit_sql_appendix(m)
     assert len(out) < FR.APPENDIX_PLAN_MAX + 400
     assert "计划更长" in out
+
+
+# ------------------------------------------------- 死锁证据要讲清自己的边界
+
+def test_the_deadlock_evidence_admits_it_cannot_name_the_statements():
+    """**次数是硬数据,「哪几条语句成环」不是。** 快照里只有一个计数器。
+
+    2026-10-17 压测那次模型报出的「死锁对」推对了,只因为 faultlab 只让 fl.acct 上的
+    UPDATE 互相打架、候选只有一条;日志里实际还有**三方环**(id=20 → 21 → 22),
+    按 Top SQL 反推只会得出「两条 UPDATE 在抢」。证据必须把这个边界写死,
+    否则模型会把推断当证据陈述 —— 而那时输出看起来和推对时一模一样。
+    """
+    rows = [{"datname": "postgres", "deadlocks": "24", "xact_commit": "100",
+             "xact_rollback": "1", "temp_bytes": "0", "blks_read": "0",
+             "blks_hit": "0", "tup_returned": "0", "tup_fetched": "0"}]
+    d = C.collect_dbstat(Runner(rows), _opt())
+    ev = next(f.evidence for f in d.findings if f.code == "WDR_DEADLOCK")
+    assert "硬数据" in ev
+    assert "pg_log" in ev and "deadlock detected" in ev
+    assert "候选" in ev and "不是证据" in ev

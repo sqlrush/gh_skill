@@ -25,7 +25,7 @@ WDR = 两个快照之间的工作负载差值。先看 `## Report Window` 确认
 | `WDR_TEMP_SPILL` 临时溢出 | Top SQL **`spill_MB` 列**最高者（确定性：谁溢出多少一目了然） | 经 sqltune 实证：为 ORDER BY/GROUP BY 建索引免大排序、改写减少 hash/sort、或评估 work_mem |
 | `WDR_TOPSQL_DBTIME` 吃 DB time | Top SQL `elapsed_s`/`cpu_s` 最高者 | CPU 高且可优化 → sqltune 索引/改写；CPU 低（LOW_CPU）→ 见下"阻塞"行 |
 | IO 等待倾斜（`WDR_WAIT_CLASS_SKEW`=IO） | Top SQL 的 **`物理读`冠军**（见「各维度元凶」行，常非 elapsed 第一名）+ Cache/File IO 的热点对象/文件 | 缺索引致全表扫 → sqltune 建索引；非 sargable 谓词(模运算/函数包列)→ 改写而非建索引；热表/盘 → 评估表空间/缓存配置 |
-| LOCK 等待倾斜 + `WDR_DEADLOCK` | Top SQL 里 **`cpu_s`≈0 但 `elapsed` 高**的被阻塞语句（锁的受害者）+ 死锁涉及表的 DML | **不是 SQL 计划问题**：缩短事务、统一加锁顺序、加重试、收敛持锁/睡眠时间（持锁者即 LOW_CPU 那条） |
+| LOCK 等待倾斜 + `WDR_DEADLOCK` | 锁受害者：Top SQL 里 **`cpu_s`≈0 但 `elapsed` 高**的被阻塞语句。死锁对：**WDR 取不到，只能从同表 DML 反推候选，必须标明是候选**（实测有三方环被反推成「两条在抢」）；权威来源是数据库日志里的 `deadlock detected` 段 | **不是 SQL 计划问题**：缩短事务、统一加锁顺序、加重试、收敛持锁/睡眠时间（持锁者即 LOW_CPU 那条） |
 | `WDR_ROLLBACK_RATIO` 回滚率 | 触发死锁/约束冲突的 DML | 应用侧处理冲突、避开热点行竞争 |
 
 要点：① temp/IO/锁三类问题的**元凶请求往往不是同一条**（如高并发压测：temp 溢出=大排序聚合查询、锁等待=被阻塞的 UPDATE、CPU=同一聚合查询），**别一锅烩归给同一条 SQL**；② 每条带 sql_id 的优化建议**先用 sqltune 实证**（`python3 {baseDir}/../sqltune/scripts/sqltune.py -c <conn> <sql_id>`）再写进报告；睡眠/阻塞类请求通常无法靠执行计划优化，给事务/并发层建议。

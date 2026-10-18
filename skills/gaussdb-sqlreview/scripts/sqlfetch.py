@@ -115,10 +115,24 @@ def sql_fetch(runner, raw_id: str) -> FetchResult:
     else:
         srows = runner.run(STATEMENT_SCRIPT, {"sid": sid})
         if not srows:
+            # **「查不到」最常见的原因不是配置问题,而是这条语句已经不在统计里了。**
+            # dbe_perf.statement 是**自上次清零以来**的累计视图:实例一重启就清空
+            # (og5 实测重启后整个视图只剩 51 条,上午那些 sql_id 全没了);
+            # statement_history 则会随时间把老语句挤出去。
+            # 只报一句 "not found ... check enable_stmt_track" 会把人往配置方向带,
+            # 而真正该做的是换一条路:手上已经有 SQL 文本(比如 WDR 报告的 SQL 附录、
+            # 大盘的 sql_id 抽屉)时,直接用 --sql-stdin 传进来,不必再按 id 碰运气。
             raise ValueError(
-                f"sql id {raw_id} not found in dbe_perf.statement_history or "
-                f"dbe_perf.statement (check enable_stmt_track / track_stmt_parameter)"
-                + (f"; statement_history 本身不可用：{degraded}" if degraded else ""))
+                f"sql id {raw_id} 在 dbe_perf.statement_history 与 dbe_perf.statement "
+                f"里都查不到。常见原因按可能性排序:\n"
+                f"  1. **实例重启过** —— dbe_perf.statement 是自上次清零以来的累计视图,"
+                f"重启即清空,重启之前的 sql_id 一律查不到;\n"
+                f"  2. 这条语句已从 statement_history 里**老化**出去(历史是滚动的);\n"
+                f"  3. 统计没开:enable_stmt_track / track_stmt_parameter。\n"
+                f"  已经有 SQL 文本时(WDR 报告的「SQL 附录」、大盘点 sql_id 的抽屉里都有),"
+                f"改用 --sql-stdin 把文本传进来即可,不用按 id 再查一次;"
+                f"参数化语句里的 ? 要先填上真实值才能出计划。"
+                + (f"\n  另:statement_history 本身不可用:{degraded}" if degraded else ""))
         schema, query = "", srows[0]["query"]
         source = "statement"
 

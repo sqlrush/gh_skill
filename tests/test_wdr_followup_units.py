@@ -183,3 +183,46 @@ def test_an_unknown_freshness_says_so():
 def test_nothing_to_do_prints_nothing():
     """宁可不打,也不要打一段空的「下一步」。"""
     assert F.render_plan([], 10.0) == ""
+
+
+# ---------------------------------------------------------------- 死锁:给去处,不给猜测
+
+def test_deadlock_sends_no_command_because_lockwait_cannot_see_past_rings():
+    """**lockwait 只能抓正在发生的环。** 它是对 pg_thread_wait_status 的边做环检测，
+    而 og5 的 `deadlock_timeout` 是 1 秒 —— 内核 1 秒内就杀掉牺牲者解开环。
+    等命令跑起来环早没了，发它只会让模型拿到一份「当前无死锁」然后说不出话。
+    """
+    steps = F.plan([_f("WDR_DEADLOCK")], _W)
+    assert not any("lockwait" in c for c in _cmds(steps))
+
+
+def test_deadlock_tells_the_user_where_to_actually_look():
+    """给不出命令时给**精确的去处** —— 那比给一个看起来有根据的猜测有用得多。"""
+    notes = F.manual_notes([_f("WDR_DEADLOCK")])
+    assert len(notes) == 1
+    note = notes[0]
+    assert "pg_log" in note and "deadlock detected" in note
+    assert "initial account" in note          # 说明为什么本工具读不到
+    assert "候选" in note                      # 反推时必须标候选
+
+
+def test_the_manual_note_reaches_the_text_given_to_the_model():
+    out = F.render_plan(F.plan([_f("WDR_DEADLOCK")], _W), 10.0,
+                        manual=F.manual_notes([_f("WDR_DEADLOCK")]))
+    assert "deadlock detected" in out
+
+
+def test_a_manual_note_shows_up_even_when_there_is_no_command_to_run():
+    """死锁是唯一发现、而它不产生任何命令时,这段去处仍然必须出现 ——
+    否则模型什么都拿不到,只会说「死锁 24 次」然后停住。"""
+    out = F.render_plan([], None, manual=F.manual_notes([_f("WDR_DEADLOCK")]))
+    assert "pg_log" in out
+
+
+def test_manual_notes_are_deduplicated():
+    notes = F.manual_notes([_f("WDR_DEADLOCK"), _f("WDR_DEADLOCK")])
+    assert len(notes) == 1
+
+
+def test_findings_without_a_manual_note_add_nothing():
+    assert F.manual_notes([_f("WDR_TOPSQL_CPU_HEAVY", "x")]) == []

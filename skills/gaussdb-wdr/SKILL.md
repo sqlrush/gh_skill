@@ -1,6 +1,6 @@
 ﻿---
 name: gaussdb-wdr
-version: 2.2.0
+version: 2.2.1
 description: "通过内置脚本对 OpenGauss/GaussDB 做 WDR 窗口诊断。用户要比较两个快照、查看某个时间窗口的 WDR、分析某段时间库为什么慢、查看负载概况/Top SQL/等待/Checkpoint/缓存/文件 IO，或寻找高风险负载变化时使用，包括“看下两个快照之间的 WDR”“这段时间库为什么慢”“分析这个时间窗口的 WDR”“有没有高风险 SQL 或等待事件”等请求。触发后运行 scripts/wdr.py，输出真实 WDR 证据和发现，不要只解释 WDR 报告怎么读。"
 allowed-tools: ["exec", "read", "write"]
 compatibility: opencode
@@ -87,6 +87,19 @@ metadata:
      对用户毫无用处——他在聊天窗口里跑不了，而你本来就能跑。
    - 带 `sql_id` 的发现：先 `explain` 取计划，再（要给索引/改写建议时）`sqltune` 实证；
      把**计划正文**放进 `interp.json` 的 `plans`，附录会直接展示它。
+   - **`--sql-id` 报「查不到」时不要就此放弃，也不要往配置方向带。** 最常见的原因是
+     **实例重启过**（`dbe_perf.statement` 是自上次清零以来的累计视图，重启即清空；
+     og5 实测重启后整个视图只剩 51 条）或语句已从 `statement_history` 老化出去。
+     而这时你**手上往往已经有 SQL 文本**——证据包的 `sql_texts` 里就有（它来自快照，
+     不受重启影响）。直接把文本用 `--sql-id` 换成 `--sql-stdin` 传进去取计划：
+
+     ```bash
+     printf '%s' "<证据包 sql_texts 里的那条 SQL>" | \
+       python3 {baseDir}/../gaussdb-explain/scripts/explain.py --sql-stdin --schema <schema>
+     ```
+
+     参数化语句里的 `?` 要先填上真实值才出计划；填不出来就在 `rootCause` 里说明
+     「计划未取到：语句是参数化的且已不在统计视图里」，**不要**编一个计划。
    - 跑不动的（权限不足、语句已不在库里、脚本报错）：在对应 finding 的 `rootCause` 里
      一句话说明为什么没取到，**不要**改成一行待办命令。
    - 「只反映当前」的检查（锁等待链、膨胀、正在执行的 SQL）在窗口已经过去很久时
@@ -148,6 +161,12 @@ metadata:
   当 Top SQL 榜首是监控语句（`dbe_perf.*`）、运维语句（TRUNCATE / ALTER / ROLLBACK PREPARED）
   或耗时明显偏小时，**基本可以断定榜单不全**：去读 `collect` 存下的原生 WDR 报告里的
   "SQL ordered by Elapsed Time"，以它为准，并在报告里说明依据来自原生报告。
+- **死锁：次数是硬数据，「哪几条语句成环」不是。** 快照里只有一个计数器，没有环的任何信息。
+  从 Top SQL 反推同表 DML 当死锁对时，**必须写成「候选」并说明依据**，不得当成证据陈述——
+  2026-10-17 压测那次推对了只因为候选只有一条；日志里实际还有**三方环**
+  （`id=20 → 21 → 22`），按 Top SQL 反推只会得出「两条 UPDATE 在抢」。
+  要确定具体的环，唯一权威来源是数据库日志（`grep -A 12 'deadlock detected'`），
+  本工具读不到日志文件——**把去处转告用户**，这比给一个看起来有根据的猜测有用。
 - **WDR 不覆盖膨胀与回收水位。** 死元组、表膨胀、autovacuum 是否追得上、回收水位被谁卡住
   （长事务 / 两阶段事务 / 复制槽），WDR 里都看不到。用户问"这段时间有什么性能问题"时，
   除了 WDR 的结论，还要提示：膨胀与回收要用 `gaussdb-vacuum` 单独看、慢 SQL 明细要用

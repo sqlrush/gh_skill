@@ -151,6 +151,27 @@ def collect_loadprofile(runner, opt: Options) -> DimResult:
 
 # --- Database Stat -----------------------------------------------------------
 
+# 死锁证据的措辞。**次数是硬数据,「哪几条语句成环」不是** ——
+# WDR 快照里只有一个计数器,没有任何关于环的信息。而 methodology 的归因表
+# 让模型去 Top SQL 里挑「cpu≈0 的同表 DML」当死锁对,那是**推断**:
+# 2026-10-17 压测那次推对了,只因为 faultlab 只让 fl.acct 上的 UPDATE 互相打架、
+# 候选只有一条;日志里实际还有**三方环**(id=20 → 21 → 22),按 Top SQL 推只会
+# 得出「两条 UPDATE 在抢」。真实生产库上几十个 DML 混着跑,这种推断很不可靠 ——
+# 而输出看起来和推对时一模一样。
+#
+# 所以证据里把边界讲死,并给出唯一权威来源的**精确去处**:数据库日志。
+# 本工具读不到日志(pg_read_file 要 initial account,实测被拒),但能告诉用户去哪看、
+# 看什么 —— 那比给一个看起来有根据的猜测有用得多。
+_DEADLOCK_EV = (
+    "snap_summary_stat_database.deadlocks —— **这个数字是硬数据，但「哪几条语句成环」"
+    "WDR 里没有**：快照只有一个计数器，没有环的任何信息。"
+    "要确定具体的死锁对（环上几个会话、各自持有/等待什么锁、完整语句、谁被选为牺牲者），"
+    "唯一权威来源是**数据库日志**：在 `$PGDATA/pg_log/` 下按本窗口的时间段 "
+    "grep `deadlock detected`，紧随其后的 DETAIL 段就是完整的环。"
+    "本工具读不到日志文件（需 initial account 权限）。"
+    "若要从 Top SQL 反推候选语句，**必须标明是候选、不是证据** —— "
+    "实测过三方环被反推成「两条语句在抢」的情形。")
+
 def collect_dbstat(runner, opt: Options) -> DimResult:
     b, e = int(opt.begin), int(opt.end)
     try:
@@ -181,12 +202,10 @@ def collect_dbstat(runner, opt: Options) -> DimResult:
                                       "snap_summary_stat_database xact_commit/rollback"))
     if deadlocks >= th.deadlock_warn:
         d.findings.append(Finding(DIM_DBSTAT, "WDR_DEADLOCK", Severity.WARN, "死锁数",
-                                  i64(deadlocks), f"≥{th.deadlock_warn}",
-                                  "snap_summary_stat_database.deadlocks"))
+                                  i64(deadlocks), f"≥{th.deadlock_warn}", _DEADLOCK_EV))
     elif deadlocks >= th.deadlock_notice:
         d.findings.append(Finding(DIM_DBSTAT, "WDR_DEADLOCK", Severity.NOTICE, "死锁数",
-                                  i64(deadlocks), f"≥{th.deadlock_notice}",
-                                  "snap_summary_stat_database.deadlocks"))
+                                  i64(deadlocks), f"≥{th.deadlock_notice}", _DEADLOCK_EV))
     if temp_bytes > th.temp_spill_warn:
         d.findings.append(Finding(DIM_DBSTAT, "WDR_TEMP_SPILL", Severity.WARN, "临时文件溢出",
                                   mib(temp_bytes), ">" + mib(th.temp_spill_warn),

@@ -166,7 +166,8 @@ def _announce_followup(ev) -> None:
                           top_sql_headers=getattr(top, "headers", []) if top else [],
                           top_sql_rows=getattr(top, "rows", []) if top else [],
                           fresh=fresh)
-    text = followup.render_plan(steps, stale)
+    text = followup.render_plan(steps, stale,
+                                manual=followup.manual_notes(ev.findings))
     if text:
         print(text, end="", file=sys.stderr)
 
