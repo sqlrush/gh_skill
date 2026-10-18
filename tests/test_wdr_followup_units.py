@@ -226,3 +226,9 @@ def test_manual_notes_are_deduplicated():
 
 def test_findings_without_a_manual_note_add_nothing():
     assert F.manual_notes([_f("WDR_TOPSQL_CPU_HEAVY", "x")]) == []
+
+
+def test_the_deadlock_note_asks_for_the_log_and_names_the_parser():
+    """用户贴回日志段之后要有地方接 —— 去处里点名 lockwait 的日志解析,不只是「去日志里看」。"""
+    note = F.manual_notes([_f("WDR_DEADLOCK")])[0]
+    assert "贴回对话里" in note and "--deadlock-log -" in note and "不连库" in note

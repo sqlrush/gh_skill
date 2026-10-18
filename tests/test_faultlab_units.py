@@ -108,6 +108,19 @@ def test_sql_for_substitutes_the_cap_and_leaves_no_placeholder():
     assert "{cap}" not in sql and "{code}" not in sql
 
 
+@pytest.mark.parametrize("code", ["S1", "S2", "S3", "S4", "S5", "S6", "S7"])
+def test_the_sql_sent_to_the_database_carries_no_root_cause_comment(code):
+    """注释写的是成因,发过去就进了语句统计 —— 模型会照抄它当结论(2026-10-18 测试)。"""
+    sql = slow.sql_for(code, 1234)
+    assert "--" not in sql and "成因" not in sql
+    assert sql.lstrip().split()[0].upper() in ("SELECT", "WITH", "DO", "INSERT", "UPDATE", "DELETE")
+
+
+def test_strip_comments_keeps_code_lines_intact():
+    assert slow.strip_comments("-- why\n  -- more\nSELECT 1\n  FROM t -- not a full-line comment\n") == \
+        "SELECT 1\n  FROM t -- not a full-line comment\n"
+
+
 def test_sql_for_rejects_an_unknown_scenario():
     from lab.db import LabError
     with pytest.raises(LabError):

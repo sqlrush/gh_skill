@@ -674,6 +674,12 @@ def _partitions(runner, th: Thresholds, d: DimResult) -> int:
 
 # --- transactions / concurrency ----------------------------------------------
 
+# 死锁次数之外数据库不留明细;环上是谁只写在数据库日志里,本工具读不到(pg_read_file 要 initial account)
+_DEADLOCK_EV = ("pg_stat_database.deadlocks（只有次数）。环上是哪几条语句、谁被牺牲，只在数据库日志里："
+                "把含 `deadlock detected` 的那几段（连同后面的 DETAIL 几行）贴给我，"
+                "`gaussdb-lockwait --deadlock-log -` 能逐个解析出环、语句与牺牲者")
+
+
 def collect_concurrency(runner, th: Thresholds, _top: int) -> DimResult:
     d = DimResult(dimension=DIM_CONCURRENCY, available=True, headers=["指标", "值"])
     try:
@@ -691,7 +697,7 @@ def collect_concurrency(runner, th: Thresholds, _top: int) -> DimResult:
     d.raw.update({"deadlocks": deadlocks, "xact_commit": commit, "xact_rollback": rollback})
     if deadlocks > 0:
         d.findings.append(Finding(DIM_CONCURRENCY, "DEADLOCKS", Severity.NOTICE,
-                                  "死锁累计数", i64(deadlocks), ">0", "pg_stat_database.deadlocks"))
+                                  "死锁累计数", i64(deadlocks), ">0", _DEADLOCK_EV))
     if total > th.rollback_floor and rb_pct > th.rollback_pct:
         d.findings.append(Finding(DIM_CONCURRENCY, "ROLLBACK_HIGH", Severity.NOTICE,
                                   "事务回滚率", f"{rb_pct:.1f}%", f">{th.rollback_pct:.0f}%",

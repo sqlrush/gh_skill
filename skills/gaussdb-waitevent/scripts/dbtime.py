@@ -63,10 +63,25 @@ DATA_IO_TIME 可能是各执行线程（含并行 worker）的累加耗时，而
    `bd.restarted`（来自 instance_time 一侧），一旦为真就完全不读 `waits`
    参数；不能反过来拿"waits 是不是空"去猜有没有重启——空 waits 在**没有重启**
    的窗口里是合法结果（真的没有锁/轻量锁等待），含义完全不同。
+
+## 两道闸：空闲窗口不判比例，自相矛盾的比例不判
+
+2026-10-18 那轮测试里，空闲库上 5 个小时窗口（每小时 DB time 只有 0.16–0.22 秒）
+被判成「LWLOCK 耗时占 DB_TIME 171.8%」等 🟠，健康检查据此给了总体告警，模型还替这个
+数编了解释。两处错：
+
+1. **分母太小。** 平均活跃会话低于 IDLE_SESSIONS 时，一次几十毫秒的后台等待就能「占」
+   一大半 —— 任何比例都是噪声。这时一个比例都不判（`gate().idle`）。
+2. **口径不同。** 等待事件统计包含后台线程（WAL 写入、刷盘……）的等待，DB time 只算前台
+   会话。CPU 加上某一类等待已经超过 DB time，就说明那类等待里混着后台线程，它「占 DB time
+   多少」这个数自相矛盾、不可信 —— 这一类不判，并在报告里明说（`gate().contradictory`）。
+   锁等待（LOCK_EVENT）只由前台会话产生，正常情况下过得了这道闸；og5 故障窗口里
+   CPU 14.9% + LOCK 65.4% 合计 80%，照判不误。
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Optional
 
 from common.finding import Finding, Severity
 from common.grmp.values import as_int, is_null
@@ -206,7 +221,52 @@ def _sum_wait_us(waits: list, wait_class: str) -> int:
     return total
 
 
-def judge_dbtime(bd: Breakdown, waits: list) -> list:
+# 平均活跃会话低于它就不判比例。与 gaussdb-health 时段体检(window.py IDLE_SESSIONS)同一个数:
+# 同一段时间,两处结论不该不同。
+IDLE_SESSIONS = 0.05
+# CPU + 某一类等待 超过 DB time 的部分在这个比例以内算舍入,超过就判自相矛盾
+_OVERLAP_SLACK = 0.05
+
+
+@dataclass(frozen=True)
+class Gate:
+    """这个窗口哪些比例能判。notes 是给报告的说明(为什么没判),报告层照抄。"""
+    idle: bool = False
+    aas: Optional[float] = None
+    contradictory: dict = field(default_factory=dict)   # {wait_class: 占 DB_TIME 的比例}
+    notes: list = field(default_factory=list)
+
+
+def gate(bd: Breakdown, waits: list, window_s: Optional[float] = None) -> Gate:
+    """两道闸(见模块说明):空闲窗口不判比例;CPU + 某类等待超过 DB time 时那一类不判。
+
+    window_s 不知道(取不到窗口时长)时不做空闲判断 —— 不猜。
+    """
+    if bd.restarted or bd.db_time_us <= 0:
+        return Gate()
+    db_s = bd.db_time_us / 1e6
+    aas = db_s / window_s if window_s and window_s > 0 else None
+    if aas is not None and aas < IDLE_SESSIONS:
+        return Gate(idle=True, aas=aas, notes=[
+            "本窗口几乎空闲：DB time %.2f 秒 / 窗口 %.0f 分钟，平均活跃会话 %.4f（低于 %.2f）。"
+            "分母这么小，任何占比都是噪声 —— 本窗口**不做比例判定**，不是查过了没问题，"
+            "是这段时间库基本没在干活。" % (db_s, window_s / 60.0, aas, IDLE_SESSIONS)])
+    cpu = {name: share for name, _, share in bd.items}.get("CPU_TIME", 0.0)
+    bad, notes = {}, []
+    for cls in (_LOCK_CLASS, _LWLOCK_CLASS):
+        share = _sum_wait_us(waits, cls) / bd.db_time_us
+        if share > 0 and cpu + share > 1.0 + _OVERLAP_SLACK:
+            bad[cls] = share
+            notes.append(
+                "本窗口 %s 等待是 DB time 的 %s，加上 CPU 的 %s 合计 %s，超过 100%% —— "
+                "等待统计包含后台线程（WAL 写入、刷盘……），与只算前台会话的 DB time 口径不同。"
+                "**这个占比自相矛盾、不可信**，本窗口不据此判定 %s，也不要替它编解释；"
+                "要看是谁在等，看同一窗口 WDR 的等待事件明细，或用 gaussdb-lockwait 看此刻的会话。"
+                % (cls, _pct(share), _pct(cpu), _pct(cpu + share), cls))
+    return Gate(aas=aas, contradictory=bad, notes=notes)
+
+
+def judge_dbtime(bd: Breakdown, waits: list, window_s: Optional[float] = None) -> list:
     """DB time 分解的阈值判定，返回 list[Finding]（`dimension="DB Time"`）。
 
     restarted=True 时**只产出 DBTIME_RESTART**，完全不读 waits 参数——跨重启
@@ -229,6 +289,10 @@ def judge_dbtime(bd: Breakdown, waits: list) -> list:
 
     if bd.db_time_us <= 0:
         return []  # 没有可分解的 DB time，无从判定，不是"一切正常"
+
+    g = gate(bd, waits, window_s)
+    if g.idle:
+        return []  # 空闲窗口不判比例(见模块说明);报告里由 gate().notes 说明
 
     findings = []
     shares = {name: share for name, _, share in bd.items}
@@ -258,7 +322,7 @@ def judge_dbtime(bd: Breakdown, waits: list) -> list:
             "snapshot.snap_global_instance_time NET_SEND_TIME/DB_TIME"))
 
     lock_ratio = _sum_wait_us(waits, _LOCK_CLASS) / bd.db_time_us
-    if lock_ratio >= _LOCK_HEAVY_RATIO:
+    if lock_ratio >= _LOCK_HEAVY_RATIO and _LOCK_CLASS not in g.contradictory:
         findings.append(Finding(
             DIM_DBTIME, "WAIT_LOCK_HEAVY", Severity.WARN,
             "LOCK_EVENT 耗时占 DB_TIME", _pct(lock_ratio),
@@ -266,7 +330,7 @@ def judge_dbtime(bd: Breakdown, waits: list) -> list:
             "snapshot.snap_global_wait_events wait_class=LOCK_EVENT 耗时之和/DB_TIME"))
 
     lwlock_ratio = _sum_wait_us(waits, _LWLOCK_CLASS) / bd.db_time_us
-    if lwlock_ratio >= _LWLOCK_HEAVY_RATIO:
+    if lwlock_ratio >= _LWLOCK_HEAVY_RATIO and _LWLOCK_CLASS not in g.contradictory:
         findings.append(Finding(
             DIM_DBTIME, "WAIT_LWLOCK_HEAVY", Severity.WARN,
             "LWLOCK_EVENT 耗时占 DB_TIME", _pct(lwlock_ratio),

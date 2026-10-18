@@ -31,6 +31,7 @@ lock_wait_time 总量，不记当时是谁在阻塞 —— 事后追查「某条
 from __future__ import annotations
 
 import argparse
+import json
 import pathlib
 import sys
 from dataclasses import dataclass, field
@@ -50,6 +51,8 @@ from common.finding import Finding, Severity, findings_to_json  # noqa: E402
 from common.grmp.values import as_float, as_int, is_null  # noqa: E402
 from common.lockmodes import conflict_reason, conflicts, typical_statements  # noqa: E402
 import chain  # noqa: E402
+import deadlocklog  # noqa: E402
+import deadlockreport  # noqa: E402
 import recovery  # noqa: E402
 import render  # noqa: E402
 
@@ -643,6 +646,29 @@ def _render_recovery_section(rep: LockReport) -> str:
     return section
 
 
+def _read_log(path: str) -> str:
+    """`-` = 标准输入(用户贴进对话的日志段走 heredoc);否则是文件。按 UTF-8 读,坏字节替换掉不报错。"""
+    if path == "-":
+        return sys.stdin.read(deadlocklog.MAX_BYTES + 1)
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        return fh.read(deadlocklog.MAX_BYTES + 1)
+
+
+def run_deadlock_log(path: str, fmt: str) -> int:
+    """死锁日志解析:不连库,只读用户给的日志文本(见 deadlocklog.py 为什么这样做)。"""
+    try:
+        text = _read_log(path)
+    except OSError as exc:
+        print("error: 读不了日志 %s:%s" % (path, exc), file=sys.stderr)
+        return 2
+    parsed = deadlocklog.parse(text)
+    if fmt == "json":
+        print(json.dumps(deadlockreport.to_dict(parsed), ensure_ascii=False, indent=2))
+    else:
+        print(deadlockreport.render_markdown(parsed), end="")
+    return 0
+
+
 def main(argv: Optional[list] = None) -> int:
     ap = argparse.ArgumentParser(prog="lockwait.py",
                                  description="锁堵塞分析（只读；kill 语句只生成不执行）")
@@ -651,7 +677,12 @@ def main(argv: Optional[list] = None) -> int:
     ap.add_argument("--limit", type=int, default=20, help="阻塞明细条数上限")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
     ap.add_argument("--timeout", type=int, default=None)
+    # 死锁明细只在数据库日志里(次数之外数据库不留),本工具读不到日志 —— 由用户把日志段给过来
+    ap.add_argument("--deadlock-log", default="", metavar="文件|-",
+                    help="解析数据库日志里的死锁段(含 deadlock detected 的那几段);- 表示从标准输入读。不连库")
     args = ap.parse_args(argv)
+    if args.deadlock_log:
+        return run_deadlock_log(args.deadlock_log, args.format)
     cli.apply_session_arg(args)
 
     try:

@@ -7,6 +7,8 @@ failure they return degraded(dim, reason).
 """
 from __future__ import annotations
 
+import dataclasses
+
 from model import (
     DIM_CACHE, DIM_CHECKPOINT, DIM_DBSTAT, DIM_FILEIO, DIM_LOADPROFILE,
     DIM_TOPSQL, DIM_WAITS, DimResult, Evidence, Finding, Options, Severity,
@@ -168,7 +170,8 @@ _DEADLOCK_EV = (
     "要确定具体的死锁对（环上几个会话、各自持有/等待什么锁、完整语句、谁被选为牺牲者），"
     "唯一权威来源是**数据库日志**：在 `$PGDATA/pg_log/` 下按本窗口的时间段 "
     "grep `deadlock detected`，紧随其后的 DETAIL 段就是完整的环。"
-    "本工具读不到日志文件（需 initial account 权限）。"
+    "本工具读不到日志文件（需 initial account 权限）——**请用户把那几段（连同后面的 DETAIL 几行）贴过来**，"
+    "`gaussdb-lockwait --deadlock-log -` 能逐个解析出环、各自的语句与牺牲者，按模式归类并给出改法。"
     "若要从 Top SQL 反推候选语句，**必须标明是候选、不是证据** —— "
     "实测过三方环被反推成「两条语句在抢」的情形。")
 
@@ -187,6 +190,7 @@ def collect_dbstat(runner, opt: Options) -> DimResult:
     cache_hit = 100.0 * blks_hit / (blks_hit + blks_read) if blks_hit + blks_read > 0 else 100.0
 
     th = opt.thresholds
+    opt.temp_bytes = temp_bytes      # 收尾时把溢出归到语句上(_attribute_spill)
     d = DimResult(dimension=DIM_DBSTAT, available=True,
                   headers=["commits", "rollbacks", "回滚率%", "死锁", "临时溢出", "cache_hit%"],
                   rows=[[i64(commits), i64(rollbacks), f2(rb_pct), i64(deadlocks),
@@ -236,6 +240,9 @@ SQL_BRIEF = 80
 
 # 「在真干活」最多报几条 —— 一张榜刷出十条发现会把重点冲淡。
 CPU_HEAVY_MAX = 2
+# 各维度元凶从这么宽的一批里找,显示仍是前 top 条。2026-10-18 测试:落盘 4483.7MB(占语句级落盘 87%)
+# 的那条只跑了 259 秒,不在按耗时排的前 10 名里 —— 元凶只在前 10 名里找,报告把溢出归错了语句。
+CHAMPION_WIDTH = 200
 
 
 def _strip_lead_comments(text: str) -> str:
@@ -287,15 +294,24 @@ def _sql_brief(text: str) -> str:
 
 def collect_topsql(runner, opt: Options) -> DimResult:
     b, e, top = int(opt.begin), int(opt.end), int(opt.top)
+    width = max(top, CHAMPION_WIDTH)
     try:
-        rows = runner.run("wdr.top_sql", {"b": b, "e": e, "top": top})
+        rows = runner.run("wdr.top_sql", {"b": b, "e": e, "top": width})
     except access.QueryError as exc:
         return degraded(DIM_TOPSQL, summarize_err(exc))
 
     # each list item: dict-like tuple (id, query, calls, elapsed, cpu, spill, phys)
-    items = [(str(r["sid"]), str(r["query"]), _i(r["calls"]), _i(r["elapsed_us"]),
-              _i(r["cpu_us"]), _i(r["spill_kb"]), _i(r["phys_blocks"]))
-             for r in rows]
+    wide = [(str(r["sid"]), str(r["query"]), _i(r["calls"]), _i(r["elapsed_us"]),
+             _i(r["cpu_us"]), _i(r["spill_kb"]), _i(r["phys_blocks"]))
+            for r in rows]
+    items = wide[:top]                 # 显示与按耗时的判定只看前 top 条;元凶从 wide 里找
+    champs = _champions(wide)
+    opt.stmt_spill_kb = sum(it[5] for it in wide)
+    opt.stmt_rows_capped = len(wide) >= width
+    by_spill = champs["溢出"]
+    opt.spill_champ = ((by_spill[0], by_spill[5], by_spill[0] in {it[0] for it in items})
+                       if by_spill and by_spill[5] > 0 else ())
+    off_list = _off_list(champs, {it[0] for it in items})
 
     # **全文留给存档**(显示仍然截断)。根因里提到某条 SQL 时要能给出 sql_id + 全文,
     # 大盘的详情面板和执行计划深挖也靠它。`wdr.top_sql` 返回的是未截断的文本,
@@ -303,7 +319,7 @@ def collect_topsql(runner, opt: Options) -> DimResult:
     # 发给大盘,几百条语句各带几十 KB 会把这份 JSON 撑到没法用。
     texts = getattr(opt, "sql_texts", None)
     if texts is not None:
-        for sid, query, *_rest in items:
+        for sid, query, *_rest in items + [it for it, _ in off_list]:
             if sid and sid not in texts:
                 texts[sid] = _clip_sql(query)
 
@@ -322,11 +338,14 @@ def collect_topsql(runner, opt: Options) -> DimResult:
     if not items:
         d.headline = "窗口内无正增量 SQL"
         return d
-    for sid, query, calls, elapsed, cpu, spill, phys in items:
+    def row(it, mark=""):
+        sid, query, calls, elapsed, cpu, spill, phys = it
         pct = 100.0 * elapsed / total_elapsed if total_elapsed > 0 else 0.0
-        d.rows.append([sid, i64(calls), f2(elapsed / 1e6), f2(cpu / 1e6),
-                       f2(spill / 1024), i64(phys), f2(pct),
-                       trunc(_strip_lead_comments(query), 50)])
+        return [sid, i64(calls), f2(elapsed / 1e6), f2(cpu / 1e6), f2(spill / 1024), i64(phys), f2(pct),
+                mark + trunc(_strip_lead_comments(query), 50)]
+    d.rows = [row(it) for it in items]
+    # 不在前 top 名里的元凶也列出来,标明是榜外的哪一项冠军 —— 不然表里找不到它
+    d.rows += [row(it, "〔榜外·%s冠军〕" % "/".join(labels)) for it, labels in off_list]
 
     th = opt.thresholds
     t_sid, t_query, t_calls, t_elapsed, t_cpu, t_spill, t_phys = items[0]
@@ -390,19 +409,46 @@ def collect_topsql(runner, opt: Options) -> DimResult:
             "阻塞/睡眠主导(锁/等待/pg_sleep)，非资源消耗；真凶看 CPU time 与等待事件",
             sql_id=t_sid))
 
-    # 各维度元凶：每个资源维度的冠军 SQL 往往不是同一条。
-    def champ(idx: int):
-        best = items[0]
-        for it in items:
-            if it[idx] > best[idx]:
-                best = it
-        return best
-    by_cpu, by_spill, by_phys, by_calls = champ(4), champ(5), champ(6), champ(2)
+    # 各维度元凶：每个资源维度的冠军 SQL 往往不是同一条,而且不一定在按耗时排的前 top 名里。
+    by_cpu, by_phys, by_calls = champs["CPU"], champs["物理读"], champs["调用"]
     d.headline = (
         f"各维度元凶 — DB time:{t_sid}({top_pct:.0f}%,CPU占{cpu_ratio * 100:.0f}%) ｜ "
         f"CPU:{by_cpu[0]}({by_cpu[4] / 1e6:.0f}s) ｜ 溢出:{by_spill[0]}({by_spill[5] / 1024:.0f}MB) ｜ "
-        f"物理读:{by_phys[0]}({by_phys[6]}块) ｜ 调用:{by_calls[0]}({by_calls[2]}次)；共 {len(items)} 条")
+        f"物理读:{by_phys[0]}({by_phys[6]}块) ｜ 调用:{by_calls[0]}({by_calls[2]}次)；"
+        f"元凶从耗时前 {len(wide)} 条里找，表里显示前 {len(items)} 条"
+        + (f"，另列 {len(off_list)} 条榜外元凶" if off_list else ""))
     return d
+
+
+# 元凶的维度 → 在 item 元组里的下标
+_CHAMP_IDX = (("CPU", 4), ("溢出", 5), ("物理读", 6), ("调用", 2))
+
+
+def _champions(wide: list) -> dict:
+    """每个资源维度的冠军(在取回的整批里找)。并列时取在前面的(耗时更高的)那条。"""
+    out = {}
+    for label, idx in _CHAMP_IDX:
+        best = wide[0] if wide else None
+        for it in wide:
+            if it[idx] > best[idx]:
+                best = it
+        out[label] = best
+    return out
+
+
+def _off_list(champs: dict, shown: set) -> list:
+    """不在显示的前 N 名里、且该维度确有用量的元凶:[(item, [维度...])],同一条语句只列一次。"""
+    out, seen = [], {}
+    for label, idx in _CHAMP_IDX:
+        it = champs.get(label)
+        if it is None or it[0] in shown or it[idx] <= 0:
+            continue
+        if it[0] in seen:
+            seen[it[0]][1].append(label)
+            continue
+        seen[it[0]] = (it, [label])
+        out.append(seen[it[0]])
+    return out
 
 
 # --- Wait Events / Classes ---------------------------------------------------
@@ -551,6 +597,46 @@ def _check_consistency(ev: Evidence, opt: Options) -> None:
         return
 
 
+def _attribute_spill(ev: Evidence, opt: Options) -> None:
+    """库级溢出那条发现(WDR_TEMP_SPILL)补上「能归到语句的有多少、落盘最多的是哪条」。
+
+    2026-10-18 测试:库级溢出 7.8G,模型把它归到按耗时排的榜首上;实际语句级落盘最多的那条
+    (4483.7MB,占语句级的 87%)只跑了 259 秒、不在前 10 名里。库级计数器本身不知道是谁落的盘,
+    所以这里写明:语句级合计多少、占库级多少、冠军是谁、在不在榜上;其余部分归不到具体语句。
+    两边口径对不上(语句级反而更大)时直说这个比例不可信,不替它编解释。
+    """
+    db_bytes = int(getattr(opt, "temp_bytes", 0) or 0)
+    if db_bytes <= 0 or not any(f.code == "WDR_TEMP_SPILL" for f in ev.findings):
+        return
+    stmt_bytes = int(getattr(opt, "stmt_spill_kb", 0) or 0) * 1024
+    champ = tuple(getattr(opt, "spill_champ", ()) or ())
+    at_least = "至少 " if getattr(opt, "stmt_rows_capped", False) else ""
+    if stmt_bytes <= 0 or not champ:
+        extra = ("语句统计里这段时间没有记到落盘（snap_summary_statement 的 sort/hash spill 都是 0）"
+                 "—— 落盘的不是有语句统计的那些执行，归不到某一条语句")
+    else:
+        sid, kb, shown = champ
+        share = stmt_bytes / db_bytes
+        who = (f"落盘最多的是 sqlid {sid}（{mib(kb * 1024)}，占语句级的 {100.0 * kb * 1024 / stmt_bytes:.0f}%）"
+               + ("" if shown else f"，它**不在按耗时排的前 {opt.top} 名里** —— 按耗时找元凶会漏掉它"))
+        if share > 1.05:
+            extra = (f"语句级落盘合计 {at_least}{mib(stmt_bytes)} 反而大于库级 {mib(db_bytes)} —— 两个口径对不上，"
+                     f"「占库级多少」不可信；{who}")
+        else:
+            extra = (f"其中能归到语句的 {at_least}{mib(stmt_bytes)}（占库级 {100.0 * share:.0f}%）；{who}"
+                     + (f"；其余 {mib(db_bytes - stmt_bytes)} 归不到具体语句" if share < 0.95 else ""))
+
+    def fix(f):
+        if f.code != "WDR_TEMP_SPILL":
+            return f
+        return dataclasses.replace(f, evidence="%s（库级合计）。%s" % (f.evidence, extra),
+                                   sql_id=f.sql_id or (champ[0] if champ else ""))
+
+    for d in ev.dims:
+        d.findings = [fix(f) for f in d.findings]
+    ev.findings = [fix(f) for f in ev.findings]
+
+
 def collect_evidence(runner, opt: Options) -> Evidence:
     """Run every collector over the window and assemble evidence. Per-collector
     failures degrade; only the window/native prep can fail (propagated)."""
@@ -568,6 +654,7 @@ def collect_evidence(runner, opt: Options) -> Evidence:
         ev.findings.extend(d.findings)
     ev.sql_texts = dict(getattr(opt, "sql_texts", {}) or {})
     _check_consistency(ev, opt)                     # 跨维度兜底,必须在全部维度采完之后
+    _attribute_spill(ev, opt)                       # 溢出归到语句:要等 Top SQL 采完
     ev.findings.sort(key=lambda f: int(f.severity), reverse=True)
     ev.overall = worst([f.severity for f in ev.findings])
     return ev

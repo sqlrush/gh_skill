@@ -19,12 +19,14 @@ def _snaps(ids):
 # 所以这里十项必须全给，PARSE_TIME / PLAN_TIME / REWRITE_TIME /
 # PL_EXECUTION_TIME / PL_COMPILATION_TIME 这五项本组测试不关心，给 0，
 # 不影响 DATA_IO_TIME=35%、CPU_TIME=40%、NET_SEND_TIME=10% 这几个阈值判定。
+# 量级按真实负载给(1 小时窗口里 DB time 1000 秒,平均活跃会话 0.28):原先是 1 秒,
+# 那是空闲窗口 —— 空闲窗口不判比例(dbtime.gate),这组阈值测试就测不到了。
 _TIME_ROWS = [
-    {"stat_name": "DB_TIME", "delta_us": "1000000"},
-    {"stat_name": "EXECUTION_TIME", "delta_us": "700000"},
-    {"stat_name": "CPU_TIME", "delta_us": "400000"},
-    {"stat_name": "DATA_IO_TIME", "delta_us": "350000"},
-    {"stat_name": "NET_SEND_TIME", "delta_us": "100000"},
+    {"stat_name": "DB_TIME", "delta_us": "1000000000"},
+    {"stat_name": "EXECUTION_TIME", "delta_us": "700000000"},
+    {"stat_name": "CPU_TIME", "delta_us": "400000000"},
+    {"stat_name": "DATA_IO_TIME", "delta_us": "350000000"},
+    {"stat_name": "NET_SEND_TIME", "delta_us": "100000000"},
     {"stat_name": "PARSE_TIME", "delta_us": "0"},
     {"stat_name": "PLAN_TIME", "delta_us": "0"},
     {"stat_name": "REWRITE_TIME", "delta_us": "0"},
@@ -34,9 +36,9 @@ _TIME_ROWS = [
 
 _EVENT_ROWS = [
     {"wait_class": "IO_EVENT", "event": "DataFileRead",
-     "waits": "100", "wait_us": "120000"},
+     "waits": "100", "wait_us": "120000000"},
     {"wait_class": "LOCK_EVENT", "event": "relation",
-     "waits": "3", "wait_us": "150000"},
+     "waits": "3", "wait_us": "150000000"},
 ]
 
 # 一次真实的跨实例重启：十项全部为负（计数器整体清零重来），不是只挑
@@ -203,3 +205,16 @@ def test_query_failure_is_reported_not_thrown(monkeypatch, capsys):
     assert rc == 2
     assert "Traceback" not in err
     assert "SQLSTATE" in err
+
+
+def test_an_idle_window_says_why_nothing_was_judged(monkeypatch, capsys):
+    """空闲窗口的 markdown 里要写明「不做比例判定」—— 空的发现表会被读成「查过了没问题」。"""
+    idle = [dict(r, delta_us=str(int(r["delta_us"]) // 1000)) for r in _TIME_ROWS]     # DB time 1 秒 / 小时
+    monkeypatch.setattr(waitevent.access, "for_conn", lambda *a, **k: _Runner(time_rows=idle))
+    assert waitevent.main(["-c", "x"]) == 0
+    out = capsys.readouterr().out
+    assert "本窗口几乎空闲" in out and "不做比例判定" in out
+    assert "未发现越过阈值的问题" not in out, "没判就不能写成「查过了没问题」"
+    monkeypatch.setattr(waitevent.access, "for_conn", lambda *a, **k: _Runner(time_rows=idle))
+    waitevent.main(["-c", "x", "--format", "json"])
+    assert json.loads(capsys.readouterr().out)["findings"] == []

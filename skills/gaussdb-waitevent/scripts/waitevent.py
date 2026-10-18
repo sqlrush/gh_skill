@@ -77,6 +77,7 @@ class Window:
     label: str
     breakdown: object          # dbtime.Breakdown
     events: list
+    seconds: Optional[float] = None    # 窗口时长;取不到时 None(不做空闲判断,不猜)
 
 
 @dataclass(frozen=True)
@@ -115,10 +116,20 @@ def collect(runner, snapshots: int = DEFAULT_SNAPSHOTS,
         bd = dbtime.breakdown(time_rows)
         win = runner.run(WINDOW_SCRIPT, {"begin": b, "end": e})
         label = ("%s → %s" % (win[0]["b_start"], win[0]["e_start"])) if win else "%d→%d" % (b, e)
+        secs = _window_seconds(win)
         windows.append(Window(begin=b, end=e, label=label,
-                              breakdown=bd, events=event_rows))
-        findings.extend(dbtime.judge_dbtime(bd, event_rows))
+                              breakdown=bd, events=event_rows, seconds=secs))
+        findings.extend(dbtime.judge_dbtime(bd, event_rows, secs))
     return WaitReport(windows=windows, findings=findings)
+
+
+def _window_seconds(win) -> Optional[float]:
+    """wdr.window 的 dur 是分钟(四舍五入)。0 或取不到 → None:不到半分钟的窗口算不出可靠的平均活跃会话。"""
+    try:
+        minutes = as_int(win[0].get("dur")) if win else 0
+    except (KeyError, TypeError, ValueError, IndexError):
+        return None
+    return minutes * 60.0 if minutes > 0 else None
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +175,10 @@ def _events_block(events: list) -> str:
     return "\n".join(out)
 
 
-def _findings_block(findings: list) -> str:
+def _findings_block(findings: list, idle: bool = False) -> str:
+    if not findings and idle:
+        # 空闲窗口没判 —— 不能写「未发现越过阈值的问题」,那读起来是「查过了、没问题」
+        return "### Findings（本窗口）\n\n本窗口几乎空闲，没有做比例判定（见上）。\n"
     if not findings:
         return "### Findings（本窗口）\n\n未发现越过阈值的问题。\n"
     rows = [[f.severity.label(), f.code, f.metric, f.value, f.threshold] for f in findings]
@@ -193,12 +207,16 @@ def _window_block(win: Window) -> str:
 
     out.append("DB_TIME = %d us\n" % bd.db_time_us)
     out.append("> %s\n" % bd.note)
+    # 哪些比例没判、为什么(空闲窗口 / 自相矛盾)—— 放在表格前,先说哪些数不能信
+    g = dbtime.gate(bd, win.events, win.seconds)
+    for note in g.notes:
+        out.append("> %s\n" % note)
     out.append(_items_table(bd))
     out.append(_events_block(win.events))
     # judge_dbtime 是纯函数：用本窗口已经取到的 bd/events 原样重算一遍，
     # 只为把"是哪个窗口触发的"这条信息带进渲染——不重新取数，结果与
     # collect() 汇总进 WaitReport.findings 的那份完全一致。
-    out.append(_findings_block(dbtime.judge_dbtime(bd, win.events)))
+    out.append(_findings_block(dbtime.judge_dbtime(bd, win.events, win.seconds), idle=g.idle))
     return "\n".join(out)
 
 

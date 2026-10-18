@@ -253,3 +253,53 @@ def test_empty_waits_on_a_live_window_is_not_an_error():
     等待），不是取数出了问题——这一点与陷阱 3 的重启场景相反，必须分开看。"""
     bd = breakdown(_rows())
     assert judge_dbtime(bd, []) == []
+
+
+# --- gate(): 空闲窗口不判比例,自相矛盾的比例不判 ---------------------------------
+# 2026-10-18 那轮测试:空闲库上每小时 DB time 0.16–0.22 秒,LWLOCK 等待却「占 DB time 171.8%」,
+# 5 个小时窗口各报一条 🟠,健康检查据此给了总体告警,模型还替这个数编了解释。
+
+def _hourly_idle():
+    """og5 空闲小时窗口的形状:DB time 0.2 秒,CPU 0.08 秒,LWLOCK 0.34 秒(后台 WAL 写入)。"""
+    return breakdown(_rows({"DB_TIME": "200000", "EXECUTION_TIME": "150000", "CPU_TIME": "80000",
+                            "DATA_IO_TIME": "0", "NET_SEND_TIME": "1000", "PARSE_TIME": "0",
+                            "PLAN_TIME": "0", "REWRITE_TIME": "0", "PL_EXECUTION_TIME": "0",
+                            "PL_COMPILATION_TIME": "0"}))
+
+
+_IDLE_WAITS = [{"wait_class": "LWLOCK_EVENT", "event": "WALWriteLock", "waits": "20", "wait_us": "343600"}]
+
+
+def test_an_idle_hour_judges_no_ratio_at_all():
+    from dbtime import gate
+    bd = _hourly_idle()
+    # 不知道窗口多长时不做空闲判断(不猜),但第二道闸照样拦住:CPU 40% + LWLOCK 171.8% 超过 100%
+    assert judge_dbtime(bd, _IDLE_WAITS) == []
+    assert set(gate(bd, _IDLE_WAITS).contradictory) == {"LWLOCK_EVENT"}
+    assert judge_dbtime(bd, _IDLE_WAITS, window_s=3600) == []
+    g = gate(bd, _IDLE_WAITS, 3600)
+    assert g.idle is True and g.aas == pytest.approx(0.2 / 3600)
+    assert "不做比例判定" in g.notes[0] and "不是查过了没问题" in g.notes[0]
+
+
+def test_a_wait_class_that_with_cpu_exceeds_db_time_is_not_judged():
+    """不空闲,但 LWLOCK + CPU 超过 DB time:等待里混着后台线程,这个占比不可信。"""
+    from dbtime import gate
+    bd = breakdown(_rows({"DB_TIME": "600000000", "CPU_TIME": "400000000", "EXECUTION_TIME": "500000000"}))
+    waits = [{"wait_class": "LWLOCK_EVENT", "event": "WALWriteLock", "waits": "9", "wait_us": "360000000"}]
+    assert judge_dbtime(bd, waits, window_s=600) == []       # 平均活跃会话 1.0,不空闲
+    g = gate(bd, waits, 600)
+    assert set(g.contradictory) == {"LWLOCK_EVENT"}
+    assert "自相矛盾、不可信" in g.notes[0] and "不要替它编解释" in g.notes[0]
+    assert "126.7%" in g.notes[0]                             # 60% + 66.7%
+
+
+def test_the_og5_fault_window_still_reports_its_lock_waits():
+    """故障窗口:DB time 23510 秒、CPU 14.9%、LOCK 65.4% —— 合计 80%,照判,这才是真凶。"""
+    bd = breakdown(_rows({"DB_TIME": "23510330000", "CPU_TIME": "3501100000", "EXECUTION_TIME": "20000000000",
+                          "DATA_IO_TIME": "1000000000", "NET_SEND_TIME": "10000000"}))
+    waits = [{"wait_class": "LOCK_EVENT", "event": "transactionid", "waits": "20171", "wait_us": "15369740000"},
+             {"wait_class": "LWLOCK_EVENT", "event": "WALFlushWait", "waits": "785155", "wait_us": "623140000"}]
+    found = judge_dbtime(bd, waits, window_s=1226)
+    assert _codes(found) == ["WAIT_LOCK_HEAVY"]
+    assert found[0].value == "65.4%"

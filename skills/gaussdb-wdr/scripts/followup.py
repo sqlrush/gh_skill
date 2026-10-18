@@ -194,8 +194,10 @@ _MANUAL = {
         "死锁的完整明细（环上几个会话、各自持有/等待什么锁、完整语句、谁被选为牺牲者）"
         "只在**数据库日志**里。本工具读不到日志文件（需 initial account 权限）——"
         "请把这段话转给用户：到 `$PGDATA/pg_log/` 下找本窗口时间段的日志，"
-        "`grep -A 12 'deadlock detected'`，紧随其后的 DETAIL 段就是完整的环。"
-        "从 Top SQL 反推候选语句时**必须标明是候选、不是证据**。"),
+        "`grep -A 12 'deadlock detected'`，紧随其后的 DETAIL 段就是完整的环，**把结果贴回对话里**。"
+        "贴过来之后交给 `python3 ../gaussdb-lockwait/scripts/lockwait.py --deadlock-log -`"
+        "（日志段从标准输入给，不连库），它会逐个解析出环、各自的语句与牺牲者，按模式归类并给出改法。"
+        "用户贴之前，从 Top SQL 反推候选语句时**必须标明是候选、不是证据**。"),
 }
 
 

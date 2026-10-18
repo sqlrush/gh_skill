@@ -84,6 +84,17 @@ def save_caps(caps: Dict[str, int]) -> None:
     CAPS_FILE.write_text(json.dumps(caps, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def strip_comments(text: str) -> str:
+    """去掉整行的 `--` 注释再发给库。
+
+    **注释写的是成因**(「没索引」「故意不建」……),原样发过去就进了语句统计:
+    dbe_perf.statement / WDR 的 SQL 原文、大盘与报告里的 SQL 全文都带着它 —— 2026-10-18 那轮测试里,
+    模型直接照抄注释里的成因当诊断结论,测的就不是诊断能力了。注释只留在仓库的 .sql 文件里给人看。
+    只认整行注释:这几个文件里没有行内注释和块注释(有的话照样发过去,宁可泄漏也不把 SQL 剥坏)。
+    """
+    return "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("--")).strip() + "\n"
+
+
 def sql_for(code: str, cap: int) -> str:
     """读 SQL 并把 {cap} 换成实际数字。
 
@@ -100,6 +111,7 @@ def sql_for(code: str, cap: int) -> str:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise LabError("读不到 %s:%s" % (path, exc)) from exc
+    text = strip_comments(text)
     # S7 查的是编码值,不是行数上限 —— 它的 {code} 占位符另算
     text = text.replace("{cap}", str(cap))
     return text.replace("{code}", "'%010d'" % (cap % 200_000 + 1))

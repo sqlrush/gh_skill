@@ -130,6 +130,12 @@ class Options:
     cpu_time_us: int = 0
     wait_total_us: int = 0
     window_s: int = 0           # 窗口墙钟秒数,算平均并发活跃会话用
+    #   temp_bytes / stmt_spill_kb / spill_champ —— 库级溢出与语句级落盘,收尾时把溢出那条发现
+    #   归到语句上(见 collectors._attribute_spill)。spill_champ = (sql_id, spill_kb, 是否在显示的前 N 名里)
+    temp_bytes: int = 0
+    stmt_spill_kb: int = 0
+    stmt_rows_capped: bool = False   # 语句级合计只算了取回的那一批(取满了,实际可能更多)
+    spill_champ: tuple = ()
     sql_texts: dict = field(default_factory=dict)   # sql_id → 全文,采集中累积
 
 
