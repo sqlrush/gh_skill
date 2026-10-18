@@ -11,6 +11,14 @@ import types
 import pytest
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
+# 本仓库里 `render` / `audit` / `baseline` 这些模块名在多个 skill 下都存在,
+# 而 pytest 一个进程跑完全部测试 —— 先运行的测试文件会把自己那份留在
+# sys.modules 里。不先清掉,这里 `import derivation` 时它内部的 `import render`
+# 就会拿到别人的 render(2026-10-18 新增 gaussdb-config 时实际撞上过:
+# 本文件 62 条单独跑全过、与 test_config_audit_units.py 一起跑全挂)。
+for _m in ("render", "audit", "baseline", "calibrate", "costconst", "costmodel",
+           "derivation", "plantree", "model", "rules", "thresholds"):
+    sys.modules.pop(_m, None)
 sys.path.insert(0, str(_ROOT / "skills" / "gaussdb-sqltune" / "scripts"))
 
 import calibrate  # noqa: E402

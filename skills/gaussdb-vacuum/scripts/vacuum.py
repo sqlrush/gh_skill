@@ -60,6 +60,7 @@ from common.grmp.hints import with_hint  # noqa: E402
 # 结果值全是字符串：bool("f") 是 True、NULL 渲染成空串而不是 None。
 # 类型/空值还原一律走这里，不用裸 int()/float()/`is None`/`or 默认值`。
 from common.grmp.values import as_float, is_null  # noqa: E402
+import bloat as bloat_mod  # noqa: E402
 import freeze as freeze_mod  # noqa: E402
 import render  # noqa: E402
 import rules  # noqa: E402
@@ -73,6 +74,7 @@ SETTINGS_SCRIPT = "vacuum.autovac_settings"
 WORKERS_SCRIPT = "vacuum.autovac_workers"
 XMIN_SCRIPT = "vacuum.oldest_xmin"
 FREEZE_SCRIPT = "vacuum.freeze_age"
+BLOAT_SCRIPT = "vacuum.bloat_estimate"
 # 内核事务水位(GaussDB 私有,先探测再用;交付闸按脚本名全串在 skills/ 里检索,故写全):
 #   explain.kernel_funcs —— 探测;vacuum.kernel_info —— gs_get_kernel_info() 原样四列
 # openGauss 没有这个函数,报告不出这一节;GaussDB 该有而没有,用中文说明原因。
@@ -91,6 +93,8 @@ class VacuumReport:
     kernel_note: str = ""                              # 没取到时的原因(中文);openGauss 为空
     freeze: list = field(default_factory=list)         # 每个库一行:datname/freeze_age/max_age
     freeze_note: str = ""                              # 取不到时的原因(中文);取到了为空
+    bloat: list = field(default_factory=list)          # 膨胀估算的输入行
+    bloat_note: str = ""                               # 取不到时的原因(中文)
 
 
 def _kernel_info(runner) -> tuple:
@@ -117,6 +121,14 @@ def _freeze(runner) -> tuple:
         return [], "冻结水位取不到:" + str(exc)
 
 
+def _bloat(runner, limit: int) -> tuple:
+    """膨胀估算的输入。取不到只记原因 —— 这一项是后加的,现场可能还没重导白名单。"""
+    try:
+        return runner.run(BLOAT_SCRIPT, {"limit": int(limit)}), ""
+    except (access.QueryError, common.DBError) as exc:
+        return [], "膨胀估算取不到:" + str(exc)
+
+
 def collect(runner, limit: int, th) -> VacuumReport:
     settings = {r["name"]: r["setting"]
                 for r in runner.run(SETTINGS_SCRIPT, {})}
@@ -125,6 +137,7 @@ def collect(runner, limit: int, th) -> VacuumReport:
     xmin = runner.run(XMIN_SCRIPT, {})
     kernel_rows, kernel_note = _kernel_info(runner)
     freeze_rows, freeze_note = _freeze(runner)
+    bloat_rows, bloat_note = _bloat(runner, limit)
     tables = []
     for row in raw:
         line = rules.trigger_line(as_float(row["reltuples"]), settings,
@@ -134,9 +147,11 @@ def collect(runner, limit: int, th) -> VacuumReport:
     return VacuumReport(tables=tables, settings=settings, workers=workers,
                         oldest_xmin=xmin,
                         findings=(rules.judge_tables(raw, settings, xmin, th)
-                                  + freeze_mod.judge(freeze_rows)),
+                                  + freeze_mod.judge(freeze_rows)
+                                  + bloat_mod.judge(bloat_rows)),
                         kernel_info=kernel_rows, kernel_note=kernel_note,
-                        freeze=freeze_rows, freeze_note=freeze_note)
+                        freeze=freeze_rows, freeze_note=freeze_note,
+                        bloat=bloat_rows, bloat_note=bloat_note)
 
 
 # ---------------------------------------------------------------------------
@@ -337,10 +352,45 @@ def _freeze_section(rep: VacuumReport) -> str:
             % head + render.table(["库", "水位", "max_age", "占比"], rows))
 
 
+def _bloat_section(rep: VacuumReport) -> str:
+    """膨胀估算。**估不出来的那些也要列出来并说明原因** —— 不列等于让人
+    以为所有表都估过了,而恰恰是统计陈旧的那几张表最可能真的在膨胀。
+    """
+    if rep.bloat_note:
+        return "\n### 表膨胀（估算）\n\n> " + rep.bloat_note + "\n"
+    if not rep.bloat:
+        return ""
+    ests = [bloat_mod.estimate(r) for r in rep.bloat]
+    sized = [e for e in ests if e.pct is not None]
+    sized.sort(key=lambda e: e.pct, reverse=True)
+    out = ("\n### 表膨胀（估算）\n\n"
+           "> **这是估算，不是测量** —— 本内核没装 `pgstattuple`，只能按「行数 × 平均行宽」"
+           "推算应占空间，误差来自 fillfactor、已删列、TOAST 外联。\n"
+           "> 和死元组比例是**两件事**：死元组高 → `VACUUM` 能回收；"
+           "死元组低而这里高 → 空间已经膨出去了，`VACUUM` 不还盘，"
+           "要 `VACUUM FULL` 或重建（**都锁表**，须安排窗口）。\n\n")
+    if sized:
+        rows = [[e.name, _mb(e.real_bytes), _mb(e.expect_bytes or 0), "%.0f%%" % e.pct]
+                for e in sized[:10]]
+        out += render.table(["表", "真实", "估算应占", "估算膨胀"], rows)
+    else:
+        out += "没有一张表估得出来（原因见下）。\n"
+    skipped = bloat_mod.skipped(rep.bloat)
+    if skipped:
+        out += "\n估不了的表（**不是没问题，是没有依据**）：\n\n"
+        for e in skipped[:8]:
+            out += "- `%s`：%s\n" % (e.name, e.reason)
+    return out
+
+
+def _mb(n: int) -> str:
+    return bloat_mod._mb(n)
+
+
 def _autovac_status_section(rep: VacuumReport) -> str:
     return ("\n## autovacuum 近期运行情况\n\n" + _guc_section(rep) + "\n" +
             _workers_section(rep) + "\n" + _xmin_blockers_section(rep) +
-            _freeze_section(rep) + _kernel_info_section(rep))
+            _freeze_section(rep) + _bloat_section(rep) + _kernel_info_section(rep))
 
 
 def _manual_cleanup_section(rep: VacuumReport) -> str:

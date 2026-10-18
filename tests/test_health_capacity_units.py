@@ -315,3 +315,55 @@ def test_both_databases_and_tablespaces_are_covered():
 def test_an_unavailable_script_degrades_the_dimension_instead_of_crashing():
     d = C.collect_storage(_Runner(), _th(), 10)
     assert d.available is False
+
+
+# ================================================================ 分区表
+
+def _schema_dim(rows):
+    d = DimResult(dimension="Schema / Objects", available=True, headers=["项", "值"])
+    n = C._partitions(_Runner(**{"health.partitions": rows}), _th(), d)
+    return d, n
+
+
+def _p(schema="fl", table="part_log", parts=1000, strategy="r"):
+    return {"schema": schema, "table": table, "parts": parts, "strategy": strategy}
+
+
+def test_a_table_with_a_thousand_partitions_is_flagged():
+    """og5 实测 fl.part_log 有 1000 个分区。"""
+    d, n = _schema_dim([_p(parts=1000)])
+    assert [f.code for f in d.findings] == ["PARTITION_COUNT_HIGH"]
+    assert n == 1
+
+
+def test_a_normal_partition_count_is_not_flagged_nor_listed():
+    """按月分区的表(几十个分区)是正常设计 —— 报它只会把这一维刷满。"""
+    d, n = _schema_dim([_p(parts=36)])
+    assert d.findings == [] and d.rows == [] and n == 1
+
+
+def test_a_huge_partition_count_escalates_to_warning():
+    small = _schema_dim([_p(parts=C.PARTS_NOTICE)])[0]
+    big = _schema_dim([_p(parts=C.PARTS_WARN)])[0]
+    assert [f.severity.name for f in small.findings] == ["NOTICE"]
+    assert [f.severity.name for f in big.findings] == ["WARN"]
+
+
+def test_the_partition_finding_does_not_claim_anything_about_pruning():
+    """**分区数正常 ≠ 分区裁剪正常。** 裁剪是执行计划的属性,要看具体 SQL 的 plan;
+    一条目录查询给不出这个结论。混在一起会让人以为分区数没问题就不用查裁剪了 ——
+    而最常见的分区故障恰恰是"分区数很合理,但查询没带分区键、每次全分区扫"。
+    """
+    ev = _schema_dim([_p(parts=2000)])[0].findings[0].evidence
+    assert "不代表分区裁剪有问题" in ev and "gaussdb-explain" in ev
+
+
+def test_no_partitioned_tables_reports_nothing():
+    d, n = _schema_dim([])
+    assert d.findings == [] and n == 0
+
+
+def test_an_unregistered_partition_script_is_silent():
+    d = DimResult(dimension="Schema / Objects", available=True, headers=[])
+    assert C._partitions(_Runner(), _th(), d) == 0
+    assert d.findings == []

@@ -12,8 +12,8 @@ python3 -m grmp_middleware.dump_whitelist
 
 | 项 | 值 |
 |---|---|
-| 脚本总数 | 123 |
-| id 范围 | 1 ~ 129 |
+| 脚本总数 | 126 |
+| id 范围 | 1 ~ 132 |
 
 > `id` 是**环境相关数据，不是契约**。skill 从不持有它 —— 运行时调
 > 接口一按 `cmd_name` 现查。客户环境重新发布后 id 会不同，属正常。
@@ -22,8 +22,9 @@ python3 -m grmp_middleware.dump_whitelist
 
 | 命名空间 | 条数 | 脚本 |
 |---|---|---|
+| **config** | 1 | `settings` |
 | **explain** | 13 | `plan_text`, `plan_text_analyze`, `active_pid`, `kernel_funcs`, `runtime_plan`, `session_by_pid`, `runtime_plan_int4`, `multi_stmt_probe`, `plan_text_analyze_schema`, `plan_text_schema`, `from_history`, `from_statement`, `relation_schemas` |
-| **health** | 19 | `archive_mode`, `bgwriter`, `conn_concentration`, `conn_states`, `db_concurrency`, `db_info`, `invalid_index`, `long_xact`, `overview`, `prepared_xacts`, `replication`, `slow_sql`, `stale_stats`, `unused_index`, `stats_window`, `storage`, `sync_commit`, `thread_pool`, `wal_slots` |
+| **health** | 20 | `archive_mode`, `bgwriter`, `conn_concentration`, `conn_states`, `db_concurrency`, `db_info`, `invalid_index`, `long_xact`, `overview`, `prepared_xacts`, `replication`, `slow_sql`, `stale_stats`, `unused_index`, `stats_window`, `storage`, `sync_commit`, `thread_pool`, `wal_slots`, `partitions` |
 | **lockwait** | 2 | `chain`, `pairs` |
 | **memanalyze** | 11 | `activity`, `cols_bare`, `cols_qualified`, `context`, `gucs`, `instance`, `session`, `wlm_operator`, `wlm_operator_hist`, `wlm_sql`, `wlm_sql_hist` |
 | **perf** | 9 | `bgwriter`, `db_stat`, `instance_time`, `locks`, `memory`, `sessions`, `table_stat`, `wait_events`, `wait_status` |
@@ -36,7 +37,7 @@ python3 -m grmp_middleware.dump_whitelist
 | **sqltune** | 15 | `column_stats`, `from_history`, `from_statement`, `indexes`, `key_gucs`, `plan_json`, `plan_text`, `plan_text_analyze`, `tables`, `version`, `stats_freshness`, `column_types`, `plan_json_schema`, `plan_text_analyze_schema`, `plan_text_schema` |
 | **topproc** | 1 | `top_procs` |
 | **topsql** | 1 | `top_sql` |
-| **vacuum** | 6 | `autovac_settings`, `autovac_workers`, `dead_tuples`, `oldest_xmin`, `kernel_info`, `freeze_age` |
+| **vacuum** | 7 | `autovac_settings`, `autovac_workers`, `dead_tuples`, `oldest_xmin`, `kernel_info`, `freeze_age`, `bloat_estimate` |
 | **waitevent** | 2 | `events`, `instance_time` |
 | **wdr** | 13 | `cache`, `checkpoint`, `db_stat`, `db_summary`, `file_io`, `load_profile`, `native_report`, `node_name`, `snapshots`, `top_sql`, `waits`, `wdr_enabled`, `window` |
 
@@ -2162,5 +2163,78 @@ SELECT d.datname,
   FROM pg_database d
  WHERE d.datallowconn
  ORDER BY freeze_age DESC;
+```
+
+### `config.settings`
+
+- id `130` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+无参数
+
+```sql
+SELECT name,
+       COALESCE(setting,'')    AS setting,
+       COALESCE(unit,'')       AS unit,
+       COALESCE(vartype,'')    AS vartype,
+       COALESCE(boot_val,'')   AS boot_val,
+       COALESCE(reset_val,'')  AS reset_val,
+       COALESCE(context,'')    AS context,
+       COALESCE(source,'')     AS source,
+       COALESCE(min_val,'')    AS min_val,
+       COALESCE(max_val,'')    AS max_val,
+       COALESCE(enumvals::text,'') AS enumvals,
+       COALESCE(category,'')   AS category,
+       COALESCE(short_desc,'') AS short_desc
+  FROM pg_settings
+ ORDER BY name;
+```
+
+### `health.partitions`
+
+- id `131` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+无参数
+
+```sql
+SELECT n.nspname      AS schema,
+       c.relname      AS "table",
+       count(*)       AS parts,
+       COALESCE(max(p.partstrategy), '') AS strategy
+  FROM pg_partition p
+  JOIN pg_class c     ON c.oid = p.parentid
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE p.parttype = 'p'
+   AND n.nspname NOT IN ('pg_catalog','information_schema','snapshot','dbe_perf',
+                         'dbe_pldeveloper','cstore','pg_toast')
+ GROUP BY n.nspname, c.relname
+ ORDER BY parts DESC;
+```
+
+### `vacuum.bloat_estimate`
+
+- id `132` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `limit` | INTEGER |
+
+```sql
+SELECT n.nspname AS schema,
+       c.relname AS "table",
+       c.relpages::bigint                       AS relpages,
+       (pg_relation_size(c.oid) / 8192)::bigint AS real_pages,
+       c.reltuples::bigint                      AS reltuples,
+       pg_relation_size(c.oid)::bigint          AS real_bytes,
+       (SELECT sum(s.avg_width)
+          FROM pg_stats s
+         WHERE s.schemaname = n.nspname AND s.tablename = c.relname) AS avg_row_width
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE c.relkind = 'r'
+   AND n.nspname NOT IN ('pg_catalog','information_schema','snapshot','dbe_perf',
+                         'dbe_pldeveloper','cstore','pg_toast')
+   AND pg_relation_size(c.oid) > 8192 * 128
+ ORDER BY pg_relation_size(c.oid) DESC
+ LIMIT {{limit}};
 ```
 

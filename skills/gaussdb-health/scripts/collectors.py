@@ -627,9 +627,49 @@ def collect_schema(runner, th: Thresholds, top: int) -> DimResult:
             f"清除，而 ANALYZE 的成果存在 pg_statistic 里不受影响，"
             f"所以它不参与本判定。）"))
     # 措辞不写「无用索引」：那是个关于未来的断言，而我们只观测到了一个窗口。
+    n_part = _partitions(runner, th, d)
     d.headline = (f"窗口内未使用的索引 {n_unused}、失效索引 {invalid}、"
-                  f"统计不足以支撑估算的表 {n_stale}（观测窗口 {window_text}）")
+                  f"统计不足以支撑估算的表 {n_stale}（观测窗口 {window_text}）"
+                  + (f"；分区表 {n_part} 张" if n_part else ""))
     return d
+
+
+# 一张表的分区数超过这个值,规划开销就开始明显上升(每次规划都要遍历分区元数据)。
+# 1000 不是内核限制,是个工程判断:按月分区能撑 80 年,到了四位数基本说明
+# 分区粒度设计有问题(常见是按天甚至按小时分,又从不清理历史分区)。
+PARTS_NOTICE = 1000
+PARTS_WARN = 4000
+
+
+def _partitions(runner, th: Thresholds, d: DimResult) -> int:
+    """分区表体检:每张表几个分区。返回分区表张数(给 headline 用)。
+
+    **只回答「分区数量与策略」,不回答「分区裁剪有没有生效」。** 裁剪是执行计划的
+    属性,要看具体 SQL 的 plan(走 gaussdb-explain);一条目录查询给不出这个结论。
+    把两件事混在一起,会让人以为分区数正常就等于裁剪正常 —— 而最常见的分区故障
+    恰恰是"分区数很合理,但查询没带分区键、每次全分区扫"。
+    """
+    try:
+        rows = runner.run("health.partitions")
+    except access.QueryError:
+        return 0        # 脚本未登记(现场还没重导白名单)时静默跳过
+    for row in rows or []:
+        name = "%s.%s" % (row.get("schema"), row.get("table"))
+        n = as_int(row.get("parts"))
+        if n < PARTS_NOTICE:
+            continue        # 表行只列偏多的那些,否则几十张分区表会把这一维刷满
+        d.rows.append([trunc(name, 32), "%d 个分区（策略 %s）"
+                       % (n, row.get("strategy") or "?")])
+        sev, thr = (Severity.WARN, PARTS_WARN) if n >= PARTS_WARN \
+            else (Severity.NOTICE, PARTS_NOTICE)
+        d.findings.append(Finding(
+            DIM_SCHEMA, "PARTITION_COUNT_HIGH", sev, "%s 的分区数" % name,
+            str(n), f">={thr}",
+            "pg_partition 里该表有 %d 个分区 —— 每次查询规划都要遍历分区元数据，"
+            "分区数到四位数时规划开销明显上升。常见成因是按天/按小时分区又从不清理"
+            "历史分区。**这一项不代表分区裁剪有问题**：裁剪要看具体 SQL 的执行计划"
+            "（gaussdb-explain），分区数正常也可能每次都在全分区扫。" % n))
+    return len(rows or [])
 
 
 # --- transactions / concurrency ----------------------------------------------
