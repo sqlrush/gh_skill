@@ -179,17 +179,52 @@ def _trim(v: float) -> str:
 
 
 def to_sample(at: str, rows) -> Sample:
-    """把取数结果转成一刻的采样。rows 里每项要有 sql_id / calls / total_sec / rows / query。"""
+    """把取数结果转成一刻的采样。rows 里每项要有 sql_id / calls / total_sec / rows / query。
+
+    **同一个 sql_id 出现多行时求和,不是覆盖。** dbe_perf.statement 按执行用户拆行
+    (og5 实测 217 行里 29 行重复)。原来写的是 `out[sid] = …`,后一行覆盖前一行 ——
+    两次采样留下的可能是不同用户的那一行,于是算出凭空的增量,或者负数被判成
+    「统计清零」。取数脚本现在已经在 SQL 里聚合了,这里再求和一次是兜底:
+    老版本的白名单(现场还没重导)仍然会送来重复行。
+    """
     out: Dict[str, Counters] = {}
     for r in rows:
         sid = str(getattr(r, "sql_id", "") or "")
         if not sid:
             continue
-        out[sid] = Counters(calls=int(getattr(r, "calls", 0) or 0),
-                            total_sec=float(getattr(r, "total_sec", 0.0) or 0.0),
-                            rows=int(getattr(r, "rows", 0) or 0),
-                            query=str(getattr(r, "query", "") or ""))
+        c = Counters(calls=int(getattr(r, "calls", 0) or 0),
+                     total_sec=float(getattr(r, "total_sec", 0.0) or 0.0),
+                     rows=int(getattr(r, "rows", 0) or 0),
+                     query=str(getattr(r, "query", "") or ""))
+        prev = out.get(sid)
+        out[sid] = c if prev is None else Counters(
+            calls=prev.calls + c.calls, total_sec=prev.total_sec + c.total_sec,
+            rows=prev.rows + c.rows, query=prev.query or c.query)
     return Sample(at=at, rows=out)
+
+
+class _Row(NamedTuple):
+    sql_id: str
+    calls: int
+    total_sec: float
+    rows: int
+    query: str
+
+
+def from_rows(at: str, rows) -> Sample:
+    """取数脚本的原始行(按列名)→ 采样。topsql.top_sql 与 topsql.snap_statement 列名一致,
+    两边都走这一个函数 —— 不会一边按列名、一边按位置取值。"""
+    def num(v, cast):
+        try:
+            return cast(float(v))
+        except (TypeError, ValueError):
+            return cast(0)
+    return to_sample(at, [_Row(sql_id=str(r.get("unique_sql_id") or ""),
+                               calls=num(r.get("calls"), int),
+                               total_sec=num(r.get("total_sec"), float),
+                               rows=num(r.get("rows"), int),
+                               query=str(r.get("query") or ""))
+                          for r in rows or []])
 
 
 def _reset_detected(before: Sample, after: Sample) -> bool:

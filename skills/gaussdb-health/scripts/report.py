@@ -29,7 +29,7 @@ def _uncovered_section() -> str:
     return out
 
 
-def _missing_section(sub_results) -> str:
+def _missing_section(sub_results, no_sub_note: str = "") -> str:
     out = "## 本次未采集到的维度\n\n"
     failed = [r for r in sub_results if not r.ok]   # 只看 ok，不看 len(findings)
     if failed:
@@ -40,6 +40,8 @@ def _missing_section(sub_results) -> str:
     elif sub_results:
         names = "、".join(r.skill for r in sub_results)
         out += f"无：本次纳入的子 skill（{names}）全部采集成功。\n\n"
+    elif no_sub_note:
+        out += no_sub_note + "\n\n"     # 调用方知道为什么没跑(如时段体检回看过去),说真实原因
     else:
         out += ("本次没有子 skill 纳入范围（--include/--exclude 排除了全部"
                "锁/等待/膨胀相关维度，或调用方未提供 sub_results）。\n\n")
@@ -83,7 +85,7 @@ def _evidence_with_source(f) -> str:
     return f.evidence
 
 
-def render_health(ev: HealthEvidence, sub_results=()) -> str:
+def render_health(ev: HealthEvidence, sub_results=(), no_sub_note: str = "") -> str:
     if ev.target:
         out = f"# Health Evidence — {ev.conn} ({ev.target})\n\n"
     else:
@@ -92,7 +94,7 @@ def render_health(ev: HealthEvidence, sub_results=()) -> str:
 
     # 顶部两段固定小节：先说清楚这次没查到什么、结构性覆盖不到什么，
     # 再进正文——不能让读者先看到一份干净的报告，才在最后发现漏了什么。
-    out += _missing_section(sub_results)
+    out += _missing_section(sub_results, no_sub_note)
     out += _uncovered_section()
     # 第三段固定小节:客户知识库对每条发现怎么说(条款 / 相似案例 / 本行历史路径)。
     # 放在维度正文之前——处置建议要以它为首选依据,不能让读者(模型)先看完通用分析再想起它。

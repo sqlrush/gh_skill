@@ -40,6 +40,8 @@ from common import reports  # noqa: E402
 from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
 import delta as delta_mod  # noqa: E402
 import render  # noqa: E402
+import span as span_mod  # noqa: E402
+from common import timewin  # noqa: E402
 
 # Whitelisted --by values; ORDER BY clause is injected, so it MUST come from
 # this map only (never from user input directly).
@@ -129,6 +131,13 @@ def _stats_window(runner) -> str:
         return ""
 
 
+# QUERY 列的长度。截断发生在 SQL 里(topsql.top_sql / snap_statement 的 LEFT(…, 80)),
+# 这里只是写明它 —— 原先页脚写「100 字」,实际只有 80。
+QUERY_CHARS = 80
+_QUERY_FOOT = ("\n> QUERY 只截到 %d 字。要看某条的全文或执行计划，"
+               "直接说「看 sql_id <SQL_ID> 的执行计划」。\n" % QUERY_CHARS)
+
+
 def delta_table(title: str, res: "delta_mod.DeltaResult", by: str) -> str:
     """增量结果的表格。**表头写明是增量**,不让人误读成累计值。"""
     if res.reset:
@@ -137,14 +146,12 @@ def delta_table(title: str, res: "delta_mod.DeltaResult", by: str) -> str:
         return ("## %s\n\n这个窗口里没有语句产生新的耗时(增量为零)。%s\n"
                 % (title, res.note))
     body = [[str(i + 1), r.sql_id, str(r.calls), "%.2f" % r.avg_ms, "%.2f" % r.total_sec,
-             str(r.rows), ("新" if r.is_new else ""), render.truncate(r.query, 100)]
+             str(r.rows), ("新" if r.is_new else ""), render.truncate(r.query, QUERY_CHARS)]
             for i, r in enumerate(res.rows)]
     return ("## " + title + "\n\n" +
             render.table(["#", "SQL_ID", "窗口内调用", "窗口内平均(ms)", "窗口内耗时(s)",
                           "窗口内返回行", "窗口内新出现", "QUERY"], body) +
-            "\n" + res.note + "\n" +
-            "\n> QUERY 只截到 100 字。要看某条的全文或执行计划，"
-            "直接说「看 sql_id <SQL_ID> 的执行计划」。\n")
+            "\n" + res.note + "\n" + _QUERY_FOOT)
 
 
 def stmt_table(title: str, rows: list[StmtRow]) -> str:
@@ -152,12 +159,11 @@ def stmt_table(title: str, rows: list[StmtRow]) -> str:
         return (f"## {title}\n\nNo matching statements. "
                 f"Check `enable_stmt_track` / lower --threshold.\n")
     body = [[str(i + 1), r.sql_id, str(r.calls), f"{r.avg_ms:.2f}",
-             f"{r.total_sec:.2f}", str(r.rows), render.truncate(r.query, 100)]
+             f"{r.total_sec:.2f}", str(r.rows), render.truncate(r.query, QUERY_CHARS)]
             for i, r in enumerate(rows)]
     return ("## " + title + "\n\n" +
             render.table(["#", "SQL_ID", "CALLS", "AVG_MS", "TOTAL_S", "ROWS", "QUERY"], body) +
-            "\n> QUERY 只截到 100 字。要看某条的全文或执行计划，"
-            "直接说「看 sql_id <SQL_ID> 的执行计划」。\n")
+            _QUERY_FOOT)
 
 
 def _leave_baseline(runner, conn_name: str) -> None:
@@ -178,6 +184,84 @@ def _leave_baseline(runner, conn_name: str) -> None:
         delta_mod.save_baseline(bpath, _sample(runner, _now()))
     except Exception:       # noqa: BLE001 —— 基线是锦上添花,任何失败都不能冒泡
         return
+
+
+_BY_CN = {"time": "耗时", "avg": "平均耗时", "calls": "调用次数", "rows": "返回行数",
+          "reads": "读块数"}
+
+
+def _run_span(runner, args, conn_name: str) -> Optional[int]:
+    """「某个时间段 / 最近 N 分钟」:选一个**包住**用户时间段的窗口,两端相减,并说清实际窗口。
+
+    返回 None = 这条路走不了(取不到数据库时钟、或一个快照和采样都没有)——
+    `--window` 退回老做法(自存基线 / 现场采一小段),`--from` 直接报错说明原因。
+    """
+    base_dir = reports.reports_dir()
+    bpath = delta_mod.baseline_path(base_dir, reports.instance_key(conn_name))
+    ck = span_mod.clock(runner)
+    if ck is None:
+        return None
+    try:
+        want_from, want_to = timewin.parse_span(args.from_, args.to, args.window, ck.db_now)
+    except ValueError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+    if args.by not in delta_mod.DELTA_SORT_KEYS:
+        print("error: 时间段模式下 --by 只能是 %s(%s 的原始值取数脚本里没有,算不出增量)"
+              % ("/".join(delta_mod.DELTA_SORT_KEYS), args.by), file=sys.stderr)
+        return 2
+    hist = delta_mod.load_history(bpath)
+    pl = span_mod.plan(runner, want_from, want_to, hist, ck)
+    if pl is None:
+        return None
+    cov = pl.coverage
+    if cov.start is None:
+        print("## Top SQL（时间段）\n\n口径：%s\n" % cov.note)
+        return 0
+
+    live = {}
+
+    def live_sample():
+        if "s" not in live:
+            live["s"] = _sample(runner, _now())
+        return live["s"]
+
+    try:
+        before = span_mod.fetch(runner, cov.start, span_mod.START_WIDTH, live_sample)
+        after = span_mod.fetch(runner, cov.end, delta_mod.SAMPLE_WIDTH, live_sample)
+    except access.QueryError as exc:
+        print("error: 取窗口端点失败:%s" % exc, file=sys.stderr)
+        return 2
+    res = delta_mod.diff(before, after, cov.span_s, by=args.by, limit=args.limit)
+    if "s" in live:                       # 此刻的采样留进历史,下次问「最近」能贴得更近
+        delta_mod.save_baseline(bpath, live["s"])
+
+    payload = {"conn": conn_name, "by": args.by, "limit": args.limit, "mode": "span",
+               "want_from": want_from.strftime("%Y-%m-%d %H:%M:%S"),
+               "want_to": want_to.strftime("%Y-%m-%d %H:%M:%S"),
+               "eval_from": cov.start.at.strftime("%Y-%m-%d %H:%M:%S"),
+               "eval_to": cov.end.at.strftime("%Y-%m-%d %H:%M:%S"),
+               "complete": cov.complete, "span_note": cov.note,
+               # 存档索引按它筛时间段(common/reports._window_summary):报告的存档时间是「现在」,
+               # 而它说的是另一段时间,不带这个字段,大盘按时间段筛时会找不到它。
+               "window": {"begin_ts": cov.start.at.strftime("%Y-%m-%d %H:%M:%S"),
+                          "end_ts": cov.end.at.strftime("%Y-%m-%d %H:%M:%S")},
+               "window_s": int(cov.span_s), "reset": res.reset,
+               "rows": [r._asdict() for r in res.rows]}
+    if args.format == "json":
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(delta_table(span_mod.title(cov, _BY_CN.get(args.by, args.by)), res, args.by), end="")
+        # 口径必须跟着表走:用户问的是 A–B,拿到的是 S–E,不说清楚他会把这张表
+        # 当成 A–B 的答案(用户 2026-10-18 定的要求)。
+        print("\n口径：%s\n" % cov.note)
+    saved = reports.archive("topsql", payload,
+                            name="%s.%s.span" % (reports.utc_stamp(), args.by),
+                            instance=conn_name, latest=False)
+    reports.announce("topsql", saved, conn_name, by=args.by,
+                     span=(cov.start.at.strftime("%Y-%m-%dT%H:%M"),
+                           cov.end.at.strftime("%Y-%m-%dT%H:%M")))
+    return 0
 
 
 def _run_delta(runner, args, conn_name: str) -> int:
@@ -277,7 +361,7 @@ def _run_delta(runner, args, conn_name: str) -> int:
             print("\n口径：%s\n" % extra)
     saved = reports.archive("topsql", payload,
                             name="%s.%s.delta" % (reports.utc_stamp(), args.by),
-                            instance=conn_name)
+                            instance=conn_name, latest=False)
     reports.announce("topsql", saved, conn_name, by=args.by)
     return 0
 
@@ -312,8 +396,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     g.add_argument("--live-sample", default="", metavar="60s",
                    help="现场盯着采这么久再出结果(**会阻塞**,最多 %d 秒)。"
                         "只在确实要观察当下时用" % delta_mod.MAX_LIVE_EXPLICIT_S)
+    ap.add_argument("--from", dest="from_", default="", metavar="'YYYY-MM-DD HH:MM'",
+                    help="某个时间段的起点(数据库所在时区)。窗口取「包住」这个时间段的快照 / 采样 / 此刻,"
+                         "并说明实际评估的是哪一段")
+    ap.add_argument("--to", default="", metavar="'YYYY-MM-DD HH:MM'",
+                    help="时间段终点;不给 = 到此刻")
     args = ap.parse_args(argv)
     cli.apply_session_arg(args)
+    if (args.from_ or args.to) and (args.window or args.since_last or args.live_sample):
+        print("error: --from/--to 不能与 --window/--since-last/--live-sample 一起用", file=sys.stderr)
+        return 2
+    if args.to and not args.from_:
+        print("error: 给了 --to 就要给 --from", file=sys.stderr)
+        return 2
 
     try:
         runner = access.for_conn(args.conn, timeout=args.timeout)
@@ -322,6 +417,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
     try:
         conn_name = common.config.resolved_name(args.conn)
+        if args.from_ or args.window:
+            rc = _run_span(runner, args, conn_name)
+            if rc is not None:
+                return rc
+            if args.from_:
+                print("error: 回看某个时间段要用 WDR 快照,而本实例取不到快照或数据库时钟"
+                      "(WDR 未开启 enable_wdr_snapshot,或白名单里还没有 wdr.snapshots / "
+                      "health.live_counters 这两条脚本)。累计榜没有时间维度,倒推不了过去。",
+                      file=sys.stderr)
+                return 2
         if args.window or args.since_last or args.live_sample:
             return _run_delta(runner, args, conn_name)
         rows = top_sql(runner, args.by, args.limit)

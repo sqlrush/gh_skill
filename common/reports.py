@@ -104,11 +104,17 @@ def _dims_summary(payload: Any) -> Dict[str, Any]:
 
 
 def _window_summary(payload: Any) -> Dict[str, Any]:
-    """WDR 的快照窗口抄进索引:报告的 at 是**存档时间**,大盘按时间段筛选时要按窗口筛。"""
+    """评估窗口抄进索引:报告的 at 是**存档时间**,大盘按时间段筛选时要按窗口筛。
+
+    WDR 一直有;时段体检与时段 Top SQL 也有(它们今天存档,说的却可能是昨天那一段)。
+    `mode` 一并抄进去:大盘据此把「时段报告」与「此刻巡检」分开比较、分开画走势。
+    """
     win = payload.get("window") if isinstance(payload, dict) else None
+    mode = payload.get("mode") if isinstance(payload, dict) else None
+    out = {"mode": mode} if isinstance(mode, str) and mode else {}
     if not isinstance(win, dict) or not win.get("begin_ts"):
-        return {}
-    return {"window": {k: win.get(k) for k in ("begin_id", "end_id", "begin_ts", "end_ts")}}
+        return out
+    return {**out, "window": {k: win.get(k) for k in ("begin_id", "end_id", "begin_ts", "end_ts")}}
 
 
 def _dbtime_summary(payload: Any) -> Dict[str, Any]:
@@ -186,8 +192,11 @@ def _update_targets(skill_dir: pathlib.Path, key: str, conn: str, stamp: str, co
 
 def archive(skill: str, payload: Any, *, name: Optional[str] = None,
             keep: int = DEFAULT_KEEP, now: Optional[str] = None,
-            instance: Optional[str] = None) -> Optional[pathlib.Path]:
+            instance: Optional[str] = None, latest: bool = True) -> Optional[pathlib.Path]:
     """写 <dir>/<skill>/[<实例键>/]<name or 时间戳>.json,同时覆盖 latest.json、维护 index.json。
+
+    latest=False:不覆盖 latest.json(只进 index)。时段报告用它 —— 大盘不带参数打开时显示 latest,
+    那应该是最近一次「此刻」巡检;让一份「昨天 10:46–11:06」的时段报告顶掉它,用户会以为库现在就这样。
 
     instance 给了就分实例目录并维护 <skill>/targets.json;不给(知识库,全体共享一份)则落在技能根目录。
     index 只登记本函数写过的文件,超过 keep 份时也只删登记过的 —— 目录里别的东西不动。
@@ -205,7 +214,8 @@ def archive(skill: str, payload: Any, *, name: Optional[str] = None,
     try:
         text = json.dumps(payload, ensure_ascii=False, indent=2)
         _write_atomic(d / fname, text)
-        _write_atomic(d / LATEST, text)
+        if latest:
+            _write_atomic(d / LATEST, text)
         idx = [e for e in _load_index(d / INDEX) if e.get("file") != fname]
         idx.append({"at": stamp, "file": fname,
                     "overall": payload.get("overall") if isinstance(payload, dict) else None,
@@ -236,6 +246,8 @@ def dash_link(skill: str, path: Optional[pathlib.Path], instance: str, by: str =
     """这一份报告在大盘上的直达地址(相对路径:大盘与对话页在同一个网关地址下)。没存档 / 没有页 → 空串。
 
     health / wdr 带 run=<文件> 直接打开这一份;topsql 按维度页签各取最近一份,带 by=<维度>。
+    topsql 的时段 / 增量报告(文件名 `<时间戳>.<维度>.span|delta.json`)也带 run= —— 页签只取累计榜,
+    不带 run= 的话用户点开看到的是另一份累计榜,不是刚才那张时段榜。
 
     **span=(from, to) 时额外带上时间段**(本地时间字符串,形如 `2026-10-17T10:46`)。
     用户说「生成某时间段的报告」时,给出的链接应该**已经筛在那个时间段上** ——
@@ -245,9 +257,9 @@ def dash_link(skill: str, path: Optional[pathlib.Path], instance: str, by: str =
     if path is None or page is None:
         return ""
     q = [("inst", instance_key(instance))]
-    if skill != "topsql":
+    if skill != "topsql" or path.name.count(".") >= 3:
         q.append(("run", path.name))
-    elif by:
+    if skill == "topsql" and by:
         q.append(("by", by))
     if span:
         a, b = (str(x or "").strip() for x in span)

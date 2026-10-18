@@ -56,6 +56,7 @@ import counters as counters_mod  # noqa: E402
 from model import HealthEvidence, Severity, worst  # noqa: E402
 from report import health_dict, render_health, render_health_json  # noqa: E402,F401
 from thresholds import Thresholds, default_thresholds  # noqa: E402
+import window as window_mod  # noqa: E402
 
 # 四个退役的本地维度名，现在路由到对应子 skill 而不是本地 collector。
 # waits 和 lwlock 出自同一份 gaussdb-waitevent 报告（同一次 DB time 分解的
@@ -183,6 +184,61 @@ def _split_dim_list(s: str) -> list[str]:
     return [p.strip() for p in (s or "").split(",") if p.strip()]
 
 
+def _run_window(runner, args) -> int:
+    """时段体检。能回看的维度两端相减;瞬时维度终点是此刻时给当前值,否则明列回看不了。"""
+    try:
+        cov, _ck = window_mod.plan(runner, args.from_, args.to, args.window)
+    except ValueError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+    conn = common.config.resolved_name(args.conn)
+    if cov.start is None:
+        print("# 时段体检 — %s\n\n口径：%s\n" % (conn, cov.note))
+        return 0
+    timeout = (args.timeout if args.timeout is not None
+               else access.DEFAULT_SKILL_TIMEOUT_SECONDS)
+    ev = window_mod.collect(runner, cov)
+    ev.dims.append(window_mod.topsql_dim(cov, args.top, aggregate.script_path("gaussdb-topsql"),
+                                         timeout, args.conn))
+    subs = []
+    if cov.end.kind == "live":
+        # 终点是此刻:瞬时维度给当前值,标明是当前值 —— 它们回答「现在怎么样」,
+        # 不回答「那段时间里怎么样」
+        subs = [aggregate.run_sub_skill(s, args.conn, timeout)
+                for s in ("gaussdb-lockwait", "gaussdb-vacuum")]
+        cur = run_health(runner, ["conn", "xact", "repl", "storage"], [], args.top,
+                         default_thresholds(), sub_results=subs)
+        for d in cur.dims:
+            d.headline = "【当前值，不是时段内的】" + (d.headline or "")
+        ev.dims += cur.dims
+        sub_findings = [f for r in subs if r.ok for f in r.findings]
+    else:
+        ev.dims += window_mod.dims_unavailable_instant()
+        sub_findings = []
+    window_mod.finish(ev)
+    ev.findings += sub_findings
+    ev.findings.sort(key=lambda f: int(f.severity), reverse=True)
+    ev.overall = worst([f.severity for f in ev.findings])
+    ev.conn = conn
+    d = health_dict(ev, sub_results=subs)
+    d["mode"] = "span"
+    d["span_note"] = cov.note
+    # 存档索引按它筛时间段(common/reports._window_summary)
+    d["window"] = {"begin_ts": cov.start.at.strftime("%Y-%m-%d %H:%M:%S"),
+                   "end_ts": cov.end.at.strftime("%Y-%m-%d %H:%M:%S")}
+    if args.format == "json":
+        print(json.dumps(d, ensure_ascii=False, indent=2))
+    else:
+        out = render_health(ev, sub_results=subs,
+                            no_sub_note="" if cov.end.kind == "live" else window_mod.PAST_SUB_NOTE)
+        print(out.replace("# Health Evidence — ", "# 时段体检 — ", 1), end="")
+    # latest=False:大盘默认显示的「最近一次巡检」仍是此刻巡检,时段报告经 run= 直达(见 reports.archive)
+    saved = reports.archive("health", d, name="%s.span" % reports.utc_stamp(), instance=conn, latest=False)
+    reports.announce("health", saved, conn,
+                     span=(cov.start.at.strftime("%Y-%m-%dT%H:%M"), cov.end.at.strftime("%Y-%m-%dT%H:%M")))
+    return _exit_code(subs)
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(
         prog="health.py",
@@ -197,6 +253,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--top", type=int, default=10, help="各 Top 列表条数")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
     ap.add_argument("--timeout", type=int, default=None)
+    # 时段体检:回看「某个时间段 / 最近 N 分钟」。不带这三个 = 原来的「此刻」巡检。
+    ap.add_argument("--from", dest="from_", default="", metavar="'YYYY-MM-DD HH:MM'",
+                    help="时段体检起点(数据库所在时区)。窗口取包住这段时间的快照 / 此刻,并说明实际评估的是哪一段")
+    ap.add_argument("--to", default="", metavar="'YYYY-MM-DD HH:MM'", help="时段体检终点;不给 = 到此刻")
+    ap.add_argument("--window", default="", metavar="10m", help="时段体检:最近这么久(10m / 2h / 1d)")
     args = ap.parse_args(argv)
     cli.apply_session_arg(args)
 
@@ -205,6 +266,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     except (common.ConfigError, common.CredentialError, access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    if args.from_ or args.to or args.window:
+        if args.include or args.exclude:
+            print("error: 时段体检不支持 --include/--exclude", file=sys.stderr)
+            return 2
+        return _run_window(runner, args)
 
     inc_list = _split_dim_list(args.include)
     exc_list = _split_dim_list(args.exclude)

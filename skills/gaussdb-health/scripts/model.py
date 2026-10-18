@@ -28,6 +28,14 @@ DIM_CONCURRENCY = "Transactions / Concurrency"
 # 占用量,不是「剩余水位」—— 剩余空间在这个内核上取不到
 # (pg_stat_file 要 initial account,实测被拒),维度名也要如实反映这一点。
 DIM_STORAGE = "Storage Usage"
+# 时段体检(window.py)的维度。与上面的「此刻」维度分开命名:同一份报告里两种口径并存时
+# (终点是此刻,瞬时维度给当前值),大盘按维度名区分哪些是窗口内的增量。
+DIM_WIN_COVER = "Evaluation Window"
+DIM_WIN_LOAD = "Window Load"
+DIM_WIN_TXN = "Window Transactions"
+DIM_WIN_IO = "Window IO / Temp / Checkpoint"
+DIM_WIN_WAITS = "Window Waits"
+DIM_WIN_TOPSQL = "Window Top SQL"
 
 
 @dataclass
