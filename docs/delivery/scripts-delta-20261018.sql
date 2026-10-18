@@ -6,11 +6,10 @@
 -- 不要整份重导（整份见同目录 scripts.sql，共 113 条）。
 --
 --   新增   8 条 INSERT
---   更新   3 条 UPDATE（其中 2 条是修拼写错误，1 条是修取数错误）
+--   更新   7 条 UPDATE
 --
--- 全部脚本均为**只读查询**，只访问系统视图与系统表（pg_settings、pg_database、
--- pg_class、pg_stat_*、pg_replication_slots、pg_partition 等），
--- 不读业务数据、不含 DML/DDL、不修改任何对象。
+-- 全部脚本均为**只读查询**，只访问系统视图与系统表，不读业务数据、
+-- 不含 DML/DDL、不修改任何对象。
 --
 -- 导入前请确认两处与贵方规范的对齐：
 --   1. `create_user` / `last_modify_user` 当前填 '999999999'，与上一版保持一致；
@@ -157,11 +156,107 @@ INSERT INTO grmp.script_config (id, script_type, script_name, database_type, ref
 ', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 
 -- =====================================================================
--- 二、更新 3 条已有脚本的 SQL 正文
+-- 二、更新 7 条已有脚本的 SQL 正文
 -- =====================================================================
 
+-- [proctune.plan_text_analyze]
+--   **修正拼写错误**：同上（`BUFFERS fasle` → `BUFFERS false`）。
+UPDATE grmp.script_config
+   SET script_content   = 'EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
+',
+       last_modify_user = '999999999',
+       last_modify_time = now()
+ WHERE script_name = 'proctune.plan_text_analyze';
+
+-- [sqltune.plan_text_analyze]
+--   **修正拼写错误**：`BUFFERS fasle` → `BUFFERS false`。`fasle` 不是合法布尔值，该脚本执行会直接报错。
+UPDATE grmp.script_config
+   SET script_content   = 'EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
+',
+       last_modify_user = '999999999',
+       last_modify_time = now()
+ WHERE script_name = 'sqltune.plan_text_analyze';
+
+-- [wdr.cache]
+--   **修正取数错误**（同一问题，预防性）：内连接会丢掉窗口内新建的表。 实测窗口里两端对称、未丢行，但结构上与 wdr.file_io 相同，窗口内真新建表时会静默少算。 改为 LEFT JOIN + COALESCE。
+UPDATE grmp.script_config
+   SET script_content   = 'WITH b AS (SELECT db_name, snap_schemaname, snap_relname,
+                  (COALESCE(snap_heap_blks_read,0)+COALESCE(snap_idx_blks_read,0)) AS phys,
+                  (COALESCE(snap_heap_blks_hit,0)+COALESCE(snap_idx_blks_hit,0))   AS logi
+             FROM snapshot.snap_summary_statio_all_tables WHERE snapshot_id={{b}}),
+     e AS (SELECT db_name, snap_schemaname, snap_relname,
+                  (COALESCE(snap_heap_blks_read,0)+COALESCE(snap_idx_blks_read,0)) AS phys,
+                  (COALESCE(snap_heap_blks_hit,0)+COALESCE(snap_idx_blks_hit,0))   AS logi
+             FROM snapshot.snap_summary_statio_all_tables WHERE snapshot_id={{e}})
+SELECT e.snap_relname,
+       (e.phys - COALESCE(b.phys, 0)) AS phys_read,
+       (e.logi - COALESCE(b.logi, 0)) AS logical_read
+FROM e LEFT JOIN b USING (db_name, snap_schemaname, snap_relname)
+WHERE (e.phys - COALESCE(b.phys, 0)) > 0
+ORDER BY phys_read DESC LIMIT {{top}};
+',
+       last_modify_user = '999999999',
+       last_modify_time = now()
+ WHERE script_name = 'wdr.cache';
+
+-- [wdr.db_stat]
+--   **修正取数错误**（同一问题，预防性）：内连接会丢掉窗口内新建的库。改为 LEFT JOIN + COALESCE。
+UPDATE grmp.script_config
+   SET script_content   = 'WITH b AS (SELECT snap_datname, snap_xact_commit, snap_xact_rollback, snap_deadlocks,
+                  snap_temp_bytes, snap_blks_hit, snap_blks_read
+             FROM snapshot.snap_summary_stat_database WHERE snapshot_id={{b}}),
+     e AS (SELECT snap_datname, snap_xact_commit, snap_xact_rollback, snap_deadlocks,
+                  snap_temp_bytes, snap_blks_hit, snap_blks_read
+             FROM snapshot.snap_summary_stat_database WHERE snapshot_id={{e}})
+SELECT COALESCE(SUM(e.snap_xact_commit - COALESCE(b.snap_xact_commit, 0)),0)     AS xact_commit,
+       COALESCE(SUM(e.snap_xact_rollback - COALESCE(b.snap_xact_rollback, 0)),0) AS xact_rollback,
+       COALESCE(SUM(e.snap_deadlocks - COALESCE(b.snap_deadlocks, 0)),0)         AS deadlocks,
+       COALESCE(SUM(e.snap_temp_bytes - COALESCE(b.snap_temp_bytes, 0)),0)       AS temp_bytes,
+       COALESCE(SUM(e.snap_blks_hit - COALESCE(b.snap_blks_hit, 0)),0)           AS blks_hit,
+       COALESCE(SUM(e.snap_blks_read - COALESCE(b.snap_blks_read, 0)),0)         AS blks_read
+FROM e LEFT JOIN b USING (snap_datname);
+',
+       last_modify_user = '999999999',
+       last_modify_time = now()
+ WHERE script_name = 'wdr.db_stat';
+
+-- [wdr.db_summary]
+--   **修正取数错误**（同一问题，预防性）：内连接会丢掉窗口内新建的库。改为 LEFT JOIN + COALESCE。
+UPDATE grmp.script_config
+   SET script_content   = 'WITH b AS (SELECT snap_datname, snap_xact_commit, snap_blks_read, snap_blks_hit
+             FROM snapshot.snap_summary_stat_database WHERE snapshot_id={{b}}),
+     e AS (SELECT snap_datname, snap_xact_commit, snap_blks_read, snap_blks_hit
+             FROM snapshot.snap_summary_stat_database WHERE snapshot_id={{e}})
+SELECT COALESCE(SUM(e.snap_xact_commit - COALESCE(b.snap_xact_commit, 0)),0) AS xact_commit,
+       COALESCE(SUM(e.snap_blks_read - COALESCE(b.snap_blks_read, 0)),0)     AS blks_read,
+       COALESCE(SUM(e.snap_blks_hit - COALESCE(b.snap_blks_hit, 0)),0)       AS blks_hit
+FROM e LEFT JOIN b USING (snap_datname);
+',
+       last_modify_user = '999999999',
+       last_modify_time = now()
+ WHERE script_name = 'wdr.db_summary';
+
+-- [wdr.file_io]
+--   **修正取数错误**（与 wdr.top_sql 同一问题）：内连接丢掉窗口内新出现的文件。 实测一个 20 分钟窗口里 1468 个文件只统计了 185 个，物理读少报 62%、物理写少报 58%； 被丢掉的文件里最大的一个物理写 569,700 次，比内连接下整个窗口的写入总量还大 —— 写得最多的文件在报告里完全不存在。改为 LEFT JOIN + COALESCE。
+UPDATE grmp.script_config
+   SET script_content   = 'WITH b AS (SELECT snap_filenum, snap_dbid, snap_spcid, snap_phyrds AS reads, snap_phywrts AS writes
+             FROM snapshot.snap_summary_file_iostat WHERE snapshot_id={{b}}),
+     e AS (SELECT snap_filenum, snap_dbid, snap_spcid, snap_phyrds AS reads, snap_phywrts AS writes
+             FROM snapshot.snap_summary_file_iostat WHERE snapshot_id={{e}})
+SELECT (''db''||e.snap_dbid||''/spc''||e.snap_spcid||''/f''||e.snap_filenum) AS filename,
+       (e.reads  - COALESCE(b.reads,  0)) AS reads,
+       (e.writes - COALESCE(b.writes, 0)) AS writes
+FROM e LEFT JOIN b USING (snap_filenum, snap_dbid, snap_spcid)
+WHERE (e.reads  - COALESCE(b.reads,  0)) > 0
+   OR (e.writes - COALESCE(b.writes, 0)) > 0
+ORDER BY reads DESC LIMIT {{top}};
+',
+       last_modify_user = '999999999',
+       last_modify_time = now()
+ WHERE script_name = 'wdr.file_io';
+
 -- [wdr.top_sql]
---   **修正取数错误**：原 SQL 用 `FROM e JOIN b USING (sid)` 内连接，窗口内**新出现**的语句（起始快照里没有它）会被整批丢掉。实测一个 20 分钟窗口里 147 条语句只保留了 55 条，导致 DB time 少报约 8800 倍（报 2.67 秒，实际 23518 秒）。改为 LEFT JOIN + COALESCE。
+--   **修正取数错误**：原 SQL 用 `FROM e JOIN b USING (sid)` 内连接，窗口内**新出现**的语句 （起始快照里没有它）会被整批丢掉。实测一个 20 分钟窗口里 147 条语句只保留了 55 条， 导致 DB time 少报约 8800 倍（报 2.67 秒，实际 23518 秒）。改为 LEFT JOIN + COALESCE。
 UPDATE grmp.script_config
    SET script_content   = 'WITH b AS (SELECT snap_unique_sql_id AS sid, max(snap_query) AS query,
                   sum(snap_n_calls) AS calls, sum(snap_total_elapse_time) AS elapsed, sum(snap_cpu_time) AS cpu,
@@ -187,36 +282,16 @@ ORDER BY elapsed_us DESC LIMIT {{top}};
        last_modify_time = now()
  WHERE script_name = 'wdr.top_sql';
 
--- [sqltune.plan_text_analyze]
---   **修正拼写错误**：`BUFFERS fasle` → `BUFFERS false`。`fasle` 不是合法布尔值，该脚本执行会直接报错。
-UPDATE grmp.script_config
-   SET script_content   = 'EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
-',
-       last_modify_user = '999999999',
-       last_modify_time = now()
- WHERE script_name = 'sqltune.plan_text_analyze';
-
--- [proctune.plan_text_analyze]
---   **修正拼写错误**：同上（`BUFFERS fasle` → `BUFFERS false`）。
-UPDATE grmp.script_config
-   SET script_content   = 'EXPLAIN (ANALYZE false, BUFFERS false, FORMAT TEXT) {{sql}}
-',
-       last_modify_user = '999999999',
-       last_modify_time = now()
- WHERE script_name = 'proctune.plan_text_analyze';
-
 -- =====================================================================
 -- 三、导入后自检
 -- =====================================================================
 -- 应为 113：
 --   SELECT count(*) FROM grmp.script_config WHERE scene = 'AGENT';
--- 8 条新脚本应全部在列：
---   SELECT script_name FROM grmp.script_config
---    WHERE script_name IN ('config.settings','health.partitions','health.storage',
---                          'health.sync_commit','health.thread_pool','health.wal_slots',
---                          'vacuum.bloat_estimate','vacuum.freeze_age');
--- 3 条更新应已生效（下面两条都应返回 0 行）：
+-- 新增的 8 条应全部在列：
+--   SELECT script_name FROM grmp.script_config WHERE script_name IN ('config.settings','health.partitions','health.storage','health.sync_commit','health.thread_pool','health.wal_slots','vacuum.bloat_estimate','vacuum.freeze_age');
+-- 更新应已生效（下面两条都应返回 0 行）：
 --   SELECT script_name FROM grmp.script_config
 --    WHERE script_name LIKE '%plan_text_analyze' AND script_content LIKE '%fasle%';
 --   SELECT script_name FROM grmp.script_config
---    WHERE script_name = 'wdr.top_sql' AND script_content NOT LIKE '%LEFT JOIN%';
+--    WHERE script_name IN ('wdr.top_sql','wdr.file_io','wdr.cache','wdr.db_stat','wdr.db_summary')
+--      AND script_content NOT LIKE '%LEFT JOIN%';

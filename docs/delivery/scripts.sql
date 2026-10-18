@@ -355,9 +355,11 @@ INSERT INTO grmp.script_config (id, script_type, script_name, database_type, ref
                   (COALESCE(snap_heap_blks_read,0)+COALESCE(snap_idx_blks_read,0)) AS phys,
                   (COALESCE(snap_heap_blks_hit,0)+COALESCE(snap_idx_blks_hit,0))   AS logi
              FROM snapshot.snap_summary_statio_all_tables WHERE snapshot_id={{e}})
-SELECT e.snap_relname, (e.phys-b.phys) AS phys_read, (e.logi-b.logi) AS logical_read
-FROM e JOIN b USING (db_name, snap_schemaname, snap_relname)
-WHERE (e.phys-b.phys) > 0
+SELECT e.snap_relname,
+       (e.phys - COALESCE(b.phys, 0)) AS phys_read,
+       (e.logi - COALESCE(b.logi, 0)) AS logical_read
+FROM e LEFT JOIN b USING (db_name, snap_schemaname, snap_relname)
+WHERE (e.phys - COALESCE(b.phys, 0)) > 0
 ORDER BY phys_read DESC LIMIT {{top}};
 ', '[{"key":"b","value":"","type":"INTEGER","autoAcquire":false},{"key":"e","value":"","type":"INTEGER","autoAcquire":false},{"key":"top","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'wdr.checkpoint', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'WITH b AS (SELECT snap_node_name, snap_checkpoints_timed AS timed, snap_checkpoints_req AS req
@@ -374,32 +376,33 @@ INSERT INTO grmp.script_config (id, script_type, script_name, database_type, ref
      e AS (SELECT snap_datname, snap_xact_commit, snap_xact_rollback, snap_deadlocks,
                   snap_temp_bytes, snap_blks_hit, snap_blks_read
              FROM snapshot.snap_summary_stat_database WHERE snapshot_id={{e}})
-SELECT COALESCE(SUM(e.snap_xact_commit-b.snap_xact_commit),0)     AS xact_commit,
-       COALESCE(SUM(e.snap_xact_rollback-b.snap_xact_rollback),0) AS xact_rollback,
-       COALESCE(SUM(e.snap_deadlocks-b.snap_deadlocks),0)         AS deadlocks,
-       COALESCE(SUM(e.snap_temp_bytes-b.snap_temp_bytes),0)       AS temp_bytes,
-       COALESCE(SUM(e.snap_blks_hit-b.snap_blks_hit),0)           AS blks_hit,
-       COALESCE(SUM(e.snap_blks_read-b.snap_blks_read),0)         AS blks_read
-FROM e JOIN b USING (snap_datname);
+SELECT COALESCE(SUM(e.snap_xact_commit - COALESCE(b.snap_xact_commit, 0)),0)     AS xact_commit,
+       COALESCE(SUM(e.snap_xact_rollback - COALESCE(b.snap_xact_rollback, 0)),0) AS xact_rollback,
+       COALESCE(SUM(e.snap_deadlocks - COALESCE(b.snap_deadlocks, 0)),0)         AS deadlocks,
+       COALESCE(SUM(e.snap_temp_bytes - COALESCE(b.snap_temp_bytes, 0)),0)       AS temp_bytes,
+       COALESCE(SUM(e.snap_blks_hit - COALESCE(b.snap_blks_hit, 0)),0)           AS blks_hit,
+       COALESCE(SUM(e.snap_blks_read - COALESCE(b.snap_blks_read, 0)),0)         AS blks_read
+FROM e LEFT JOIN b USING (snap_datname);
 ', '[{"key":"b","value":"","type":"INTEGER","autoAcquire":false},{"key":"e","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'wdr.db_summary', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'WITH b AS (SELECT snap_datname, snap_xact_commit, snap_blks_read, snap_blks_hit
              FROM snapshot.snap_summary_stat_database WHERE snapshot_id={{b}}),
      e AS (SELECT snap_datname, snap_xact_commit, snap_blks_read, snap_blks_hit
              FROM snapshot.snap_summary_stat_database WHERE snapshot_id={{e}})
-SELECT COALESCE(SUM(e.snap_xact_commit-b.snap_xact_commit),0) AS xact_commit,
-       COALESCE(SUM(e.snap_blks_read-b.snap_blks_read),0)     AS blks_read,
-       COALESCE(SUM(e.snap_blks_hit-b.snap_blks_hit),0)       AS blks_hit
-FROM e JOIN b USING (snap_datname);
+SELECT COALESCE(SUM(e.snap_xact_commit - COALESCE(b.snap_xact_commit, 0)),0) AS xact_commit,
+       COALESCE(SUM(e.snap_blks_read - COALESCE(b.snap_blks_read, 0)),0)     AS blks_read,
+       COALESCE(SUM(e.snap_blks_hit - COALESCE(b.snap_blks_hit, 0)),0)       AS blks_hit
+FROM e LEFT JOIN b USING (snap_datname);
 ', '[{"key":"b","value":"","type":"INTEGER","autoAcquire":false},{"key":"e","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'wdr.file_io', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'WITH b AS (SELECT snap_filenum, snap_dbid, snap_spcid, snap_phyrds AS reads, snap_phywrts AS writes
              FROM snapshot.snap_summary_file_iostat WHERE snapshot_id={{b}}),
      e AS (SELECT snap_filenum, snap_dbid, snap_spcid, snap_phyrds AS reads, snap_phywrts AS writes
              FROM snapshot.snap_summary_file_iostat WHERE snapshot_id={{e}})
 SELECT (''db''||e.snap_dbid||''/spc''||e.snap_spcid||''/f''||e.snap_filenum) AS filename,
-       (e.reads-b.reads)   AS reads,
-       (e.writes-b.writes) AS writes
-FROM e JOIN b USING (snap_filenum, snap_dbid, snap_spcid)
-WHERE (e.reads-b.reads) > 0 OR (e.writes-b.writes) > 0
+       (e.reads  - COALESCE(b.reads,  0)) AS reads,
+       (e.writes - COALESCE(b.writes, 0)) AS writes
+FROM e LEFT JOIN b USING (snap_filenum, snap_dbid, snap_spcid)
+WHERE (e.reads  - COALESCE(b.reads,  0)) > 0
+   OR (e.writes - COALESCE(b.writes, 0)) > 0
 ORDER BY reads DESC LIMIT {{top}};
 ', '[{"key":"b","value":"","type":"INTEGER","autoAcquire":false},{"key":"e","value":"","type":"INTEGER","autoAcquire":false},{"key":"top","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'wdr.load_profile', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'WITH b AS (SELECT snap_unique_sql_id AS sid, sum(snap_total_elapse_time) AS t, sum(snap_cpu_time) AS c

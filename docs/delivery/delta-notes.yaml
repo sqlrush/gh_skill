@@ -1,0 +1,67 @@
+# 增量导入包里每条脚本的说明 —— tools/delivery_delta.py 读这份。
+#
+# **为什么说明要单独维护、而增量清单不要手写。** 2026-10-18 第一次出增量包时,
+# 新增/变更清单是手写的 —— 结果漏了 4 条正文变更(wdr.file_io 等),而 file_io 那条
+# 修的是物理读少报 62%、写得最多的文件整个不在报告里。清单现在由工具对比客户在用的
+# 那一版**自动算**;这份文件只负责「为什么」。工具发现某条新增/变更在这里没有说明,
+# 会直接报错退出 —— 不许静默地出一个缺条目的包。
+#
+# added: 新增脚本 → [标题, 读取什么, 用途]
+# changed: 已有脚本的正文变更 → 一段说明(给客户的变更评审看)
+
+added:
+  vacuum.freeze_age:
+    - 事务号冻结水位
+    - pg_database.datfrozenxid64 / pg_settings
+    - 冻结水位接近 autovacuum_freeze_max_age 时，autovacuum 会对大表触发不择时的全表冻结扫描（IO 风暴）；水位不推进则 clog/csnlog 无法截断、持续占盘
+  health.storage:
+    - 库与表空间占用量
+    - pg_database / pg_tablespace
+    - 定位哪个库或表空间在增长。注：本内核取不到文件系统剩余空间，只能看占用量
+  health.sync_commit:
+    - 同步提交配置与部署形态
+    - pg_settings / pg_is_in_recovery()
+    - 集群要求同步确认却没有可用同步备时，主库提交会一直等待、写入全部挂住。先判断单机/集群，避免在单机库上误报
+  health.wal_slots:
+    - 复制槽落后的 WAL 字节数
+    - pg_replication_slots
+    - 槽不消费时 WAL 只增不减直到填满磁盘；未活跃的槽尤其危险，没有任何机制会自动清理
+  health.thread_pool:
+    - 线程池用量
+    - pg_settings / pg_stat_activity
+    - 开启线程池后真正的并发上限是池大小而非 max_connections；池满后新请求排队，表现为「库无响应」而连接数看着仍有余量
+  health.partitions:
+    - 分区表的分区数量与策略
+    - pg_partition / pg_class
+    - 分区数达到四位数时每次查询规划都要遍历分区元数据，规划开销明显上升
+  vacuum.bloat_estimate:
+    - 表膨胀估算的输入
+    - pg_class / pg_stats
+    - 死元组比例回答「有多少可回收」，这条回答「空间比应占多了多少」——后者 VACUUM 不还盘，需要评估重建
+  config.settings:
+    - 全量运行参数
+    - pg_settings
+    - 参数体检：检查参数自相矛盾、会静默丢数据的危险配置、按实例内存预算算出的超卖
+
+changed:
+  wdr.top_sql: >-
+    **修正取数错误**：原 SQL 用 `FROM e JOIN b USING (sid)` 内连接，窗口内**新出现**的语句
+    （起始快照里没有它）会被整批丢掉。实测一个 20 分钟窗口里 147 条语句只保留了 55 条，
+    导致 DB time 少报约 8800 倍（报 2.67 秒，实际 23518 秒）。改为 LEFT JOIN + COALESCE。
+  wdr.file_io: >-
+    **修正取数错误**（与 wdr.top_sql 同一问题）：内连接丢掉窗口内新出现的文件。
+    实测一个 20 分钟窗口里 1468 个文件只统计了 185 个，物理读少报 62%、物理写少报 58%；
+    被丢掉的文件里最大的一个物理写 569,700 次，比内连接下整个窗口的写入总量还大 ——
+    写得最多的文件在报告里完全不存在。改为 LEFT JOIN + COALESCE。
+  wdr.cache: >-
+    **修正取数错误**（同一问题，预防性）：内连接会丢掉窗口内新建的表。
+    实测窗口里两端对称、未丢行，但结构上与 wdr.file_io 相同，窗口内真新建表时会静默少算。
+    改为 LEFT JOIN + COALESCE。
+  wdr.db_stat: >-
+    **修正取数错误**（同一问题，预防性）：内连接会丢掉窗口内新建的库。改为 LEFT JOIN + COALESCE。
+  wdr.db_summary: >-
+    **修正取数错误**（同一问题，预防性）：内连接会丢掉窗口内新建的库。改为 LEFT JOIN + COALESCE。
+  sqltune.plan_text_analyze: >-
+    **修正拼写错误**：`BUFFERS fasle` → `BUFFERS false`。`fasle` 不是合法布尔值，该脚本执行会直接报错。
+  proctune.plan_text_analyze: >-
+    **修正拼写错误**：同上（`BUFFERS fasle` → `BUFFERS false`）。
