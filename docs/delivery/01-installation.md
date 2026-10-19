@@ -8,27 +8,46 @@
 
 ### 1.1 项目简介
 
-opencode_skill 是一套可在 [OpenCode](https://opencode.ai) 中使用的数据库诊断与调优技能包，面向 OpenGauss/GaussDB。共 10 个技能，分两类：
+opencode_skill 是一套可在 [OpenCode](https://opencode.ai) 中使用的数据库诊断与调优技能包，面向 OpenGauss/GaussDB。共 19 个技能（skills-v12.16），分四类：
 
 **SQL 优化族**
 
 | 技能 | 用途 |
 |---|---|
 | `gaussdb-slowsql` | 按平均耗时阈值发现慢 SQL，暴露 CPU≈0 的锁/等待类慢查询 |
-| `gaussdb-topsql` | 无阈值、按总耗时/平均/调用数/逻辑读/行数排名最耗资源的 SQL |
+| `gaussdb-topsql` | 按总耗时/平均/调用数/逻辑读/行数排名最耗资源的 SQL；支持「最近 N 分钟」与指定时间段（`--window` / `--from --to`），并写明实际评估的是哪一段 |
 | `gaussdb-sqlfetch` | 把 `unique_sql_id` 还原为完整 SQL 文本，标注截断与占位符 |
 | `gaussdb-explain` | 获取真实数据库的执行计划并给出确定性风险标注 |
 | `gaussdb-sqltune` | 深度调优：一条命令出完整证据包，自动用 hypopg 验证索引候选，支持改写验证 |
+| `gaussdb-sqlreview` | SQL 规范审查（上线前审一下 SQL） |
 
-**存储过程族 + 诊断族**
+**存储过程族**
 
 | 技能 | 用途 |
 |---|---|
 | `gaussdb-topproc` | 按总耗时/自身耗时/调用数排名最慢的存储过程/函数 |
 | `gaussdb-procinfo` | 只读诊断存储过程结构：循环内 SQL、逐行 DML、动态 SQL 等反模式 |
 | `gaussdb-proctune` | 存储过程深度调优：对只读游标 SELECT 做 hypopg 验证的索引/改写优化 |
-| `gaussdb-health` | 12 维数据库健康检查（等待事件/慢SQL/长事务/死元组/锁/连接/复制等），按阈值产确定性发现 |
-| `gaussdb-wdr` | WDR 报告解读：列快照、计算多维 delta、产确定性发现并驱动 gaussdb-sqltune 实证 |
+
+**诊断族**
+
+| 技能 | 用途 |
+|---|---|
+| `gaussdb-health` | 数据库健康检查，按阈值产确定性发现；支持按时间段的「时段体检」 |
+| `gaussdb-wdr` | WDR 报告解读：按时间段定快照窗口、多维 delta、各维度元凶、确定性发现与下一步 |
+| `gaussdb-lockwait` | 锁等待与阻塞链；解析用户贴来的死锁日志（`--deadlock-log -`） |
+| `gaussdb-waitevent` | DB time 分解与等待事件下钻 |
+| `gaussdb-vacuum` | 死元组、膨胀估算、冻结水位、回收被谁卡住 |
+| `gaussdb-memanalyze` | 内存冲高分析 |
+| `gaussdb-config` | 参数体检：只报客观错误，不给凭空的推荐值 |
+
+**登录与知识库**
+
+| 技能 | 用途 |
+|---|---|
+| `gaussdb-login` | 登录、建会话句柄，所有取数技能的前置 |
+| `gaussdb-kb` | 客户知识库（规范 + 工单）导入与检索 |
+| `gaussdb-kb-init` | 知识库入库前标准化（word / pdf / 照片 / 表格 → 统一格式） |
 
 所有技能共享同一套连接层（`common/`），与已有的 $GSDB_HOME CLI 连接配置字节兼容。
 
@@ -868,7 +887,7 @@ python3 $SKILLS/wdr/scripts/wdr.py render \
 退出码 0、不报错、报告抬头写着别人的库（2026-09-07 现场反馈）。现在：
 
 - 每次登录得到一个 **12 位随机句柄**，会话各存一份 `$GSDB_HOME/sessions/<句柄>.yaml`（0600，不含凭据），互不覆盖；
-- 其余 skill 用 `--session <句柄>`（或环境变量 `GSDB_SESSION`）指名要哪条连接；会话只属于创建它的对话，不带句柄一律按「本对话未登录」拒绝；��
+- 其余 skill 用 `--session <句柄>`（或环境变量 `GSDB_SESSION`）指名要哪条连接；会话只属于创建它的对话，不带句柄一律按「本对话未登录」拒绝；
 - **不自动选用、不列候选、不报数量**——别人的会话对本对话不可见（2026-09-11 起）；退出必须带句柄，句柄 12 位随机；
 - 闲置超过 12 小时的会话自动清理（`GSDB_SESSION_TTL_HOURS` 可调）；`login.py --status --session <句柄>` 只看本对话的会话（不带句柄只回「本对话未登录」），`--logout --session <句柄>` 只退自己那条。
 
