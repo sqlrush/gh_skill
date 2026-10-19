@@ -66,6 +66,14 @@ def test_full_text_is_archived_unstripped():
     assert C._clip_sql(raw).startswith("/* app=svc */")
 
 
+def test_full_text_keeps_line_breaks_so_line_comments_stay_comments():
+    """压成一行之后,`-- 说明` 会把后面整条 SQL 都吃成注释,存档的全文就跑不起来了。"""
+    raw = "-- 说明一\n--   说明二\nSELECT   a,\n       b\n\n  FROM t"
+    clipped = C._clip_sql(raw)
+    assert clipped == "-- 说明一\n-- 说明二\nSELECT a,\nb\nFROM t"
+    assert [ln for ln in clipped.splitlines() if not ln.startswith("--")] == ["SELECT a,", "b", "FROM t"]
+
+
 # ---------------------------------------------------------------- 两类语句分开
 
 class Runner:

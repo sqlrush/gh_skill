@@ -93,6 +93,7 @@ def test_the_spill_finding_says_how_much_is_attributable_and_to_whom():
     f = ev.findings[0]
     assert f.sql_id == "2858996927", "下一步调优要能直接拿到这条的 sql_id"
     assert "占库级 64%" in f.evidence and "占语句级的 87%" in f.evidence
+    assert "占库级的 56%" in f.evidence, "冠军自己占库级多少要直接写出来(测试里被读成了 64%)"
     assert "不在按耗时排的前 10 名里" in f.evidence
     assert "归不到具体语句" in f.evidence
     assert ev.dims[0].findings[0] == f, "维度里那份与汇总里那份要一致"
@@ -103,6 +104,7 @@ def test_statement_spill_larger_than_the_db_total_is_called_not_credible():
     C.collect_topsql(Runner(ROWS), opt)
     f = _spill_ev(opt, temp_bytes=100 << 20).findings[0]
     assert "两个口径对不上" in f.evidence and "不可信" in f.evidence
+    assert "占库级的" not in f.evidence, "口径对不上时不写冠军占库级多少"
 
 
 def test_no_statement_spill_means_it_cannot_be_attributed():

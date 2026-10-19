@@ -92,3 +92,19 @@ def test_without_times_the_old_suggestion_is_unchanged():
 
 def test_only_to_means_the_window_that_ends_there():
     assert "`--begin 2935 --end 2936`" in S.snaps(_Runner(), 20, "", "2026-10-16 15:10")
+
+
+def test_with_second_precision_a_snapshot_inside_the_start_minute_is_not_the_start():
+    """与时段体检同一条覆盖规则:要从 10:46 起,10:46:29 的快照晚于 10:46,起点取 10:45:29 那一个。
+    2026-10-19 测试:同一个时间段,WDR 选了 2981、健康检查选了 2980。"""
+    snaps = [(2980, "2026-10-17 10:45:29", "", ""), (2981, "2026-10-17 10:46:29", "", ""),
+             (2986, "2026-10-17 11:06:55", "", ""), (2987, "2026-10-17 11:08:02", "", "")]
+    out = S._cover(snaps, "2026-10-17 10:46", "2026-10-17 11:07")
+    assert "--begin 2980 --end 2987" in out
+
+
+def test_minute_precision_snapshots_keep_the_old_same_minute_rule():
+    """老版本 wdr.snapshots 只给到分钟:同一分钟的快照仍算「不晚于」,不因为看不到秒而多退一个快照。"""
+    snaps = [(2980, "2026-10-17 10:45", "", ""), (2981, "2026-10-17 10:46", "", ""),
+             (2986, "2026-10-17 11:06", "", ""), (2987, "2026-10-17 11:08", "", "")]
+    assert "--begin 2981 --end 2987" in S._cover(snaps, "2026-10-17 10:46", "2026-10-17 11:07")

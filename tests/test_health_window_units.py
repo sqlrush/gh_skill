@@ -73,8 +73,10 @@ SNAPS = {2981: "2026-10-17 10:46:29", 2986: "2026-10-17 11:06:55",
 
 
 class FakeRunner:
-    def __init__(self, counters, waits_, live=None, live_waits=None, now="2026-10-18 20:24:31", snaps=SNAPS):
+    def __init__(self, counters, waits_, live=None, live_waits=None, now="2026-10-18 20:24:31", snaps=SNAPS,
+                 top_sql=None):
         self.counters, self.waits, self.now, self.snaps = counters, waits_, now, snaps
+        self.top_sql = top_sql
         self.live, self.live_waits = live or BASE, live_waits or []
         self.calls = []
 
@@ -91,6 +93,8 @@ class FakeRunner:
             return kv(**self.counters[params["snap"]])
         if script == "health.snap_waits" and params.get("snap") in self.waits:
             return self.waits[params["snap"]]
+        if script == "wdr.top_sql" and self.top_sql is not None:
+            return self.top_sql
         raise access.QueryError("script %s not prepared" % script)
 
 
@@ -252,3 +256,37 @@ def test_a_window_ending_now_adds_current_values_marked_as_current(rdir, monkeyp
 def test_window_mode_refuses_include_and_exclude(rdir, monkeypatch):
     monkeypatch.setattr(health.access, "for_conn", lambda *a, **k: FakeRunner({}, {}))
     assert health.main(["-c", "og", "--window", "10m", "--include", "conn"]) == 2
+
+
+# ---------------------------------------------------------------- 溢出归到语句(2026-10-19 测试补)
+
+def _stmt(sid, spill_mb, elapsed_s=1.0):
+    return {"sid": sid, "query": "q", "calls": "1", "elapsed_us": str(int(elapsed_s * 1e6)), "cpu_us": "0",
+            "spill_kb": str(int(spill_mb * 1024)), "phys_blocks": "0"}
+
+
+def test_the_window_spill_is_attributed_to_the_statement_that_spilled():
+    """测试里时段体检只说「库级 7.8G」,模型点了两条聚合查询当候选;真正落盘 87% 的是 2858996927。"""
+    top = [_stmt("3167133288", 0, 5963), _stmt("4198238080", 0, 1142), _stmt("511666082", 682.8, 709),
+           _stmt("2858996927", 4483.68, 259)]
+    r = FakeRunner({2981: BASE, 2986: FAULT_END}, {2981: FAULT_W0, 2986: FAULT_W1}, top_sql=top)
+    ev = collect(FAULT_COV, r)
+    f = next(x for x in ev.findings if x.code == "WIN_TEMP_SPILL")
+    assert f.sql_id == "2858996927", "下一步调优要能直接拿到这条的 sql_id"
+    assert "占语句级的 87%" in f.evidence and "占库级的 56%" in f.evidence, f.evidence
+    assert "归不到具体语句" in f.evidence
+    assert ("wdr.top_sql", {"b": 2981, "e": 2986, "top": W.SPILL_WIDTH}) in r.calls
+
+
+def test_a_window_ending_now_says_the_spill_cannot_be_attributed():
+    live_cov = FAULT_COV._replace(end=timewin.Point("live", t("2026-10-18 20:24:31"), None))
+    r = FakeRunner({2981: BASE}, {2981: FAULT_W0}, live=FAULT_END, live_waits=FAULT_W1, top_sql=[])
+    f = next(x for x in collect(live_cov, r).findings if x.code == "WIN_TEMP_SPILL")
+    assert f.sql_id == "" and "终点是此刻" in f.evidence and "WDR" in f.evidence
+    assert not any(c[0] == "wdr.top_sql" for c in r.calls)
+
+
+def test_a_failed_statement_lookup_does_not_break_the_report():
+    ev = collect(FAULT_COV, FakeRunner({2981: BASE, 2986: FAULT_END}, {2981: FAULT_W0, 2986: FAULT_W1}))
+    f = next(x for x in ev.findings if x.code == "WIN_TEMP_SPILL")
+    assert "归不到具体语句" in f.evidence and f.severity == Severity.WARN

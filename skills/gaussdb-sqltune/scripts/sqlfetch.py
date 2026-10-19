@@ -24,6 +24,8 @@ for parent in _HERE.parents:
         sys.path.insert(0, str(parent))
         break
 
+from common import sqlnotfound  # noqa: E402
+
 # SQL 已迁到 scripts/registry/sqltune/ —— 两条路径共用同一份定义
 HISTORY_SCRIPT = "sqltune.from_history"
 STATEMENT_SCRIPT = "sqltune.from_statement"
@@ -121,17 +123,8 @@ def sql_fetch(runner, raw_id: str) -> FetchResult:
             # 只报一句 "not found ... check enable_stmt_track" 会把人往配置方向带,
             # 而真正该做的是换一条路:手上已经有 SQL 文本(比如 WDR 报告的 SQL 附录、
             # 大盘的 sql_id 抽屉)时,直接用 --sql-stdin 传进来,不必再按 id 碰运气。
-            raise ValueError(
-                f"sql id {raw_id} 在 dbe_perf.statement_history 与 dbe_perf.statement "
-                f"里都查不到。常见原因按可能性排序:\n"
-                f"  1. **实例重启过** —— dbe_perf.statement 是自上次清零以来的累计视图,"
-                f"重启即清空,重启之前的 sql_id 一律查不到;\n"
-                f"  2. 这条语句已从 statement_history 里**老化**出去(历史是滚动的);\n"
-                f"  3. 统计没开:enable_stmt_track / track_stmt_parameter。\n"
-                f"  已经有 SQL 文本时(WDR 报告的「SQL 附录」、大盘点 sql_id 的抽屉里都有),"
-                f"改用 --sql-stdin 把文本传进来即可,不用按 id 再查一次;"
-                f"参数化语句里的 ? 要先填上真实值才能出计划。"
-                + (f"\n  另:statement_history 本身不可用:{degraded}" if degraded else ""))
+            # 原因与文本去处由 common/sqlnotfound 统一说明(重启时刻、WDR 存档里的全文)
+            raise ValueError(sqlnotfound.message(runner, raw_id, degraded))
         # dbe_perf.statement 没有 schema_name 列;GaussDB 默认 search_path 是 "$user", public,
         # 应用的表多半就在与账号同名的 schema 下——拿 user_name 当推测值,来源标明是推测。
         schema = str(srows[0].get("user_name") or "").strip()

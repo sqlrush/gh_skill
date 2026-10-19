@@ -25,13 +25,14 @@
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import subprocess
 import sys
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-from common import access, timewin, windata
+from common import access, spillnote, timewin, windata
 
 from model import (DIM_WIN_COVER, DIM_WIN_IO, DIM_WIN_LOAD, DIM_WIN_TOPSQL, DIM_WIN_TXN,
                    DIM_WIN_WAITS, DimResult, Finding, HealthEvidence, Severity, worst)
@@ -41,6 +42,9 @@ SNAP_COUNTERS = "health.snap_counters"
 LIVE_COUNTERS = "health.live_counters"
 SNAP_WAITS = "health.snap_waits"
 LIVE_WAITS = "health.live_waits"
+# 溢出归到语句:复用 WDR 的 Top SQL 取数(已在白名单,带 spill_kb 列),只在两端都是快照时可用
+WDR_TOP_SQL = "wdr.top_sql"
+SPILL_WIDTH = 200
 
 _NUM_KEYS = ("db_time_us", "cpu_time_us", "xact_commit", "xact_rollback", "deadlocks",
              "temp_bytes", "blks_read", "blks_hit", "ckpt_timed", "ckpt_req")
@@ -234,8 +238,7 @@ def dim_io(dl: Delta, th: WinThresholds, idle: bool) -> DimResult:
         d.findings.append(Finding(
             DIM_WIN_IO, "WIN_TEMP_SPILL", sev, "时段临时文件溢出", human_bytes(int(tmp)),
             ">" + human_bytes(th.temp_notice),
-            "排序 / 哈希放不进 work_mem 时落盘。**这是库级合计**，是哪条语句落的盘看下面的时段 Top SQL "
-            "或同一时段的 WDR（按落盘量排的冠军不一定在按耗时排的榜上）"))
+            "排序 / 哈希放不进 work_mem 时落盘。**这是库级合计**（pg_stat_database.temp_bytes）"))
     if hp is not None and not idle and rd + hit >= th.min_blocks and hp < th.cache_hit_notice:
         sev = Severity.WARN if hp < th.cache_hit_warn else Severity.NOTICE
         d.findings.append(Finding(
@@ -345,8 +348,41 @@ def collect(runner, cov: timewin.Coverage, th: WinThresholds = WinThresholds()) 
                  "这段时间的增量算不出来，**不是「没有活动」**"))
         return ev
     load, idle = dim_load(dl, cov.span_s, th)
-    ev.dims += [load, dim_txn(dl, th, idle), dim_io(dl, th, idle), dim_waits(wait_delta(w0, w1), th, idle)]
+    io = attribute_spill(runner, cov, dim_io(dl, th, idle), dl.get("temp_bytes", 0))
+    ev.dims += [load, dim_txn(dl, th, idle), io, dim_waits(wait_delta(w0, w1), th, idle)]
     return ev
+
+
+def _spill_extra(runner, cov: timewin.Coverage, temp_bytes: float) -> Tuple[str, str]:
+    """(证据补充, 冠军 sql_id)。2026-10-19 测试:时段体检只说「库级 7.8G」,模型据此点了两条聚合查询
+    当候选,处置也指向它们;真正落盘 87% 的是另一条、不在按耗时排的榜上。"""
+    if cov.start.kind != "snapshot" or cov.end.kind != "snapshot":
+        return ("终点是此刻：语句级落盘只能在两个快照之间算，这一段归不到具体语句；要定位是哪条语句落的盘，"
+                "对包住这段时间的两个快照跑 WDR（按落盘量排的冠军不一定在按耗时排的榜上）", "")
+    try:
+        rows = runner.run(WDR_TOP_SQL, {"b": int(cov.start.ref), "e": int(cov.end.ref), "top": SPILL_WIDTH})
+    except access.QueryError:
+        return "取语句级落盘失败，归不到具体语句；用同一时段的 WDR 定位", ""
+    items = []
+    for r in rows or []:
+        try:
+            items.append((str(r["sid"]), float(r.get("spill_kb") or 0) * 1024))
+        except (KeyError, TypeError, ValueError):
+            continue
+    stmt = sum(b for _, b in items)
+    champ = max(items, key=lambda x: x[1]) if items else None
+    return (spillnote.describe(temp_bytes, stmt, champ, capped=len(items) >= SPILL_WIDTH),
+            champ[0] if champ and champ[1] > 0 and stmt > 0 else "")
+
+
+def attribute_spill(runner, cov: timewin.Coverage, d: DimResult, temp_bytes: float) -> DimResult:
+    """WIN_TEMP_SPILL 补上「能归到语句的有多少、落盘最多的是哪条」(措辞与 WDR 同一份:common/spillnote)。"""
+    if not any(f.code == "WIN_TEMP_SPILL" for f in d.findings):
+        return d
+    extra, sid = _spill_extra(runner, cov, temp_bytes)
+    d.findings = [dataclasses.replace(f, evidence="%s。%s" % (f.evidence, extra), sql_id=f.sql_id or sid)
+                  if f.code == "WIN_TEMP_SPILL" else f for f in d.findings]
+    return d
 
 
 def finish(ev: HealthEvidence) -> HealthEvidence:

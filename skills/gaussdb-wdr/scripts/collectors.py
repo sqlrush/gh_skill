@@ -33,6 +33,7 @@ for parent in _HERE.parents:
 # 取数失败只认这一个类型。换一种数据库访问方式时，改的是访问模块，
 # 不是这里 —— 详见 common/grmp/errors.py。
 from common import access  # noqa: E402
+from common import spillnote  # noqa: E402
 # 协议回来的值全是字符串,NULL 是空串而不是 None —— 累计计数器的增量**不能**
 # 把取数失败悄悄当成 0,那会把「没取到」伪装成「恰好为零」。
 from common.grmp.values import as_int, is_null  # noqa: E402
@@ -281,7 +282,13 @@ def _strip_lead_comments(text: str) -> str:
 
 
 def _clip_sql(text: str) -> str:
-    t = " ".join(str(text or "").split())
+    """存档用的全文:**保留换行**,只压每行里多余的空白、去掉空行。
+
+    原来把整段压成一行(`" ".join(text.split())`)—— 带 `--` 行注释的 SQL 就整条变成了注释,
+    存档里的「全文」拿去 --sql-stdin 根本跑不起来(2026-10-19 测试发现,faultlab 的语句都带行注释)。
+    """
+    lines = [" ".join(ln.split()) for ln in str(text or "").splitlines()]
+    t = "\n".join(ln for ln in lines if ln)
     return t if len(t) <= SQL_TEXT_MAX else t[:SQL_TEXT_MAX] + " …（全文已截断）"
 
 
@@ -610,21 +617,10 @@ def _attribute_spill(ev: Evidence, opt: Options) -> None:
         return
     stmt_bytes = int(getattr(opt, "stmt_spill_kb", 0) or 0) * 1024
     champ = tuple(getattr(opt, "spill_champ", ()) or ())
-    at_least = "至少 " if getattr(opt, "stmt_rows_capped", False) else ""
-    if stmt_bytes <= 0 or not champ:
-        extra = ("语句统计里这段时间没有记到落盘（snap_summary_statement 的 sort/hash spill 都是 0）"
-                 "—— 落盘的不是有语句统计的那些执行，归不到某一条语句")
-    else:
-        sid, kb, shown = champ
-        share = stmt_bytes / db_bytes
-        who = (f"落盘最多的是 sqlid {sid}（{mib(kb * 1024)}，占语句级的 {100.0 * kb * 1024 / stmt_bytes:.0f}%）"
-               + ("" if shown else f"，它**不在按耗时排的前 {opt.top} 名里** —— 按耗时找元凶会漏掉它"))
-        if share > 1.05:
-            extra = (f"语句级落盘合计 {at_least}{mib(stmt_bytes)} 反而大于库级 {mib(db_bytes)} —— 两个口径对不上，"
-                     f"「占库级多少」不可信；{who}")
-        else:
-            extra = (f"其中能归到语句的 {at_least}{mib(stmt_bytes)}（占库级 {100.0 * share:.0f}%）；{who}"
-                     + (f"；其余 {mib(db_bytes - stmt_bytes)} 归不到具体语句" if share < 0.95 else ""))
+    off = ("" if not champ or champ[2] else
+           f"它**不在按耗时排的前 {opt.top} 名里** —— 按耗时找元凶会漏掉它")
+    extra = spillnote.describe(db_bytes, stmt_bytes, (champ[0], champ[1] * 1024) if champ else None,
+                               capped=bool(getattr(opt, "stmt_rows_capped", False)), off_list=off)
 
     def fix(f):
         if f.code != "WDR_TEMP_SPILL":

@@ -39,21 +39,33 @@ WIDE_FACTOR = 2           # 窗口比时间段长这么多倍以上就提醒
 
 
 def _minute(text: str, what: str):
-    """用户给的时间 → 精确到分钟的 datetime(快照时间 to_char 到分钟,秒级比较会把同一分钟的快照判到另一边)。"""
+    """用户给的时间 → datetime(秒照用户给的,没给就是 0 秒)。
+
+    快照时间只到分钟时(老版本的 wdr.snapshots,现场可能还没重导)由 _cover 把两边都截到分钟比较;
+    快照时间到秒时按秒比较 —— 与时段体检 / 时段 Top SQL(common/timewin)同一条覆盖规则:
+    用户要从 10:46 起,10:46:29 的快照晚于 10:46,不能当起点(2026-10-19 测试:WDR 选了 2981,
+    健康检查选了 2980,同一个问题两处窗口不一样)。"""
     raw = (text or "").strip()
     for fmt in _TIME_FORMATS:
         try:
-            return _dt.datetime.strptime(raw, fmt).replace(second=0)
+            return _dt.datetime.strptime(raw, fmt)
         except ValueError:
             continue
     raise common.DBError("%s「%s」看不懂:写成 YYYY-MM-DD HH:MM(数据库所在时区),例如 2026-10-16 15:16" % (what, raw))
 
 
 def _snap_time(text: str):
-    try:
-        return _dt.datetime.strptime(str(text).strip()[:16], "%Y-%m-%d %H:%M")
-    except ValueError:
-        return None
+    raw = str(text).strip()
+    for fmt, n in (("%Y-%m-%d %H:%M:%S", 19), ("%Y-%m-%d %H:%M", 16)):
+        try:
+            return _dt.datetime.strptime(raw[:n], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _has_seconds(snaps_list) -> bool:
+    return all(len(str(st).strip()) >= 19 for _i, st, _e, _d in snaps_list)
 
 
 def _cover(snaps_list, t_from: str, t_to: str) -> str:
@@ -66,6 +78,9 @@ def _cover(snaps_list, t_from: str, t_to: str) -> str:
         raise common.DBError("能读到时间的快照不足 2 个,围不出窗口。")
     a = _minute(t_from, "开始时间") if t_from else None
     b = _minute(t_to, "结束时间") if t_to else None
+    if not _has_seconds(snaps_list):      # 快照只到分钟:两边都按分钟比,同一分钟的快照算「不晚于」
+        a = a.replace(second=0) if a else None
+        b = b.replace(second=0) if b else None
     if a and b and a > b:
         raise common.DBError("开始时间 %s 晚于结束时间 %s。" % (t_from, t_to))
     oldest, newest = asc[0], asc[-1]
