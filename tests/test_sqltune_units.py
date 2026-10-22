@@ -436,6 +436,79 @@ def test_explain_json_via_script_uses_the_schema_template_too():
     assert r.calls[-1] == ("sqltune.plan_json_schema", {"sql": "select 1", "schema": "app_trade"})
 
 
+# ---- statement_history.schema_name 是搜索路径串(2026-10-21 现场:`fl, public` 被当成一个 schema 名整条没切)
+
+def test_collect_switches_to_a_search_path_string_through_the_template():
+    from common import search_path as sp
+    sp.reset_probe_cache()
+    r = _SchemaRunner()
+    ev = evidence.collect(r, None, "select * from orders", False, schema="fl, public")
+    # 末尾的 public 模板自己补:填进去的值与原先单 schema 一样,渲染出 SET search_path TO "fl", public
+    assert ("sqltune.plan_text_schema", {"sql": "select * from orders", "schema": "fl"}) in r.calls
+    assert ev.search_path == "fl, public" and ev.search_path_note == ""
+    assert "不是合法标识符" not in evidence.evidence_report(ev)
+
+
+def test_collect_sets_a_search_path_string_on_a_raw_session():
+    class _Db:
+        def __init__(self):
+            self.executed = []
+
+        def execute(self, sql, params=None):
+            self.executed.append(sql)
+
+        def query(self, sql, params=None):
+            return ["QUERY PLAN"], [["Seq Scan on orders  (cost=0.00..1.00 rows=1 width=4)"]]
+
+    db = _Db()
+    ev = evidence.collect(_SchemaRunner(), db, "select * from orders", False, schema="fl, app")
+    assert db.executed == ['SET search_path TO "fl", "app", public']
+    assert ev.search_path == "fl, app"
+
+
+def test_collect_with_a_bad_segment_switches_nothing_and_says_which():
+    from common import search_path as sp
+    sp.reset_probe_cache()
+    r = _SchemaRunner()
+    ev = evidence.collect(r, None, "select * from orders", False, schema="fl, x;drop")
+    assert ev.search_path == "" and "x;drop" in ev.search_path_note and "整串不切" in ev.search_path_note
+    assert all(not c[0].endswith("_schema") for c in r.calls)
+
+
+def test_explain_json_via_script_takes_the_applied_search_path_back():
+    """代价推演取 JSON 计划时传的是 ev.search_path(`fl, public`),要能原样再走一次模板。"""
+    from common import search_path as sp
+    sp.reset_probe_cache()
+    r = _SchemaRunner()
+    evidence.explain_json_via_script(r, "select 1", schema="fl, public")
+    assert r.calls[-1] == ("sqltune.plan_json_schema", {"sql": "select 1", "schema": "fl"})
+
+
+def test_tune_by_id_missing_relation_hint_with_a_search_path_string(monkeypatch):
+    import pytest
+    import sqltune
+    from types import SimpleNamespace
+    from common.grmp.errors import QueryError
+
+    monkeypatch.setattr(sqltune, "sql_fetch", lambda runner, raw_id: SimpleNamespace(
+        sql="select * from orders", truncated=False, truncated_reason="",
+        sql_id="123", source="statement_history", schema="fl, public", schema_source="statement_history"))
+
+    def _boom(*a, **k):
+        raise QueryError('ERROR: relation "orders" does not exist')
+    monkeypatch.setattr(sqltune, "_tune", _boom)
+    with pytest.raises(QueryError) as ei:
+        sqltune.tune_by_id(object(), None, "123", [], False)
+    msg = str(ei.value)
+    assert "SET search_path = fl, public)" in msg and "public, public" not in msg and "fl.<表>" in msg
+
+
+def test_cli_schema_accepts_a_search_path_string_but_not_a_bad_segment(capsys):
+    import sqltune
+    assert sqltune.main(["--schema", "fl, x;drop", "--sql-stdin"]) == 2
+    assert "x;drop" in capsys.readouterr().err
+
+
 def test_derivation_report_degrades_to_a_note_when_calibration_hits_missing_stats(monkeypatch):
     """og5 实测:没 ANALYZE 过的表,计划里一个 Index Scan 就让 catalog.column 抛 CatalogError,
     整条 sqltune 命令 Traceback。推演是附加证据,docstring 承诺「任何一步失败都返回一段说明」——要兜到底。"""

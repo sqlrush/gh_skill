@@ -194,3 +194,103 @@ def test_two_statement_path_still_preferred_when_it_works():
     _, applied, note = sp.explain_plan(r, "explain.plan_text", "select * from t", "gmag")
     assert applied == "gmag" and note == ""
     assert r.calls[1] == ("explain.plan_text_schema", {"sql": "select * from t", "schema": "gmag"})
+
+
+# ---------------------------------------------------------------- schema_name 是搜索路径串(2026-10-21 现场:`fl, public`)
+
+class _Db:
+    def __init__(self):
+        self.executed = []
+
+    def execute(self, sql, params=None):
+        self.executed.append(sql)
+
+
+def _render_registry_template(name, values):
+    """按真实注册模板 + 共用渲染器渲染出中间件最终执行的文本:验证拼出来的就是想要的 SET 语句。"""
+    from common.grmp import placeholder
+    from common.grmp.script import load_script
+    from common.grmp.settings import Settings
+    domain, _, base = name.partition(".")
+    rec = load_script(_ROOT / "scripts" / "registry" / domain / (base + ".yaml"))
+    return placeholder.render(rec.script_content, rec.params, values, Settings())
+
+
+def test_search_path_string_is_split_and_every_segment_checked():
+    assert sp.parse_search_path("fl, public") == (["fl", "public"], None)
+    assert sp.parse_search_path(" fl ,public ") == (["fl", "public"], None)
+    assert sp.parse_search_path("app_trade") == (["app_trade"], None)
+    assert sp.valid_search_path("fl, public") and sp.valid_search_path("a$b,S1")
+    # 任何一段不合法整串判死,并点出是哪一段;拿不到「部分合法」的段
+    assert sp.parse_search_path('"$user", public') == ([], '"$user"')
+    assert sp.parse_search_path("fl, x;drop") == ([], "x;drop")
+    assert sp.parse_search_path("fl,,public") == ([], "")
+    assert sp.parse_search_path("fl, ") == ([], "")
+    for bad in ("", "fl public", 'fl", "public', "fl; drop schema x, public", "fl, app.trade", "fl, 1abc"):
+        assert not sp.valid_search_path(bad), bad
+
+
+def test_primary_and_dba_paths():
+    assert sp.primary_schema("fl, public") == "fl" and sp.primary_schema("app") == "app"
+    assert sp.dba_search_path("app") == "app, public"
+    assert sp.dba_search_path("fl, public") == "fl, public"           # 不叠第二个 public
+    assert sp.dba_search_path("a, b") == "a, b, public"
+
+
+def test_search_path_string_goes_through_the_schema_template():
+    """`fl, public` 不再被当成一个 schema 名拒掉:整串切过去,末尾的 public 由模板自己补。"""
+    r = FakeRunner()
+    plan, applied, note = sp.explain_plan(r, "sqltune.plan_text", "select 1", "fl, public")
+    assert plan == "Seq Scan on orders" and applied == "fl, public" and note == ""
+    assert r.calls[1] == ("sqltune.plan_text_schema", {"sql": "select 1", "schema": "fl"})
+
+
+def test_rendered_template_sets_every_segment_quoted():
+    """真实模板渲染后的文本:`fl, public` 与原先单 schema 的那条逐字相同;多段各自加引号、常量连接。"""
+    sql = "select * from orders"
+    out = _render_registry_template("sqltune.plan_text_schema", {"sql": sql, "schema": sp.template_value(["fl", "public"])})
+    assert out.startswith('SET search_path TO "fl", public; EXPLAIN')
+    out = _render_registry_template("sqltune.plan_text_schema", {"sql": sql, "schema": sp.template_value(["a", "b"])})
+    assert out.startswith('SET search_path TO "a", "b", public; EXPLAIN')
+    out = _render_registry_template("sqltune.plan_text_schema", {"sql": sql, "schema": sp.template_value(["public"])})
+    assert out.startswith('SET search_path TO "public", public; EXPLAIN')
+    assert out.count(";") == 1                                       # 只有模板自己那一个分号
+
+
+def test_template_value_refuses_unchecked_segments():
+    """防御:绕过 parse_search_path 直接调用也不放行——模板是文本替换,引号 / 分号进去就是注入。"""
+    for bad in (['fl", public; drop schema x; --'], ["fl", "x;drop"], ["fl", ""]):
+        with pytest.raises(ValueError):
+            sp.template_value(bad)
+
+
+def test_one_bad_segment_switches_nothing_and_names_it():
+    r = FakeRunner()
+    _, applied, note = sp.explain_plan(r, "sqltune.plan_text", "select 1", 'fl, public"; drop schema fl; --')
+    assert applied == "" and "不是合法" in note and "整串不切" in note and "未切换 search_path" in note
+    assert all(not c[0].endswith(sp.SCHEMA_SUFFIX) for c in r.calls)
+    assert r.calls == [("sqltune.plan_text", {"sql": "select 1"})]      # 连探测都不做,原 SQL 走单语句模板
+
+
+def test_set_search_path_on_a_raw_session_takes_a_path():
+    db = _Db()
+    assert sp.set_search_path(db, "fl, public") == "fl, public"
+    assert sp.set_search_path(db, "a,b") == "a, b"
+    assert db.executed == ['SET search_path TO "fl", public', 'SET search_path TO "a", "b", public']
+    with pytest.raises(ValueError) as ei:
+        sp.set_search_path(db, '"$user", public')
+    assert "$user" in str(ei.value) and "拒绝" in str(ei.value) and len(db.executed) == 2
+
+
+def test_unsupported_two_statements_qualifies_with_the_first_segment():
+    """执行器跑不了两条语句时按路径第一段补全表名;说明如实写「表在第一段下才等价」,DBA 命令不叠 public。"""
+    r = FakeRunner(probe_ok=False)
+    _, applied, note = sp.explain_plan(r, "sqltune.plan_text", "select * from orders", "fl, public")
+    assert applied == "" and r.calls[1] == ("sqltune.plan_text", {"sql": "select * from fl.orders"})
+    assert "fl.orders" in note and "第一个 schema fl" in note and "fl, public" in note
+    assert "SET search_path = fl, public;" in note and "public, public" not in note
+
+
+def test_fallback_note_for_a_path_names_the_first_segment_for_qualified_names():
+    note = sp.fallback_note("fl, public", "探测脚本没有返回 1")
+    assert "SET search_path = fl, public;" in note and "fl.<表>" in note and "public, public" not in note

@@ -333,12 +333,14 @@ def tune_by_id(runner, db, raw_id: str, binds: list[str], do_analyze: bool,
     except (access.QueryError, common.DBError) as exc:
         # 切了 search_path 仍报表不存在(或中间件不支持两条语句没切成):把 schema 说出来——
         # DBA 要知道该给执行账号设哪个 search_path,这个名字就是答案。直连原始会话报的是 DBError,同样接。
+        # schema 可能是 statement_history 记的搜索路径串(`fl, public`):DBA 命令按路径给、不再叠一个 public,
+        # 「表名写全」按第一段给(写成 `fl, public.<表>` 没法照抄)。
         if "does not exist" in str(exc) and schema and "ALTER ROLE" not in str(exc):   # search_path 层已附过说明就不叠
             raise type(exc)(
                 f"{exc}\n补充:这条 SQL 的执行 schema 是 {schema}({_SCHEMA_SOURCE_LABEL.get(schema_source, schema_source)}),"
                 f"执行账号当前的 search_path 里多半没有它。可让 DBA 给执行账号在该库上设置 search_path 包含 {schema}"
-                f"(ALTER ROLE <执行账号> IN DATABASE <库> SET search_path = {schema}, public),"
-                f"或把 SQL 里的表名写成 {schema}.<表> 后用 --sql-stdin 重跑。") from exc
+                f"(ALTER ROLE <执行账号> IN DATABASE <库> SET search_path = {sp.dba_search_path(schema)}),"
+                f"或把 SQL 里的表名写成 {sp.primary_schema(schema)}.<表> 后用 --sql-stdin 重跑。") from exc
         raise
     plan, pid, note = _runtime_plan_for(runner, fr.sql_id)
     return replace(tr, runtime_plan=plan, runtime_plan_pid=pid, runtime_note=note,
@@ -535,14 +537,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--analyze", action="store_true",
                     help="EXPLAIN ANALYZE (executes the SQL; DML wrapped in rollback)")
     ap.add_argument("--schema", default="",
-                    help="SQL 原本执行时的 schema:EXPLAIN 前先切 search_path(表名不带 schema 时必需);"
-                         "按 sql_id 时默认取 statement_history 记录值,这里可以覆盖")
+                    help="SQL 原本执行时的 schema 或搜索路径(如 'fl, public'):EXPLAIN 前先切 search_path"
+                         "(表名不带 schema 时必需);按 sql_id 时默认取 statement_history 记录值,这里可以覆盖")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
     ap.add_argument("--timeout", type=int, default=None, help="statement timeout (s)")
     args = ap.parse_args(argv)
     cli.apply_session_arg(args)
-    if args.schema and not sp.valid_schema(args.schema):
-        print(f"error: --schema {args.schema!r} 不是合法的 schema 标识符(字母或下划线开头,只含字母数字下划线$)",
+    # 与 statement_history.schema_name 同形:单个 schema 或逗号分隔的搜索路径(`fl, public`),每段单独校验
+    if args.schema and not sp.valid_search_path(args.schema):
+        print(f"error: --schema {args.schema!r} 不是合法的 schema 标识符或搜索路径"
+              f"(每段字母或下划线开头,只含字母数字下划线$;多个 schema 用逗号分隔)",
               file=sys.stderr)
         return 2
 

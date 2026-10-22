@@ -51,8 +51,10 @@ def infer_types(runner, sql_text: str, schema: str = "") -> list:
                           {"tables": _quoted_list(tables),
                            "columns": _quoted_list(wanted)})
         from common import catalog_scope as cs
+        from common import search_path as sp
+        # schema 可能是搜索路径串(`fl, public`):按第一段过滤,理由同 evidence.collect
         scope = cs.Scope(explicit=cs.explicit_schemas(evidence.extract_table_refs(sql_text)),
-                         default=schema or "")
+                         default=sp.primary_schema(schema))
         rows = cs.keep_rows(rows, scope, table_key="table_name", schema_key="schema_name")
         mapping = _unambiguous((r["attname"], r["type_name"]) for r in rows)
     except Exception as exc:  # 探测是增强,不是硬依赖——失败就退回启发式
