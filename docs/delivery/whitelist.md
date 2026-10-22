@@ -12,8 +12,8 @@ python3 -m grmp_middleware.dump_whitelist
 
 | 项 | 值 |
 |---|---|
-| 脚本总数 | 131 |
-| id 范围 | 1 ~ 137 |
+| 脚本总数 | 136 |
+| id 范围 | 1 ~ 142 |
 
 > `id` 是**环境相关数据，不是契约**。skill 从不持有它 —— 运行时调
 > 接口一按 `cmd_name` 现查。客户环境重新发布后 id 会不同，属正常。
@@ -23,9 +23,9 @@ python3 -m grmp_middleware.dump_whitelist
 | 命名空间 | 条数 | 脚本 |
 |---|---|---|
 | **config** | 1 | `settings` |
-| **explain** | 13 | `plan_text`, `plan_text_analyze`, `active_pid`, `kernel_funcs`, `runtime_plan`, `session_by_pid`, `runtime_plan_int4`, `multi_stmt_probe`, `plan_text_analyze_schema`, `plan_text_schema`, `from_history`, `from_statement`, `relation_schemas` |
+| **explain** | 14 | `plan_text`, `plan_text_analyze`, `active_pid`, `kernel_funcs`, `runtime_plan`, `session_by_pid`, `runtime_plan_int4`, `multi_stmt_probe`, `plan_text_analyze_schema`, `plan_text_schema`, `from_history`, `from_statement`, `relation_schemas`, `plan_from_history` |
 | **health** | 24 | `archive_mode`, `bgwriter`, `conn_concentration`, `conn_states`, `db_concurrency`, `db_info`, `invalid_index`, `long_xact`, `overview`, `prepared_xacts`, `replication`, `slow_sql`, `stale_stats`, `unused_index`, `stats_window`, `storage`, `sync_commit`, `thread_pool`, `wal_slots`, `partitions`, `live_counters`, `live_waits`, `snap_counters`, `snap_waits` |
-| **lockwait** | 2 | `chain`, `pairs` |
+| **lockwait** | 5 | `chain`, `pairs`, `asp_pairs`, `asp_sessions`, `asp_status` |
 | **memanalyze** | 11 | `activity`, `cols_bare`, `cols_qualified`, `context`, `gucs`, `instance`, `session`, `wlm_operator`, `wlm_operator_hist`, `wlm_sql`, `wlm_sql_hist` |
 | **perf** | 9 | `bgwriter`, `db_stat`, `instance_time`, `locks`, `memory`, `sessions`, `table_stat`, `wait_events`, `wait_status` |
 | **procinfo** | 5 | `key_gucs`, `proc_def`, `locate_context`, `locate_schema`, `locate_search` |
@@ -39,7 +39,7 @@ python3 -m grmp_middleware.dump_whitelist
 | **topsql** | 2 | `top_sql`, `snap_statement` |
 | **vacuum** | 7 | `autovac_settings`, `autovac_workers`, `dead_tuples`, `oldest_xmin`, `kernel_info`, `freeze_age`, `bloat_estimate` |
 | **waitevent** | 2 | `events`, `instance_time` |
-| **wdr** | 13 | `cache`, `checkpoint`, `db_stat`, `db_summary`, `file_io`, `load_profile`, `native_report`, `node_name`, `snapshots`, `top_sql`, `waits`, `wdr_enabled`, `window` |
+| **wdr** | 14 | `cache`, `checkpoint`, `db_stat`, `db_summary`, `file_io`, `load_profile`, `native_report`, `node_name`, `snapshots`, `top_sql`, `waits`, `wdr_enabled`, `window`, `plan_in_window` |
 
 ---
 
@@ -2392,5 +2392,168 @@ GROUP BY snap_unique_sql_id
 HAVING sum(snap_n_calls) > 0
 ORDER BY sum(snap_total_elapse_time) DESC
 LIMIT {{limit}};
+```
+
+### `explain.plan_from_history`
+
+- id `138` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `sid` | INTEGER |
+
+```sql
+SELECT schema_name,
+       to_char(start_time, 'YYYY-MM-DD HH24:MI:SS') AS start_time,
+       round(db_time / 1000.0, 1) AS db_time_ms,
+       n_returned_rows,
+       query_plan
+  FROM dbe_perf.statement_history
+ WHERE unique_query_id = {{sid}}
+   AND query_plan IS NOT NULL AND query_plan <> ''
+ ORDER BY start_time DESC
+ LIMIT 1;
+```
+
+### `lockwait.asp_pairs`
+
+- id `139` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `begin_time` | DATETIME |
+| `end_time` | DATETIME |
+| `limit` | INTEGER |
+
+```sql
+WITH s AS (
+  SELECT a.sessionid, a.block_sessionid, a.event, a.lockmode, a.locktag,
+         a.unique_query_id, a.unique_query, a.sample_time
+    FROM gs_asp a
+   WHERE a.sample_time >= CAST('{{begin_time}}' AS TIMESTAMP)
+     AND a.sample_time <= CAST('{{end_time}}' AS TIMESTAMP)
+     AND a.block_sessionid IS NOT NULL AND a.block_sessionid <> 0
+), g AS (
+  SELECT sessionid, block_sessionid,
+         COALESCE(event, '') AS event, COALESCE(lockmode, '') AS lockmode,
+         COALESCE(locktag, '') AS locktag, unique_query_id,
+         count(*) AS samples, min(sample_time) AS first_seen, max(sample_time) AS last_seen,
+         max(substr(COALESCE(unique_query, ''), 1, 300)) AS query
+    FROM s
+   GROUP BY sessionid, block_sessionid, COALESCE(event, ''), COALESCE(lockmode, ''),
+            COALESCE(locktag, ''), unique_query_id
+), d AS (
+  SELECT g.*, CASE WHEN g.locktag <> '' THEN COALESCE(locktag_decode(g.locktag), '') ELSE '' END AS decoded
+    FROM g
+)
+SELECT d.sessionid AS waiter_sessionid,
+       d.block_sessionid AS holder_sessionid,
+       d.event AS wait_event,
+       d.lockmode AS waiter_mode,
+       d.locktag AS locktag,
+       d.decoded AS lock_decoded,
+       COALESCE((SELECT n.nspname || '.' || c.relname
+                   FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                  WHERE c.oid = CAST(NULLIF(substring(d.decoded from 'relation:([0-9]+)'), '') AS oid)
+                    AND substring(d.decoded from 'database:([0-9]+)')
+                        = (SELECT CAST(oid AS text) FROM pg_database WHERE datname = current_database())), '') AS lock_object,
+       d.unique_query_id AS waiter_sql_id,
+       d.query AS waiter_query,
+       d.samples AS samples,
+       to_char(d.first_seen, 'YYYY-MM-DD HH24:MI:SS') AS first_seen,
+       to_char(d.last_seen, 'YYYY-MM-DD HH24:MI:SS') AS last_seen
+  FROM d
+ ORDER BY d.samples DESC, d.sessionid
+ LIMIT {{limit}};
+```
+
+### `lockwait.asp_sessions`
+
+- id `140` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `begin_time` | DATETIME |
+| `end_time` | DATETIME |
+| `limit` | INTEGER |
+
+```sql
+WITH w AS (
+  SELECT sessionid, block_sessionid
+    FROM gs_asp
+   WHERE sample_time >= CAST('{{begin_time}}' AS TIMESTAMP)
+     AND sample_time <= CAST('{{end_time}}' AS TIMESTAMP)
+     AND block_sessionid IS NOT NULL AND block_sessionid <> 0
+), ids AS (
+  SELECT sessionid AS sid FROM w UNION SELECT block_sessionid FROM w
+), r AS (
+  SELECT a.sessionid, a.state, a.event, a.unique_query_id, a.unique_query,
+         a.application_name, a.client_addr, a.xact_start_time, a.sample_time,
+         row_number() OVER (PARTITION BY a.sessionid ORDER BY a.sample_time DESC) AS rn,
+         count(*) OVER (PARTITION BY a.sessionid) AS samples
+    FROM gs_asp a
+   WHERE a.sample_time >= CAST('{{begin_time}}' AS TIMESTAMP)
+     AND a.sample_time <= CAST('{{end_time}}' AS TIMESTAMP)
+     AND a.sessionid IN (SELECT sid FROM ids)
+)
+SELECT r.sessionid AS sessionid,
+       COALESCE(r.state, '') AS state,
+       COALESCE(r.event, '') AS last_event,
+       r.unique_query_id AS sql_id,
+       substr(COALESCE(r.unique_query, ''), 1, 300) AS query,
+       COALESCE(r.application_name, '') AS application_name,
+       COALESCE(host(r.client_addr), '') AS client_addr,
+       COALESCE(to_char(r.xact_start_time, 'YYYY-MM-DD HH24:MI:SS'), '') AS xact_start,
+       r.samples AS samples
+  FROM r
+ WHERE r.rn = 1
+ ORDER BY r.sessionid
+ LIMIT {{limit}};
+```
+
+### `lockwait.asp_status`
+
+- id `141` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `begin_time` | DATETIME |
+| `end_time` | DATETIME |
+
+```sql
+SELECT name AS item, setting AS value
+  FROM pg_settings
+ WHERE name IN ('enable_asp', 'asp_sample_interval', 'asp_flush_rate', 'asp_retention_days')
+UNION ALL
+SELECT 'samples_in_window', CAST(count(*) AS text)
+  FROM gs_asp
+ WHERE sample_time >= CAST('{{begin_time}}' AS TIMESTAMP)
+   AND sample_time <= CAST('{{end_time}}' AS TIMESTAMP)
+UNION ALL
+SELECT 'now', to_char(now(), 'YYYY-MM-DD HH24:MI:SS');
+```
+
+### `wdr.plan_in_window`
+
+- id `142` · 类型 `SQL` · 会话 **只读** · is_valid `1` · 异步 `0`
+
+| 参数 | 类型 |
+|---|---|
+| `sid` | INTEGER |
+| `begin_time` | DATETIME |
+| `end_time` | DATETIME |
+
+```sql
+SELECT to_char(start_time, 'YYYY-MM-DD HH24:MI:SS') AS start_time,
+       round(db_time / 1000.0, 1) AS db_time_ms,
+       n_returned_rows,
+       query_plan
+  FROM dbe_perf.statement_history
+ WHERE unique_query_id = {{sid}}
+   AND start_time >= CAST('{{begin_time}}' AS TIMESTAMP)
+   AND start_time <= CAST('{{end_time}}' AS TIMESTAMP)
+   AND query_plan IS NOT NULL AND query_plan <> ''
+ ORDER BY start_time DESC
+ LIMIT 1;
 ```
 

@@ -63,9 +63,10 @@ def test_removed_scripts_are_warned_about_not_silently_ignored(monkeypatch, tmp_
     assert "x.gone" in capsys.readouterr().err
 
 
-def test_the_real_package_matches_the_customer_shape():
-    """仓库里那份真实的增量包必须是客户形态 —— 生成器形态客户导不进去。"""
-    p = _ROOT / "docs" / "delivery" / "scripts-delta-20261018.sql"
+@pytest.mark.parametrize("p", sorted((_ROOT / "docs" / "delivery").glob("scripts-delta-*.sql")),
+                         ids=lambda p: p.name)
+def test_the_real_package_matches_the_customer_shape(p):
+    """仓库里每一份真实的增量包都必须是客户形态 —— 生成器形态客户导不进去。"""
     text = p.read_text(encoding="utf-8")
     n_ins = text.count("INSERT INTO grmp.script_config (")
     assert "grmp.grmp.script_config" not in text
@@ -83,7 +84,9 @@ def test_the_real_package_is_complete_against_its_baseline():
         added, changed, _gone, _nb, _nn = DD.diff("origin/main")
     except Exception as exc:          # 没有远端引用(浅克隆等)时跳过,不误报
         pytest.skip("取不到 origin/main:%s" % exc)
-    text = (_ROOT / "docs" / "delivery" / "scripts-delta-20261018.sql").read_text(encoding="utf-8")
+    # 相对 main 的增量可能分几次出包(10-18 一包、10-22 又补 5 条):合起来要齐
+    text = "".join(p.read_text(encoding="utf-8")
+                   for p in sorted((_ROOT / "docs" / "delivery").glob("scripts-delta-*.sql")))
     for n in added:
         assert "'%s', 'appbusiness'" % n in text, "增量包里缺新增:%s" % n
     for n in changed:

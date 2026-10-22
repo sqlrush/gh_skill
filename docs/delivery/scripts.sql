@@ -995,3 +995,109 @@ HAVING sum(snap_n_calls) > 0
 ORDER BY sum(snap_total_elapse_time) DESC
 LIMIT {{limit}};
 ', '[{"key":"snap","value":"","type":"INTEGER","autoAcquire":false},{"key":"limit","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'explain.plan_from_history', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT schema_name,
+       to_char(start_time, ''YYYY-MM-DD HH24:MI:SS'') AS start_time,
+       round(db_time / 1000.0, 1) AS db_time_ms,
+       n_returned_rows,
+       query_plan
+  FROM dbe_perf.statement_history
+ WHERE unique_query_id = {{sid}}
+   AND query_plan IS NOT NULL AND query_plan <> ''''
+ ORDER BY start_time DESC
+ LIMIT 1;
+', '[{"key":"sid","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'lockwait.asp_pairs', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'WITH s AS (
+  SELECT a.sessionid, a.block_sessionid, a.event, a.lockmode, a.locktag,
+         a.unique_query_id, a.unique_query, a.sample_time
+    FROM gs_asp a
+   WHERE a.sample_time >= CAST(''{{begin_time}}'' AS TIMESTAMP)
+     AND a.sample_time <= CAST(''{{end_time}}'' AS TIMESTAMP)
+     AND a.block_sessionid IS NOT NULL AND a.block_sessionid <> 0
+), g AS (
+  SELECT sessionid, block_sessionid,
+         COALESCE(event, '''') AS event, COALESCE(lockmode, '''') AS lockmode,
+         COALESCE(locktag, '''') AS locktag, unique_query_id,
+         count(*) AS samples, min(sample_time) AS first_seen, max(sample_time) AS last_seen,
+         max(substr(COALESCE(unique_query, ''''), 1, 300)) AS query
+    FROM s
+   GROUP BY sessionid, block_sessionid, COALESCE(event, ''''), COALESCE(lockmode, ''''),
+            COALESCE(locktag, ''''), unique_query_id
+), d AS (
+  SELECT g.*, CASE WHEN g.locktag <> '''' THEN COALESCE(locktag_decode(g.locktag), '''') ELSE '''' END AS decoded
+    FROM g
+)
+SELECT d.sessionid AS waiter_sessionid,
+       d.block_sessionid AS holder_sessionid,
+       d.event AS wait_event,
+       d.lockmode AS waiter_mode,
+       d.locktag AS locktag,
+       d.decoded AS lock_decoded,
+       COALESCE((SELECT n.nspname || ''.'' || c.relname
+                   FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                  WHERE c.oid = CAST(NULLIF(substring(d.decoded from ''relation:([0-9]+)''), '''') AS oid)
+                    AND substring(d.decoded from ''database:([0-9]+)'')
+                        = (SELECT CAST(oid AS text) FROM pg_database WHERE datname = current_database())), '''') AS lock_object,
+       d.unique_query_id AS waiter_sql_id,
+       d.query AS waiter_query,
+       d.samples AS samples,
+       to_char(d.first_seen, ''YYYY-MM-DD HH24:MI:SS'') AS first_seen,
+       to_char(d.last_seen, ''YYYY-MM-DD HH24:MI:SS'') AS last_seen
+  FROM d
+ ORDER BY d.samples DESC, d.sessionid
+ LIMIT {{limit}};
+', '[{"key":"begin_time","value":"","type":"DATETIME","autoAcquire":false},{"key":"end_time","value":"","type":"DATETIME","autoAcquire":false},{"key":"limit","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'lockwait.asp_sessions', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'WITH w AS (
+  SELECT sessionid, block_sessionid
+    FROM gs_asp
+   WHERE sample_time >= CAST(''{{begin_time}}'' AS TIMESTAMP)
+     AND sample_time <= CAST(''{{end_time}}'' AS TIMESTAMP)
+     AND block_sessionid IS NOT NULL AND block_sessionid <> 0
+), ids AS (
+  SELECT sessionid AS sid FROM w UNION SELECT block_sessionid FROM w
+), r AS (
+  SELECT a.sessionid, a.state, a.event, a.unique_query_id, a.unique_query,
+         a.application_name, a.client_addr, a.xact_start_time, a.sample_time,
+         row_number() OVER (PARTITION BY a.sessionid ORDER BY a.sample_time DESC) AS rn,
+         count(*) OVER (PARTITION BY a.sessionid) AS samples
+    FROM gs_asp a
+   WHERE a.sample_time >= CAST(''{{begin_time}}'' AS TIMESTAMP)
+     AND a.sample_time <= CAST(''{{end_time}}'' AS TIMESTAMP)
+     AND a.sessionid IN (SELECT sid FROM ids)
+)
+SELECT r.sessionid AS sessionid,
+       COALESCE(r.state, '''') AS state,
+       COALESCE(r.event, '''') AS last_event,
+       r.unique_query_id AS sql_id,
+       substr(COALESCE(r.unique_query, ''''), 1, 300) AS query,
+       COALESCE(r.application_name, '''') AS application_name,
+       COALESCE(host(r.client_addr), '''') AS client_addr,
+       COALESCE(to_char(r.xact_start_time, ''YYYY-MM-DD HH24:MI:SS''), '''') AS xact_start,
+       r.samples AS samples
+  FROM r
+ WHERE r.rn = 1
+ ORDER BY r.sessionid
+ LIMIT {{limit}};
+', '[{"key":"begin_time","value":"","type":"DATETIME","autoAcquire":false},{"key":"end_time","value":"","type":"DATETIME","autoAcquire":false},{"key":"limit","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'lockwait.asp_status', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT name AS item, setting AS value
+  FROM pg_settings
+ WHERE name IN (''enable_asp'', ''asp_sample_interval'', ''asp_flush_rate'', ''asp_retention_days'')
+UNION ALL
+SELECT ''samples_in_window'', CAST(count(*) AS text)
+  FROM gs_asp
+ WHERE sample_time >= CAST(''{{begin_time}}'' AS TIMESTAMP)
+   AND sample_time <= CAST(''{{end_time}}'' AS TIMESTAMP)
+UNION ALL
+SELECT ''now'', to_char(now(), ''YYYY-MM-DD HH24:MI:SS'');
+', '[{"key":"begin_time","value":"","type":"DATETIME","autoAcquire":false},{"key":"end_time","value":"","type":"DATETIME","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'wdr.plan_in_window', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT to_char(start_time, ''YYYY-MM-DD HH24:MI:SS'') AS start_time,
+       round(db_time / 1000.0, 1) AS db_time_ms,
+       n_returned_rows,
+       query_plan
+  FROM dbe_perf.statement_history
+ WHERE unique_query_id = {{sid}}
+   AND start_time >= CAST(''{{begin_time}}'' AS TIMESTAMP)
+   AND start_time <= CAST(''{{end_time}}'' AS TIMESTAMP)
+   AND query_plan IS NOT NULL AND query_plan <> ''''
+ ORDER BY start_time DESC
+ LIMIT 1;
+', '[{"key":"sid","value":"","type":"INTEGER","autoAcquire":false},{"key":"begin_time","value":"","type":"DATETIME","autoAcquire":false},{"key":"end_time","value":"","type":"DATETIME","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
