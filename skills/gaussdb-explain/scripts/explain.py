@@ -269,9 +269,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                     help="SQL 原本执行时的 schema:EXPLAIN 前先切 search_path(表名不带 schema 时必需)")
     args = ap.parse_args(argv)
     cli.apply_session_arg(args)
-    if args.schema and not sp.valid_schema(args.schema):
-        print(f"error: --schema {args.schema!r} 不是合法的 schema 标识符(字母或下划线开头,只含字母数字下划线$)",
-              file=sys.stderr)
+    if args.schema and not sp.valid_search_path(args.schema):
+        print(f"error: --schema {args.schema!r} 不是合法的 schema 标识符(字母或下划线开头,只含字母数字下划线$;"
+              f"多个用逗号分隔,如 fl, public)", file=sys.stderr)
         return 2
     given = [n for n, v in (("--sql-stdin", args.sql_stdin), ("--pid", args.pid is not None),
                             ("--sql-id", args.sql_id is not None)) if v]
@@ -297,22 +297,34 @@ def main(argv: Optional[list[str]] = None) -> int:
                 access.AccessError, access.QueryError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
+        hist_why = ""
+        if fr.truncated or fr.normalized:
+            # 文本 EXPLAIN 不了,但 SQL 历史里可能记着当时的真实执行计划 —— 先给它(2026-10-21 测试发现)
+            hist, hist_why = sqlfetch.history_plan(runner, int(args.sql_id))
+            if hist is not None:
+                return _emit_history(args, fr, hist)
         if fr.truncated:
             print(f"error: sql id {args.sql_id} 的 SQL 文本被 openGauss 截断({fr.truncated_reason}),"
-                  f"库里没有完整文本;请向用户索要完整 SQL 后用 --sql-stdin(并带 --schema {fr.schema or '<schema>'})",
+                  f"库里没有完整文本({hist_why});请向用户索要完整 SQL 后用 --sql-stdin(并带 --schema {fr.schema or '<schema>'})",
                   file=sys.stderr)
             return 2
         if fr.normalized:
-            # statement_history 没这条(备机 / 没记 / 无权限)时退回 dbe_perf.statement,拿到的是带 ? 的归一化文本——
-            # EXPLAIN 直接语法错。占位符按列类型合成值是 gaussdb-sqltune 的活,本 skill 不复制那套机器,如实指路。
-            why = f"(statement_history 不可用:{fr.degraded_reason})" if fr.degraded_reason else "(statement_history 里没有这条,只有 dbe_perf.statement 的归一化文本)"
-            print(f"error: sql id {args.sql_id} 取到的是归一化文本,带 {fr.placeholders} 个占位符{why},EXPLAIN 需要真实值。"
+            # 归一化文本 EXPLAIN 直接语法错。占位符按列类型合成值是 gaussdb-sqltune 的活,本 skill 不复制那套机器,如实指路。
+            # 2026-10-21 测试:这里原来一律说「statement_history 里没有这条」—— 实际有,只是 L2 跟踪记的就是归一化文本
+            if fr.degraded_reason:
+                why = f"(statement_history 不可用:{fr.degraded_reason})"
+            elif fr.source == "statement_history":
+                why = "(statement_history 里记的就是归一化文本,不带参数值)"
+            else:
+                why = "(statement_history 里没有这条,只有 dbe_perf.statement 的归一化文本)"
+            print(f"error: sql id {args.sql_id} 取到的是归一化文本,带 {fr.placeholders} 个占位符{why},"
+                  f"{hist_why},EXPLAIN 需要真实值。"
                   f"两个办法:① 用 gaussdb-sqltune 按这个 id 调优,它会按列类型合成占位符值并出计划;"
                   f"② 向用户要带真实值的 SQL 原文后用 --sql-stdin --schema {fr.schema or '<schema>'} 重跑。",
                   file=sys.stderr)
             return 2
         sql_text = fr.sql
-        if not schema and fr.schema and sp.valid_schema(fr.schema):
+        if not schema and fr.schema and sp.valid_search_path(fr.schema):
             schema = fr.schema
         label = {"statement_history": "statement_history 记录值", "user_name": "按执行账号 user_name 推测"}.get(
             getattr(fr, "schema_source", ""), "")
@@ -387,6 +399,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     source = f"EXPLAIN 模板({script})" + (f";search_path={applied}" if applied else "") + (
         f";{fetch_source}" if fetch_source else "")
     return _emit(args, sql_text, plan, source, ((sp_note,) if sp_note else ()) + fetch_notes)
+
+
+def _emit_history(args, fr, hist) -> int:
+    """SQL 历史里的真实执行计划:标明是哪次执行、不是此刻重新 EXPLAIN 的。"""
+    source = (f"sql_id={args.sql_id};SQL 历史里记下的真实执行计划(statement_history.query_plan),"
+              f"{hist.start_time} 那次执行,耗时 {hist.db_time_ms} ms,返回 {hist.rows} 行")
+    why = (f"文本被截断({fr.truncated_reason})" if fr.truncated
+           else f"文本是归一化的(带 {fr.placeholders} 个占位符)")
+    notes = (f"这是当时真实执行的计划(带 actual time / rows),不是此刻重新 EXPLAIN 的结果;{why},此刻 EXPLAIN 不了。"
+             f"要看现在的估算计划或做调优,用 gaussdb-sqltune 按这个 id 调优(按列类型合成占位符值)。",)
+    return _emit(args, fr.sql, hist.plan, source, notes)
 
 
 def _emit(args, sql_text: str, plan: str, source: str, notes: tuple) -> int:

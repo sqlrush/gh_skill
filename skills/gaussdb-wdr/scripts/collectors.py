@@ -653,4 +653,57 @@ def collect_evidence(runner, opt: Options) -> Evidence:
     _attribute_spill(ev, opt)                       # 溢出归到语句:要等 Top SQL 采完
     ev.findings.sort(key=lambda f: int(f.severity), reverse=True)
     ev.overall = worst([f.severity for f in ev.findings])
+    ev.sql_plans = collect_plans(runner, ev)        # SQL 附录的执行计划:要等发现排好序
     return ev
+
+
+PLAN_SCRIPT = "wdr.plan_in_window"
+PLAN_MAX = 6                                        # 附录最多取这么多条的计划(按发现的严重度)
+
+
+def _plan_ts(ts: str, tail: str) -> str:
+    """窗口端点 'YYYY-MM-DD HH:MM' → 白名单 DateTime 要的 'YYYY-MM-DD HH:MM:SS'。"""
+    t = str(ts or "").strip()[:16]
+    return t + tail if len(t) == 16 else ""
+
+
+def _plan_text(raw) -> str:
+    plan = str(raw or "").strip("\n")
+    if plan.startswith("Datanode Name:"):           # 第一行是节点名,不是计划
+        plan = plan.split("\n", 1)[1] if "\n" in plan else ""
+    return plan.rstrip()
+
+
+def collect_plans(runner, ev: Evidence) -> dict:
+    """根因会提到的 sql_id(发现里带的、有全文的)→ 窗口内最近一次真实执行计划。
+
+    2026-10-21 测试:附录的计划原来只靠模型调 explain 取,文本是归一化的就取不到,附录写「本次未取到」,
+    而 statement_history 里窗口内 34 次执行都记着真实计划。取不到也记原因,附录如实写。
+    白名单里没有这条脚本(旧版本客户)时第一条就失败,后面不再试。
+    """
+    wanted = []
+    for f in ev.findings:
+        sid = getattr(f, "sql_id", "") or ""
+        if sid and sid in ev.sql_texts and sid not in wanted:
+            wanted.append(sid)
+    b, e = _plan_ts(ev.window.begin_ts, ":00"), _plan_ts(ev.window.end_ts, ":59")
+    if not wanted or not b or not e:
+        return {}
+    out = {}
+    for sid in wanted[:PLAN_MAX]:
+        try:
+            rows = runner.run(PLAN_SCRIPT, {"sid": int(sid), "begin_time": b, "end_time": e})
+        except ValueError:
+            continue
+        except access.QueryError as exc:
+            why = "取 SQL 历史里的计划失败：%s" % summarize_err(exc)
+            return dict(out, **{s: {"plan": "", "why": why} for s in wanted[:PLAN_MAX] if s not in out})
+        plan = _plan_text(rows[0].get("query_plan")) if rows else ""
+        if not plan:
+            out[sid] = {"plan": "", "why": "SQL 历史里这个窗口内没有记下它的执行计划"
+                                            "（全量 SQL 只保留 track_stmt_retention_time 设定的时长，慢 SQL 才必记计划）"}
+            continue
+        out[sid] = {"plan": plan, "start_time": str(rows[0].get("start_time") or ""),
+                    "db_time_ms": str(rows[0].get("db_time_ms") or ""),
+                    "rows": str(rows[0].get("n_returned_rows") or "")}
+    return out

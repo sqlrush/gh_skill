@@ -206,6 +206,70 @@ def test_a_very_long_plan_is_clipped():
     assert "计划更长" in out
 
 
+
+# ------------------------------------------------- 附录的计划在采集时就取(2026-10-21 测试)
+
+_HIST = {"plan": "Sort  (cost=1.00..2.00 rows=1) (actual time=124133.645..124167.730 rows=197939 loops=1)",
+         "start_time": "2026-10-21 18:51:02", "db_time_ms": "124287.3", "rows": "197939"}
+
+
+def test_the_appendix_prefers_the_real_plan_from_the_window():
+    m = _report_model(findings=[_f("WDR_TOPSQL_CPU_HEAVY", "s1")], texts={"s1": "SELECT 1"},
+                      plans={"s1": "Seq Scan on fl.orders  (cost=0.00..1.00 rows=1)"})
+    m.hist_plans = {"s1": _HIST}
+    out = FR._emit_sql_appendix(m)
+    assert "真实执行计划" in out and "2026-10-21 18:51:02" in out and "actual time=124133.645" in out
+    assert "Seq Scan on fl.orders" not in out and "未取到" not in out
+
+
+def test_a_missing_history_plan_says_why():
+    m = _report_model(findings=[_f("WDR_TOPSQL_CPU_HEAVY", "s1")], texts={"s1": "SELECT 1"})
+    m.hist_plans = {"s1": {"plan": "", "why": "SQL 历史里这个窗口内没有记下它的执行计划"}}
+    assert "本次未取到（SQL 历史里这个窗口内没有记下它的执行计划）" in FR._emit_sql_appendix(m)
+
+
+class _PlanRunner:
+    def __init__(self, rows=None, exc=None):
+        self.rows, self.exc, self.calls = rows, exc, []
+
+    def run(self, script, values):
+        self.calls.append((script, dict(values)))
+        if self.exc:
+            raise self.exc
+        return self.rows
+
+
+def _ev_with(sids):
+    ev = model.Evidence()
+    ev.window = model.Window(begin_id=1, end_id=2, begin_ts="2026-10-21 18:32", end_ts="2026-10-21 18:52")
+    ev.findings = [_f("WDR_TOPSQL_CPU_HEAVY", s) for s in sids]
+    ev.sql_texts = {s: "SELECT 1" for s in sids}
+    return ev
+
+
+def test_collect_plans_asks_for_the_window_and_strips_the_node_line():
+    r = _PlanRunner([{"start_time": "2026-10-21 18:51:02", "db_time_ms": "124287.3", "n_returned_rows": "197939",
+                      "query_plan": "Datanode Name: og5\nSort  (cost=1.00..2.00 rows=1)\n"}])
+    out = C.collect_plans(r, _ev_with(["3091214944"]))
+    assert r.calls == [(C.PLAN_SCRIPT, {"sid": 3091214944, "begin_time": "2026-10-21 18:32:00",
+                                        "end_time": "2026-10-21 18:52:59"})]
+    assert out["3091214944"]["plan"] == "Sort  (cost=1.00..2.00 rows=1)"
+    assert out["3091214944"]["start_time"] == "2026-10-21 18:51:02"
+
+
+def test_collect_plans_without_the_whitelist_script_records_why_once():
+    r = _PlanRunner(exc=C.access.QueryError("脚本不存在"))
+    out = C.collect_plans(r, _ev_with(["1", "2"]))
+    assert len(r.calls) == 1, "第一条失败后不再逐条试"
+    assert set(out) == {"1", "2"} and all("脚本不存在" in v["why"] for v in out.values())
+
+
+def test_collect_plans_round_trips_through_the_evidence_file():
+    ev = _ev_with(["1"])
+    ev.sql_plans = {"1": _HIST}
+    assert model.Evidence.from_dict(ev.to_dict()).sql_plans == {"1": _HIST}
+
+
 # ------------------------------------------------- 死锁证据要讲清自己的边界
 
 def test_the_deadlock_evidence_admits_it_cannot_name_the_statements():

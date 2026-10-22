@@ -71,6 +71,7 @@ class _ReportModel:
     raw_tables: list = field(default_factory=list)
     sql_texts: dict = field(default_factory=dict)   # sql_id → 全文,给 SQL 附录用
     plans: dict = field(default_factory=dict)       # sql_id → 执行计划正文(模型取回来的)
+    hist_plans: dict = field(default_factory=dict)  # sql_id → 采集时取的窗口内真实计划(见 collectors.collect_plans)
 
 
 def format_suggestion(s: Suggestion) -> str:
@@ -110,6 +111,7 @@ def build_model(ev: Evidence, r: Rechecked, in_: object = None) -> _ReportModel:
     m.raw_tables.sort(key=lambda t: _dim_rank(t.title))
     m.sql_texts = dict(getattr(ev, "sql_texts", {}) or {})   # SQL 附录用
     m.plans = dict(getattr(in_, "plans", {}) or {})           # 附录里的执行计划
+    m.hist_plans = dict(getattr(ev, "sql_plans", {}) or {})   # 优先:窗口内的真实执行计划
     return m
 
 
@@ -319,14 +321,22 @@ def _emit_plan(m: _ReportModel, sid: str) -> str:
 
     取不到也要如实留一行,说明没取到 —— 空着会让人以为这条语句没有计划可看。
     """
+    hist = (m.hist_plans or {}).get(sid) or {}
     plan = (m.plans or {}).get(sid) or ""
-    if not str(plan).strip():
-        return ("- 执行计划：本次未取到（计划要实时连库；若语句已不在库里或权限不足，"
-                "会取不到）。\n\n")
+    if str(hist.get("plan") or "").strip():
+        # 2026-10-21 起采集时就取窗口内的真实执行计划;它讲的正是这段时间,优先于模型事后取的
+        head = ("- 执行计划（SQL 历史里记下的真实执行计划：%s 那次执行，耗时 %s ms，返回 %s 行）："
+                % (hist.get("start_time") or "?", hist.get("db_time_ms") or "?", hist.get("rows") or "?"))
+        plan = hist["plan"]
+    elif str(plan).strip():
+        head = "- 执行计划："
+    else:
+        why = hist.get("why") or "计划要实时连库；若语句已不在库里或权限不足，会取不到"
+        return "- 执行计划：本次未取到（%s）。\n\n" % why
     body = str(plan).rstrip()
     if len(body) > APPENDIX_PLAN_MAX:
         body = body[:APPENDIX_PLAN_MAX] + "\n…（计划更长，到大盘或重跑 explain 看全）"
-    return "- 执行计划：\n\n" + render.code_block("text", body) + "\n"
+    return head + "\n\n" + render.code_block("text", body) + "\n"
 
 
 def _emit_quarantine_md(m: _ReportModel) -> str:

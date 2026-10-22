@@ -446,6 +446,50 @@ def test_sql_id_with_normalized_text_points_to_sqltune(monkeypatch, capsys):
     assert "归一化" in err and "sqltune" in err and "--sql-stdin --schema kf_app" in err and "Traceback" not in err
 
 
+
+# ---------------------------------------------------------------- 归一化文本 → SQL 历史里的真实计划(2026-10-21 测试)
+
+_REAL_PLAN = ("Datanode Name: og5\nSort  (cost=260109.53..260134.53 rows=10000 width=123) "
+              "(actual time=124133.645..124167.730 rows=197939 loops=1)\n  Sort Key: (sum(l2.amt)) DESC\n")
+
+
+class _HistNorm(_IdRunner):
+    """statement_history 里有这条,但 L2 跟踪记的是归一化文本;同一行的 query_plan 是真实计划。"""
+
+    def __init__(self, plan_rows):
+        super().__init__()
+        self.plan_rows = plan_rows
+
+    def run(self, script, values=None):
+        self.calls.append((script, dict(values or {})))
+        if script == "explain.from_history":
+            return [{"schema_name": "fl, public", "query": "WITH lvl1 AS (SELECT ? FROM fl.items WHERE a > ?) SELECT 1"}]
+        if script == "explain.plan_from_history":
+            return self.plan_rows
+        return super().run(script, values)
+
+
+def test_normalized_text_uses_the_real_plan_from_history(monkeypatch, capsys):
+    r = _HistNorm([{"schema_name": "fl, public", "start_time": "2026-10-21 19:12:56", "db_time_ms": "124287.3",
+                    "n_returned_rows": "197939", "query_plan": _REAL_PLAN}])
+    monkeypatch.setattr(explain_mod.access, "for_conn", lambda *a, **k: r)
+    assert explain_mod.main(["--sql-id", "3091214944"]) == 0, capsys.readouterr().err
+    out = capsys.readouterr().out
+    assert ("explain.plan_from_history", {"sid": 3091214944}) in r.calls
+    assert "真实执行计划" in out and "2026-10-21 19:12:56" in out and "actual time=124133.645" in out
+    assert "Datanode Name" not in out, "节点名那一行不是计划"
+    assert not [c for c in r.calls if c[0].startswith("explain.plan_text")], "归一化文本不该拿去 EXPLAIN"
+
+
+def test_normalized_text_without_history_plan_says_the_text_is_normalized(monkeypatch, capsys):
+    """原来一律说「statement_history 里没有这条」—— 实际有,只是记的就是归一化文本。"""
+    monkeypatch.setattr(explain_mod.access, "for_conn", lambda *a, **k: _HistNorm([]))
+    assert explain_mod.main(["--sql-id", "3091214944"]) == 2
+    err = capsys.readouterr().err
+    assert "statement_history 里没有这条" not in err
+    assert "记的就是归一化文本" in err and "没有记下这条的执行计划" in err and "sqltune" in err
+
+
 # ---------------------------------------------------------------- 贴文本没带 --schema → 脚本按表名在目录里推断
 
 class _InferRunner(_Runner):

@@ -24,11 +24,12 @@ for parent in _HERE.parents:
         sys.path.insert(0, str(parent))
         break
 
-from common import sqlnotfound  # noqa: E402
+from common import access, sqlnotfound  # noqa: E402
 
 # SQL 已迁到 scripts/registry/explain/ —— 两条路径共用同一份定义
 HISTORY_SCRIPT = "explain.from_history"
 STATEMENT_SCRIPT = "explain.from_statement"
+PLAN_HISTORY_SCRIPT = "explain.plan_from_history"   # 文本归一化 / 截断时,取历史里的真实执行计划
 
 _PLACEHOLDER_RE = re.compile(r"\?|\$\d+|(?:^|[^:])(:[a-zA-Z_]\w*)")
 
@@ -150,3 +151,35 @@ def _history_rows(runner, script: str, sid: int):
         print(f"warning: statement_history 不可用，降级到 dbe_perf.statement（归一化文本）：{exc}",
               file=sys.stderr)
         return [], str(exc)
+
+
+@dataclass(frozen=True)
+class HistoryPlan:
+    plan: str
+    start_time: str
+    db_time_ms: str
+    rows: str
+    schema: str
+
+
+def history_plan(runner, sid: int):
+    """(HistoryPlan 或 None, 取不到的原因)。
+
+    L2 跟踪下 statement_history.query 是带占位符的归一化文本,EXPLAIN 不了;同一行的 query_plan
+    却是当时执行的**真实计划**(带 actual time)。2026-10-21 测试:sql_id 3091214944 有 34 次执行、
+    34 条都有计划,explain 却只读文本、遇到占位符就停下。白名单里没有这条脚本(旧版本客户)时退回原来的指路。
+    """
+    try:
+        rows = runner.run(PLAN_HISTORY_SCRIPT, {"sid": int(sid)})
+    except access.QueryError as exc:
+        return None, "取历史计划失败:%s" % exc
+    if not rows or not str(rows[0].get("query_plan") or "").strip():
+        return None, "SQL 历史里没有记下这条的执行计划"
+    r = rows[0]
+    plan = str(r["query_plan"]).strip("\n")
+    # 第一行是「Datanode Name: <节点名>」,不是计划的一部分
+    if plan.startswith("Datanode Name:"):
+        plan = plan.split("\n", 1)[1] if "\n" in plan else ""
+    return HistoryPlan(plan=plan.rstrip(), start_time=str(r.get("start_time") or ""),
+                       db_time_ms=str(r.get("db_time_ms") or ""), rows=str(r.get("n_returned_rows") or ""),
+                       schema=str(r.get("schema_name") or "")), ""

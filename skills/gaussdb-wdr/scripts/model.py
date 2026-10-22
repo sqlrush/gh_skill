@@ -157,12 +157,16 @@ class Evidence:
     # 原来**全文根本没留下来**:采集时就 trunc 到 50 字符存盘,想展示也没有。
     # 现在显示仍然截断,但存档留全文 —— 大盘的 SQL 详情面板和执行计划深挖都靠它。
     sql_texts: dict = field(default_factory=dict)
+    # sql_id → {"plan", "start_time", "db_time_ms", "rows"} 或 {"plan": "", "why": 取不到的原因}。
+    # SQL 附录的执行计划在采集时取(窗口内最近一次真实执行计划),不再只靠模型调 explain 取回来
+    sql_plans: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {"conn": self.conn, "target": self.target,
                 "window": self.window.to_dict(),
                 "dims": [d.to_dict() for d in self.dims],
                 "sql_texts": self.sql_texts,
+                "sql_plans": self.sql_plans,
                 "findings": [f.to_dict() for f in self.findings],
                 "overall": int(self.overall),
                 "native": self.native.to_dict()}
@@ -174,6 +178,7 @@ class Evidence:
             window=Window.from_dict(d.get("window", {}) or {}),
             dims=[DimResult.from_dict(x) for x in d.get("dims", []) or []],
             sql_texts=d.get("sql_texts", {}) or {},
+            sql_plans=d.get("sql_plans", {}) or {},
             findings=[_finding_from_dict(x) for x in d.get("findings", []) or []],
             overall=Severity(int(d.get("overall", 0))),
             native=NativeInfo.from_dict(d.get("native", {}) or {}))
