@@ -1,0 +1,66 @@
+# 时段锁回溯的**阻塞对**:某段时间里谁在等谁、等在什么锁上、采到几次。
+#
+# 为什么读 gs_asp:pg_locks 只有此刻;statement_history 只记 lock_wait_time 总量,
+# 不记当时是谁挡的。活跃会话采样(ASP)每个样本带 block_sessionid / 锁模式 / locktag,
+# 落表后(gs_asp,保留 asp_retention_days 天)事后能还原阻塞关系。
+#
+# 时长按「采到次数 × 落表间隔」估算(落表间隔 = asp_sample_interval × asp_flush_rate,
+# 由 lockwait.asp_status 给出),所以这里只返回次数与首末次时间,不在 SQL 里算秒数。
+# lock_object 只在锁标签能解析出本库的表时给出;等在事务号上(行锁冲突最常见的形态)
+# 没有表名,看等待语句。
+#
+# 实测(og5,10-21 18:32–18:52,faultlab 第一轮):5142→5141 等 transactionid 采到 115 次,
+# 5144→5145 等 tuple(fl.acct)115 次,能连出 5146→…→5141 这条链。
+name: lockwait.asp_pairs
+description: 时段内的锁阻塞对(活跃会话采样 gs_asp):等待者、阻塞者、锁、锁对象、采到次数、首末次时间
+readonly: true
+sql: |
+  WITH s AS (
+    SELECT a.sessionid, a.block_sessionid, a.event, a.lockmode, a.locktag,
+           a.unique_query_id, a.unique_query, a.sample_time
+      FROM gs_asp a
+     WHERE a.sample_time >= CAST('{{begin_time}}' AS TIMESTAMP)
+       AND a.sample_time <= CAST('{{end_time}}' AS TIMESTAMP)
+       AND a.block_sessionid IS NOT NULL AND a.block_sessionid <> 0
+  ), g AS (
+    SELECT sessionid, block_sessionid,
+           COALESCE(event, '') AS event, COALESCE(lockmode, '') AS lockmode,
+           COALESCE(locktag, '') AS locktag, unique_query_id,
+           count(*) AS samples, min(sample_time) AS first_seen, max(sample_time) AS last_seen,
+           max(substr(COALESCE(unique_query, ''), 1, 300)) AS query
+      FROM s
+     GROUP BY sessionid, block_sessionid, COALESCE(event, ''), COALESCE(lockmode, ''),
+              COALESCE(locktag, ''), unique_query_id
+  ), d AS (
+    SELECT g.*, CASE WHEN g.locktag <> '' THEN COALESCE(locktag_decode(g.locktag), '') ELSE '' END AS decoded
+      FROM g
+  )
+  SELECT d.sessionid AS waiter_sessionid,
+         d.block_sessionid AS holder_sessionid,
+         d.event AS wait_event,
+         d.lockmode AS waiter_mode,
+         d.locktag AS locktag,
+         d.decoded AS lock_decoded,
+         COALESCE((SELECT n.nspname || '.' || c.relname
+                     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                    WHERE c.oid = CAST(NULLIF(substring(d.decoded from 'relation:([0-9]+)'), '') AS oid)
+                      AND substring(d.decoded from 'database:([0-9]+)')
+                          = (SELECT CAST(oid AS text) FROM pg_database WHERE datname = current_database())), '') AS lock_object,
+         d.unique_query_id AS waiter_sql_id,
+         d.query AS waiter_query,
+         d.samples AS samples,
+         to_char(d.first_seen, 'YYYY-MM-DD HH24:MI:SS') AS first_seen,
+         to_char(d.last_seen, 'YYYY-MM-DD HH24:MI:SS') AS last_seen
+    FROM d
+   ORDER BY d.samples DESC, d.sessionid
+   LIMIT {{limit}};
+params:
+  - key: begin_time
+    type: DateTime
+    description: 时段起点(数据库所在时区),格式 yyyy-MM-dd HH:mm:ss
+  - key: end_time
+    type: DateTime
+    description: 时段终点(数据库所在时区),格式 yyyy-MM-dd HH:mm:ss
+  - key: limit
+    type: INTEGER
+    description: 返回条数上限

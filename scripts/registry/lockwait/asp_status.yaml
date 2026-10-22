@@ -1,0 +1,25 @@
+# 时段锁回溯的前提:ASP 是否开启、采样与落表间隔、保留天数,以及时段内一共采到多少样本。
+#
+# 样本数为 0 时要说清是哪种情况:没开、已过保留期、还没落表(落表有约 10 秒延迟),
+# 不能和「这段时间没有锁等待」混为一谈。
+name: lockwait.asp_status
+description: 活跃会话采样(ASP)的开关、采样/落表间隔、保留天数与时段内样本数
+readonly: true
+sql: |
+  SELECT name AS item, setting AS value
+    FROM pg_settings
+   WHERE name IN ('enable_asp', 'asp_sample_interval', 'asp_flush_rate', 'asp_retention_days')
+  UNION ALL
+  SELECT 'samples_in_window', CAST(count(*) AS text)
+    FROM gs_asp
+   WHERE sample_time >= CAST('{{begin_time}}' AS TIMESTAMP)
+     AND sample_time <= CAST('{{end_time}}' AS TIMESTAMP)
+  UNION ALL
+  SELECT 'now', to_char(now(), 'YYYY-MM-DD HH24:MI:SS');
+params:
+  - key: begin_time
+    type: DateTime
+    description: 时段起点(数据库所在时区),格式 yyyy-MM-dd HH:mm:ss
+  - key: end_time
+    type: DateTime
+    description: 时段终点(数据库所在时区),格式 yyyy-MM-dd HH:mm:ss

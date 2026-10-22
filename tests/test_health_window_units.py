@@ -205,6 +205,60 @@ def test_the_top_sql_dimension_asks_for_the_evaluated_window(monkeypatch):
     assert "--to" not in seen[1], "终点是此刻时不传 --to"
 
 
+
+# ---------------------------------------------------------------- 锁阻塞(活跃会话采样)
+
+ASP_OUT = {"skill": "gaussdb-lockwait",
+           "findings": [{"dimension": "Locks", "code": "LOCK_WAIT_LONG", "severity": 3,
+                         "metric": "最长锁等待（时段回看）", "value": "约 1150s", "threshold": ">=60s",
+                         "evidence": "e", "sql_id": "", "skill": "gaussdb-lockwait"}],
+           "asp": {"unavailable": "", "basis": "来源：活跃会话采样（gs_asp）", "samples": 4680, "step_s": 10.0,
+                   "chains": [{"path": [5146, 5144, 5145, 5143, 5142, 5141], "wait_s": 1150.0,
+                               "first": "2026-10-21 18:32:34", "last": "2026-10-21 18:51:53",
+                               "lock": "tuple ExclusiveLock", "lock_object": "fl.acct",
+                               "sql_id": "3167133288", "query": "UPDATE fl.acct SET bal = bal + ? WHERE id = ?"}],
+                   "roots": [{"sessionid": 5141, "state": "idle in transaction", "blocked": 5}],
+                   "pairs": [{"waiter": w} for w in (5142, 5143, 5144, 5145, 5146)]}}
+
+
+def _proc(rc, out="", err=""):
+    return type("P", (), {"returncode": rc, "stdout": out, "stderr": err})()
+
+
+def test_the_lock_dimension_is_rebuilt_from_asp(monkeypatch):
+    seen = []
+    monkeypatch.setattr(W.subprocess, "run", lambda argv, **k: seen.append(argv) or _proc(0, json.dumps(ASP_OUT)))
+    d = W.lock_dim(FAULT_COV, "/x/lockwait.py", 30, "og")
+    assert seen[0][seen[0].index("--from") + 1] == "2026-10-17 10:46:29"
+    assert seen[0][seen[0].index("--to") + 1] == "2026-10-17 11:06:55"
+    assert d.dimension == "Transaction Locks & Blocking Chains" and d.available
+    assert d.rows[0][0] == "5146 → 5144 → 5145 → 5143 → 5142 → 5141"
+    assert d.rows[0][1] == "idle in transaction" and d.rows[0][3] == "1150s"
+    assert "5 个会话被挡" in d.headline and "会话 5141" in d.headline
+    assert [f.code for f in d.findings] == ["LOCK_WAIT_LONG"]
+
+
+def test_asp_off_is_lookback_unavailable_not_no_waits(monkeypatch):
+    out = dict(ASP_OUT, findings=[], asp={"unavailable": "数据库没开活跃会话采样（enable_asp=off）"})
+    monkeypatch.setattr(W.subprocess, "run", lambda argv, **k: _proc(0, json.dumps(out)))
+    d = W.lock_dim(FAULT_COV, "/x/lockwait.py", 30)
+    assert not d.available and d.headline == "回看不了" and "enable_asp=off" in d.note
+
+
+def test_missing_whitelist_script_says_why(monkeypatch):
+    monkeypatch.setattr(W.subprocess, "run",
+                        lambda argv, **k: _proc(2, err="error: 时段锁回溯取数失败(脚本不存在)"))
+    d = W.lock_dim(FAULT_COV, "/x/lockwait.py", 30)
+    assert not d.available and d.headline == "不可用" and "脚本不存在" in d.note
+
+
+def test_no_waits_in_window_is_said_plainly(monkeypatch):
+    out = dict(ASP_OUT, findings=[], asp=dict(ASP_OUT["asp"], chains=[], roots=[], pairs=[]))
+    monkeypatch.setattr(W.subprocess, "run", lambda argv, **k: _proc(0, json.dumps(out)))
+    d = W.lock_dim(FAULT_COV, "/x/lockwait.py", 30)
+    assert d.available and "没有采到锁等待" in d.headline and not d.findings
+
+
 # ---------------------------------------------------------------- 整条命令
 
 @pytest.fixture()
@@ -212,6 +266,8 @@ def rdir(monkeypatch, tmp_path):
     monkeypatch.setenv("GSDB_REPORTS_DIR", str(tmp_path))
     monkeypatch.setattr(health.common.config, "resolved_name", lambda c: "og")
     monkeypatch.setattr(W, "topsql_dim", lambda *a, **k: DimResult(dimension=W.DIM_WIN_TOPSQL, available=True))
+    monkeypatch.setattr(W, "lock_dim", lambda *a, **k: DimResult(dimension=W.DIM_LOCKS, available=True,
+                                                                  headline="活跃会话采样回看：桩"))
     return tmp_path
 
 
@@ -226,6 +282,8 @@ def test_a_past_window_lists_what_cannot_be_looked_back(rdir, monkeypatch, capsy
     assert W.PAST_SUB_NOTE in out
     assert "--include/--exclude 排除了全部" not in out, "没跑子 skill 的原因要说真的"
     assert "## Connections\n\n> 不可用：这段时间当时没有采集，回看不了" in out
+    assert "活跃会话采样回看：桩" in out, "锁阻塞改从 ASP 回看,不再列进回看不了"
+    assert "锁释放后不留痕迹" not in out
     d = rdir / "health" / "og"
     assert len(list(d.glob("*.span.json"))) == 1
     assert not (d / "latest.json").exists(), "时段报告不顶掉大盘上的此刻巡检"

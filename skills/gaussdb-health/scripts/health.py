@@ -213,6 +213,9 @@ def _run_window(runner, args) -> int:
         ev.dims += cur.dims
         sub_findings = [f for r in subs if r.ok for f in r.findings]
     else:
+        # 锁阻塞从活跃会话采样回看(lockwait --from/--to);其余瞬时维度回看不了
+        ev.dims.append(window_mod.lock_dim(cov, aggregate.script_path("gaussdb-lockwait"),
+                                           timeout, args.conn))
         ev.dims += window_mod.dims_unavailable_instant()
         sub_findings = []
     window_mod.finish(ev)

@@ -5,10 +5,12 @@
 
 Usage:
     lockwait.py -c <conn> [--limit 20] [--format json] [--timeout 30]
+    lockwait.py -c <conn> --from 'YYYY-MM-DD HH:MM[:SS]' [--to …]   # 时段回看(aspchain.py)
 
-**能力边界：只能在堵塞发生时抓。** openGauss 的 statement_history 只记
-lock_wait_time 总量，不记当时是谁在阻塞 —— 事后追查「某条 SQL 被谁挡了」
-在这个内核上做不到。实测记录：sqlid 870461000 等锁 35.4 秒，事后无法定位阻塞者。
+**此刻模式只能在堵塞发生时抓。** openGauss 的 statement_history 只记
+lock_wait_time 总量，不记当时是谁在阻塞。事后追查「某段时间谁挡了谁」走 --from/--to：
+读活跃会话采样（gs_asp，每个样本带 block_sessionid），粒度约 10 秒、受保留天数限制，
+见 aspchain.py。（2026-10-21 之前这里写「事后做不到」——那时只看了 statement_history。）
 
 **本文件与 task-7-brief.md 的三处对照（详见 task-7-report.md）：**
 
@@ -35,6 +37,7 @@ import json
 import pathlib
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Optional
 
 _HERE = pathlib.Path(__file__).resolve()
@@ -50,6 +53,7 @@ from common import cli  # noqa: E402
 from common.finding import Finding, Severity, findings_to_json  # noqa: E402
 from common.grmp.values import as_float, as_int, is_null  # noqa: E402
 from common.lockmodes import conflict_reason, conflicts, typical_statements  # noqa: E402
+import aspchain  # noqa: E402
 import chain  # noqa: E402
 import deadlocklog  # noqa: E402
 import deadlockreport  # noqa: E402
@@ -669,6 +673,51 @@ def run_deadlock_log(path: str, fmt: str) -> int:
     return 0
 
 
+def _span_ts(text: str, what: str) -> str:
+    """'YYYY-MM-DD HH:MM[:SS]' → 'YYYY-MM-DD HH:MM:SS';格式不对抛 ValueError(白名单的 DateTime 参数只认这一种)。"""
+    t = " ".join((text or "").replace("T", " ").split())
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(t, fmt).strftime(aspchain.TS_FMT)
+        except ValueError:
+            continue
+    raise ValueError("%s %r 格式不对,要 YYYY-MM-DD HH:MM 或 YYYY-MM-DD HH:MM:SS(数据库所在时区)" % (what, text))
+
+
+def run_span(runner, args) -> int:
+    """时段回看:某段时间里谁挡了谁。终点不给 = 到数据库此刻。"""
+    try:
+        begin = _span_ts(args.from_, "--from")
+        end = _span_ts(args.to, "--to") if args.to else ""
+        if not end:
+            st = aspchain.parse_status(runner.run(aspchain.STATUS_SCRIPT,
+                                                  {"begin_time": begin, "end_time": begin}))
+            end = st.db_now or datetime.now().strftime(aspchain.TS_FMT)
+        if end <= begin:
+            raise ValueError("终点 %s 不晚于起点 %s" % (end, begin))
+        rep = aspchain.collect(runner, begin, end)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except (common.DBError, access.QueryError) as exc:
+        # 客户环境没导入新增的三条白名单时落到这里:说清是缺脚本,不是「没有锁等待」
+        print(f"error: 时段锁回溯取数失败({exc})。需要白名单里有 {aspchain.STATUS_SCRIPT} / "
+              f"{aspchain.PAIRS_SCRIPT} / {aspchain.SESSIONS_SCRIPT} 三条脚本", file=sys.stderr)
+        return 2
+    findings = aspchain.judge(rep, DIM, WAIT_WARN_S, WAIT_CRIT_S)
+    if args.format == "json":
+        d = json.loads(findings_to_json(findings, skill=SKILL))
+        d["asp"] = aspchain.to_dict(rep)
+        print(json.dumps(d, ensure_ascii=False, indent=2))
+        return 0
+    conn = common.config.resolved_name(args.conn)
+    out = aspchain.render_markdown(rep, findings, conn, args.limit)
+    if findings:
+        out += kb_section(findings)
+    print(out, end="")
+    return 0
+
+
 def main(argv: Optional[list] = None) -> int:
     ap = argparse.ArgumentParser(prog="lockwait.py",
                                  description="锁堵塞分析（只读；kill 语句只生成不执行）")
@@ -680,9 +729,15 @@ def main(argv: Optional[list] = None) -> int:
     # 死锁明细只在数据库日志里(次数之外数据库不留),本工具读不到日志 —— 由用户把日志段给过来
     ap.add_argument("--deadlock-log", default="", metavar="文件|-",
                     help="解析数据库日志里的死锁段(含 deadlock detected 的那几段);- 表示从标准输入读。不连库")
+    # 时段回看:读活跃会话采样(gs_asp),不生成 kill 语句(见 aspchain.py)
+    ap.add_argument("--from", dest="from_", default="", metavar="'YYYY-MM-DD HH:MM'",
+                    help="时段回看起点(数据库所在时区);给了就不看此刻,改读活跃会话采样")
+    ap.add_argument("--to", default="", metavar="'YYYY-MM-DD HH:MM'", help="时段回看终点;不给 = 到此刻")
     args = ap.parse_args(argv)
     if args.deadlock_log:
         return run_deadlock_log(args.deadlock_log, args.format)
+    if args.to and not args.from_:
+        ap.error("--to 要和 --from 一起给")
     cli.apply_session_arg(args)
 
     try:
@@ -690,6 +745,8 @@ def main(argv: Optional[list] = None) -> int:
     except (common.ConfigError, common.CredentialError, access.AccessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    if args.from_:
+        return run_span(runner, args)
     try:
         rep = collect(runner, args.limit)
     except (common.DBError, access.QueryError) as exc:

@@ -33,9 +33,10 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from common import access, spillnote, timewin, windata
+from common.finding import findings_from_json
 
 from model import (DIM_WIN_COVER, DIM_WIN_IO, DIM_WIN_LOAD, DIM_WIN_TOPSQL, DIM_WIN_TXN,
-                   DIM_WIN_WAITS, DimResult, Finding, HealthEvidence, Severity, worst)
+                   DIM_LOCKS, DIM_WIN_WAITS, DimResult, Finding, HealthEvidence, Severity, worst)
 from util import human_bytes
 
 SNAP_COUNTERS = "health.snap_counters"
@@ -80,7 +81,6 @@ class WinThresholds:
 _INSTANT = [
     ("Connections", "连接数与线程池用量是此刻的状态"),
     ("Long & Idle Transactions", "长事务与空闲事务是此刻的状态，快照里没有事务开始时间"),
-    ("Transaction Locks & Blocking Chains", "锁阻塞链是此刻的状态，锁释放后不留痕迹"),
     ("Dead Tuples & Bloat", "死元组与膨胀是此刻的状态；快照里的死元组数不可靠（实测 540 万记成 0）"),
     ("Replication / Standby", "复制延迟是此刻的状态"),
     ("Storage Usage", "占用量是此刻的状态"),
@@ -283,8 +283,9 @@ def dim_waits(wd: Dict[str, Dict], th: WinThresholds, idle: bool) -> DimResult:
 
 
 # 终点在过去时,报告顶部「本次未采集到的维度」的说明(子 skill 只看此刻,不是被 --include 排除的)
-PAST_SUB_NOTE = ("回看过去的时段，锁 / 膨胀这类子 skill 只能看此刻，本次没有运行 —— 它们对应的维度"
-                 "在下面逐项标了「不可用」和原因；等待分布见「%s」。" % DIM_WIN_WAITS)
+PAST_SUB_NOTE = ("回看过去的时段：锁阻塞改从活跃会话采样（ASP）回看，见「%s」；膨胀这类子 skill 只能看此刻，"
+                 "本次没有运行 —— 对应的维度在下面逐项标了「回看不了」和原因；等待分布见「%s」。"
+                 % (DIM_LOCKS, DIM_WIN_WAITS))
 
 
 def dims_unavailable_instant() -> List[DimResult]:
@@ -324,6 +325,67 @@ def topsql_dim(cov: timewin.Coverage, top: int, script_path, timeout: int,
                        "新" if r.get("is_new") else "", str(r.get("query") or "")[:80]])
     d.headline = ("按耗时排的前 %d 条。要看全文、执行计划或调优，直接说「看 sql_id … 的执行计划」"
                   % len(d.rows)) if d.rows else "窗口内没有语句产生新的耗时"
+    return d
+
+
+# ---------------------------------------------------------------- 锁阻塞(子进程,活跃会话采样)
+
+LOCK_CHAIN_ROWS = 8
+
+
+def lock_dim(cov: timewin.Coverage, script_path, timeout: int, conn: str = "") -> DimResult:
+    """过去时段的锁阻塞:交给 gaussdb-lockwait --from/--to 读活跃会话采样(gs_asp),同一个评估窗口。
+
+    原来这一维标「回看不了：锁释放后不留痕迹」—— 不准确:锁视图确实不留,但 ASP 每个样本带
+    block_sessionid,落表后保留 asp_retention_days 天(2026-10-21 测试发现,见 lockwait/aspchain.py)。
+    ASP 没开 / 过了保留期 / 白名单缺脚本时,如实标回看不了并给原因,不当成「没有锁等待」。
+    """
+    argv = [sys.executable, str(script_path), "--format", "json",
+            "--from", cov.start.at.strftime("%Y-%m-%d %H:%M:%S"),
+            "--to", cov.end.at.strftime("%Y-%m-%d %H:%M:%S")]
+    if conn:
+        argv += ["-c", conn]
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout + 15)
+        data = json.loads(proc.stdout) if proc.returncode == 0 else None
+        err = (proc.stderr or "").strip().splitlines()[-1:] if proc.returncode else []
+    except (subprocess.TimeoutExpired, OSError, ValueError) as exc:
+        data, err = None, [str(exc)]
+    asp = data.get("asp") if isinstance(data, dict) else None
+    if not isinstance(asp, dict):
+        why = err[0].replace("error: ", "", 1) if err else "gaussdb-lockwait 没给出结果"
+        return DimResult(dimension=DIM_LOCKS, available=False, headline="不可用",
+                         note="锁阻塞要从活跃会话采样回看，这次没取到：%s" % why)
+    if asp.get("unavailable"):
+        return DimResult(dimension=DIM_LOCKS, available=False, headline="回看不了",
+                         note=str(asp["unavailable"]))
+    return _lock_dim_from(asp, findings_from_json(json.dumps(data)))
+
+
+def _lock_dim_from(asp: dict, findings: list) -> DimResult:
+    d = DimResult(dimension=DIM_LOCKS, available=True, note=str(asp.get("basis") or ""),
+                  headers=["阻塞链（等待者 → … → 根）", "根会话状态", "锁 / 对象", "约等了", "时段", "链头语句"],
+                  findings=list(findings))
+    roots = {r.get("sessionid"): r for r in asp.get("roots") or []}
+    chains = asp.get("chains") or []
+    for c in chains[:LOCK_CHAIN_ROWS]:
+        path = [str(x) for x in c.get("path") or []]
+        root = roots.get((c.get("path") or [None])[-1]) or {}
+        lock = " ".join(x for x in (c.get("lock"), c.get("lock_object")) if x)
+        q = str(c.get("query") or "")
+        d.rows.append([" → ".join(path), str(root.get("state") or "未采到"), lock,
+                       "%.0fs" % float(c.get("wait_s") or 0),
+                       "%s – %s" % (str(c.get("first") or "")[11:], str(c.get("last") or "")[11:]),
+                       ("%s %s" % (c.get("sql_id") or "", q[:60])).strip()])
+    if not chains:
+        d.headline = "时段内 %s 个活跃会话样本里没有采到锁等待（短于采样间隔的等待可能采不到）" % asp.get("samples", "?")
+        return d
+    waiters = {p.get("waiter") for p in asp.get("pairs") or []}
+    top = max(chains, key=lambda c: float(c.get("wait_s") or 0))
+    r0 = max(asp.get("roots") or [{}], key=lambda r: int(r.get("blocked") or 0))
+    d.headline = ("活跃会话采样回看：%d 条阻塞链、%d 个会话被挡，最长约 %.0f 秒；最大的根是会话 %s（%s，挡住 %s 个）"
+                  % (len(chains), len(waiters), float(top.get("wait_s") or 0), r0.get("sessionid", "?"),
+                     r0.get("state") or "状态未采到", r0.get("blocked", "?")))
     return d
 
 
