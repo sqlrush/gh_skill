@@ -287,3 +287,89 @@ def test_total_rows_stay_under_ten_million():
 def test_analyze_list_excludes_the_stale_stats_table():
     """import_stage 永远不能被 ANALYZE —— 它的统计信息停在空表就是 S5 的成因。"""
     assert "import_stage" not in prepare.ANALYZE_TABLES
+
+
+# ---------------------------------------------------------------- WDR 快照号(2026-10-21:时间线上的编号差 1)
+
+class _FakeTl:
+    def __init__(self):
+        self.rows = []
+
+    def add(self, event, detail="", db_time=""):
+        self.rows.append((event, detail, db_time))
+
+
+class _FakeConn:
+    def one(self, sql, params=None):
+        return "2026-10-21 10:00:05"
+
+
+def _fake_omm(latest_rows, create_out="WDR snapshot request has been submitted\n"):
+    """替身 omm_sql:按顺序回答「查最新快照」;create_wdr_snapshot 单独回答。记下收到的每段 SQL。"""
+    calls, answers = [], list(latest_rows)
+
+    def omm_sql(sql, timeout_s=60):
+        calls.append(sql)
+        if "create_wdr_snapshot" in sql:
+            return create_out
+        return answers.pop(0) if len(answers) > 1 else answers[0]
+    return omm_sql, calls
+
+
+@pytest.fixture
+def snap_runner(monkeypatch):
+    from lab import runner
+    monkeypatch.setattr(runner, "SNAPSHOT_POLL_S", 0)
+    return runner
+
+
+def test_snapshot_waits_for_the_new_id_instead_of_taking_the_previous_one(snap_runner, monkeypatch):
+    """快照是异步落表的:调用后第一次查还是旧号 2960,第二次才出现 2961——记的必须是 2961,并带上它的 start_ts。"""
+    omm, calls = _fake_omm(["2960|2026-10-21 09:00:00\n",          # 调用前的最大号
+                            "2960|2026-10-21 09:00:00\n",          # 调用后第一次:还没落表
+                            "2961|2026-10-21 10:00:03\n"])         # 第二次:新快照出现
+    monkeypatch.setattr(snap_runner, "omm_sql", omm)
+    tl = _FakeTl()
+    assert snap_runner._snapshot(_FakeConn(), tl, "基线前") == 2961
+    assert tl.rows == [("WDR 快照", "基线前 start_ts=2026-10-21 10:00:03 snap_id=2961", "2026-10-21 10:00:05")]
+    assert "create_wdr_snapshot" in calls[1] and len(calls) == 4      # 先查 max、再建、再轮询两次
+
+
+def test_snapshot_timeout_records_unconfirmed_not_a_wrong_id(snap_runner, monkeypatch):
+    omm, _ = _fake_omm(["2960|2026-10-21 09:00:00\n"])               # 一直是旧号
+    monkeypatch.setattr(snap_runner, "omm_sql", omm)
+    monkeypatch.setattr(snap_runner, "SNAPSHOT_WAIT_S", 0)
+    tl = _FakeTl()
+    assert snap_runner._snapshot(_FakeConn(), tl, "故障结束") is None
+    (event, detail, _), = tl.rows
+    assert event == "WDR 快照" and "编号未确认" in detail and detail.endswith("snap_id=未确认")
+    assert "2960" in detail and "snap_id=2960" not in detail
+
+
+def test_snapshot_error_is_reported_as_a_failure_not_waited_on(snap_runner, monkeypatch):
+    omm, calls = _fake_omm(["2960|2026-10-21 09:00:00\n"],
+                           create_out='ERROR:  WDR snapshot request can not be accepted, please enable "enable_wdr_snapshot".\n')
+    monkeypatch.setattr(snap_runner, "omm_sql", omm)
+    tl = _FakeTl()
+    assert snap_runner._snapshot(_FakeConn(), tl, "基线前") is None
+    assert tl.rows[0][0] == "WDR 快照失败" and "enable_wdr_snapshot" in tl.rows[0][1]
+    assert len(calls) == 2                                            # 建快照报错就不再轮询
+
+
+def test_snapshot_on_an_empty_snapshot_table_starts_from_zero(snap_runner, monkeypatch):
+    omm, _ = _fake_omm(["\n", "1|2026-10-21 10:00:03\n"])
+    monkeypatch.setattr(snap_runner, "omm_sql", omm)
+    assert snap_runner._snapshot(_FakeConn(), _FakeTl(), "基线前") == 1
+
+
+def test_report_lists_the_confirmed_id_and_flags_the_unconfirmed(tmp_path):
+    rows = [
+        {"offset_s": 0, "wall": "10:00:00", "db_time": "", "event": "开始", "detail": ""},
+        {"offset_s": 1, "wall": "10:00:01", "db_time": "", "event": "WDR 快照",
+         "detail": "基线前 start_ts=2026-10-21 10:00:01 snap_id=2961"},
+        {"offset_s": 9, "wall": "10:00:09", "db_time": "", "event": "WDR 快照",
+         "detail": "故障结束 编号未确认:调用后 15 秒内没出现大于 2961 的快照号 snap_id=未确认"},
+    ]
+    f = tmp_path / "timeline.jsonl"
+    f.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")
+    assert "- WDR 快照:2961, 未确认" in report.render(str(f))

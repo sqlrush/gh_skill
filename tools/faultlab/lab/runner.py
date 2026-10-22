@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import re
 import threading
 import time
 from typing import Dict, List, Optional, Tuple
@@ -25,6 +26,8 @@ from .session import Ctx
 
 TIMELINE = C.STATE_DIR / "timeline.jsonl"
 PROGRESS_EVERY_S = 60
+SNAPSHOT_POLL_S = 0.5          # 打完快照后每隔这么久查一次有没有出现新快照号
+SNAPSHOT_WAIT_S = 15.0         # 最多等这么久;等不到就如实记「编号未确认」,不拿旧号顶上
 
 
 class Timeline:
@@ -55,24 +58,67 @@ def _db_now(c: Conn) -> str:
     return str(c.one("SELECT to_char(now(), 'YYYY-MM-DD HH24:MI:SS')") or "")
 
 
+_SQL_ERROR_RE = re.compile(r"\b(ERROR|FATAL)\b")
+_SNAP_ROW_RE = re.compile(r"^(\d+)\|(.*)$")          # gsql -At 的两列输出:snapshot_id|start_ts
+
+
+def _check_sql_error(out: str, what: str) -> None:
+    """omm_sql 把 stderr 一并返回、不抛异常:报错要自己从文本里认出来,不然会当成「还没落表」一直等。"""
+    if _SQL_ERROR_RE.search(out or ""):
+        raise LabError("%s报错:%s" % (what, out.strip()[:160]))
+
+
+def _latest_snapshot() -> Tuple[int, str]:
+    """snapshot.snapshot 里最新一条的 (snapshot_id, start_ts);空表为 (0, "")。"""
+    out = omm_sql("SELECT snapshot_id, to_char(start_ts, 'YYYY-MM-DD HH24:MI:SS') FROM snapshot.snapshot"
+                  " ORDER BY snapshot_id DESC LIMIT 1;")
+    _check_sql_error(out, "查快照号")
+    for line in out.splitlines():
+        m = _SNAP_ROW_RE.match(line.strip())
+        if m:
+            return int(m.group(1)), m.group(2).strip()
+    return 0, ""
+
+
+def _wait_new_snapshot(before: int) -> Optional[Tuple[int, str]]:
+    """轮询到出现比 before 大的快照号为止,返回 (新快照号, start_ts);超时返回 None。"""
+    deadline = time.monotonic() + SNAPSHOT_WAIT_S
+    while True:
+        time.sleep(SNAPSHOT_POLL_S)
+        sid, start_ts = _latest_snapshot()
+        if sid > before:
+            return sid, start_ts
+        if time.monotonic() >= deadline:
+            return None
+
+
 def _snapshot(c: Conn, tl: Timeline, label: str) -> Optional[int]:
-    """打一个 WDR 快照并记下快照号。
+    """打一个 WDR 快照并记下快照号与它的 start_ts。
 
     **打不出来不算致命:** 快照只是让 WDR 能对窗口,故障本身照样在造。所以失败只记一行,
     不中断运行 —— 但要如实写明没打上,否则事后会以为窗口里有快照。
+
+    **快照号要等出来,不能紧跟着查 max。** create_wdr_snapshot() 只是把请求交给快照线程,
+    快照是异步落表的:原先调用完立刻 `SELECT max(snapshot_id)`,取到的是上一个快照,
+    时间线上每个编号都差 1,拿去对 WDR 窗口就整体错位一段。所以先记下调用前的最大号,
+    调用后轮询到出现更大的号为止;等不到就记「编号未确认」——宁可缺一个号,也不记错的号。
     """
     # **必须以 omm 身份打快照。** 实验用户即使给了 SYSADMIN,访问 snapshot 模式仍然
     # 报 permission denied(2026-10-17 实测:`permission denied for schema snapshot`)——
     # 那个模式归初始用户所有。与其给实验用户再开一道授权,不如这一步走容器里的 omm:
-    # 打快照是运维动作,本来就不该靠业务用户的权限。
+    # 打快照是运维动作,本来就不该靠业务用户的权限。查快照号同理,也走 omm。
     try:
-        out = omm_sql("SELECT create_wdr_snapshot();\n"
-                      "SELECT max(snapshot_id) FROM snapshot.snapshot;")
-        lines = [x.strip() for x in out.strip().splitlines() if x.strip()]
-        sid = next((int(x) for x in reversed(lines) if x.isdigit()), None)
-        if sid is None:
-            raise LabError("打完快照没读到快照号:%s" % out.strip()[:160])
-        tl.add("WDR 快照", "%s snap_id=%s" % (label, sid), _db_now(c))
+        before, _ = _latest_snapshot()
+        _check_sql_error(omm_sql("SELECT create_wdr_snapshot();"), "create_wdr_snapshot ")
+        hit = _wait_new_snapshot(before)
+        if hit is None:
+            # snap_id= 放在最后:report 按「snap_id=」后面那段列快照号,这里列出来就是「未确认」
+            tl.add("WDR 快照", "%s 编号未确认:调用后 %g 秒内没出现大于 %d 的快照号(异步落表可能还没完成,"
+                   "事后按时间到 snapshot.snapshot 核对) snap_id=未确认" % (label, SNAPSHOT_WAIT_S, before),
+                   _db_now(c))
+            return None
+        sid, start_ts = hit
+        tl.add("WDR 快照", "%s start_ts=%s snap_id=%d" % (label, start_ts or "?", sid), _db_now(c))
         return sid
     except Exception as exc:                 # noqa: BLE001
         tl.add("WDR 快照失败", "%s:%s" % (label, str(exc).splitlines()[0][:120]))
