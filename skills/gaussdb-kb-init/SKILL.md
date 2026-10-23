@@ -1,6 +1,6 @@
 ---
 name: gaussdb-kb-init
-version: 1.0.0
+version: 1.1.0
 description: "入库前的标准化(知识库导入的第一步,管理员用):把客户给的各种工单材料——word / pdf / txt / md / csv / xlsx / 照片截图——统一整理成同一种 md(时间、系统、现场、判断、处置、复发标志六要素),作为导入知识库之前的标准格式;整理完再交给 gaussdb-kb 入库(md + 向量 + 图)。用户说「这些工单/报告怎么入库」「格式乱七八糟先整理一下」「把这堆材料标准化」「照片里的工单怎么导进去」即用。脚本负责快照、分类、抽文本、渲染、校验;你负责读原文(照片要用 read 工具看图)把六要素写出来。"
 allowed-tools: ["exec", "read", "write"]
 compatibility: opencode
