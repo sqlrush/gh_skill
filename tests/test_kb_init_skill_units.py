@@ -183,6 +183,29 @@ def test_render_emits_a_file_kb_import_can_split(tmp_path):
     assert len(list((batch / "std").glob("*.md"))) == 2
 
 
+def test_pages_of_one_report_merge_into_one_item_and_the_rest_write_empty_arrays(tmp_path):
+    """手机拍报告是一页一张(2026-10-22 e2e:两张 HEIC 是同一份报告的第 1、2 页)。
+
+    合并成一单写在第一张的草稿里、source 列出全部照片;其余几张写 [] —— 「这份材料不单独出单」,
+    render 照常通过,不会因为第二页「缺草稿」整批拒绝,也不会同一单出两份。
+    """
+    kb = _kb(tmp_path)
+    src = tmp_path / "pages"
+    src.mkdir()
+    (src / "p1.txt").write_text("# 跑批 CPU 冲高(第 1 页)\n", encoding="utf-8")
+    (src / "p2.txt").write_text("前言(第 2 页)\n", encoding="utf-8")
+    _run(["scan", str(src), "--batch", "pages"], kb)
+    batch = kb / "init" / "pages"
+    (batch / "draft" / "001.json").write_text(
+        json.dumps({**DRAFT, "source": "p1.txt、p2.txt"}, ensure_ascii=False), encoding="utf-8")
+    (batch / "draft" / "002.json").write_text("[]", encoding="utf-8")
+    assert _run(["render", "--batch", "pages"], kb) == 0
+    std = list((batch / "std").glob("*.md"))
+    assert len(std) == 1
+    fm, _ = initstd.parse_std(std[0].read_text(encoding="utf-8"))
+    assert fm["source"] == "p1.txt、p2.txt"
+
+
 def test_render_refuses_and_names_the_item_when_a_draft_is_missing(tmp_path, capsys):
     kb = _kb(tmp_path)
     _scan_one(tmp_path, kb)

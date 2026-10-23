@@ -47,7 +47,8 @@ DOC_SUFFIXES = frozenset({".docx", ".doc", ".pdf", ".rtf"})
 TABLE_SUFFIXES = frozenset({".csv", ".xlsx", ".xls"})
 IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff",
                             ".heic", ".heif"})
-# opencode 的 read 工具读不了的图片格式:苹果手机直出的 HEIC 是现场最常见的一种
+# opencode 的 read 工具读不了的图片格式:苹果手机直出的 HEIC 是现场最常见的一种。
+# scan 会用 imgconv 自动转成 jpg 副本(导入镜像里装了 pillow / pillow-heif);转不了才请用户自己转
 _AWKWARD_IMAGE = frozenset({".heic", ".heif", ".tif", ".tiff"})
 
 
@@ -84,8 +85,8 @@ def classify(path: pathlib.Path) -> Classified:
     if suffix in IMAGE_SUFFIXES:
         reason = "照片/截图,脚本 OCR 不了——**由你用 read 工具看图**,把六要素写进草稿"
         if suffix in _AWKWARD_IMAGE:
-            reason += ("；注意这是 %s,容器里没有转换器(sips / heif-convert),read 多半打不开——"
-                       "打不开就如实告诉用户,请他转成 jpg / png 再传" % suffix.lstrip(".").upper())
+            reason += ("；注意这是 %s,read 打不开原件——scan 会自动转成 jpg 副本(看工作单的 image_path),"
+                       "转不了时如实告诉用户,请他转成 jpg / png 再传" % suffix.lstrip(".").upper())
         return Classified(path, "image", reason)
     return Classified(path, "unsupported", "不支持的格式 %s" % (suffix or "(无后缀)"))
 

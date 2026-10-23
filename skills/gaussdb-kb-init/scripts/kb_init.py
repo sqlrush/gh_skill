@@ -28,6 +28,7 @@ for _cand in (_HERE.parents[2], _HERE.parents[1]):        # skills/<name>/script
         break
 
 from common.kb import extract as kbextract  # noqa: E402
+from common.kb import imgconv  # noqa: E402
 from common.kb import ingest as kbingest  # noqa: E402
 from common.kb import initstd  # noqa: E402
 from common.kb.atomic import write_text_atomic  # noqa: E402
@@ -141,6 +142,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
     work_no = 0
     images: List[str] = []
     unsupported: List[str] = []
+    view_of: Dict[str, pathlib.Path] = {}     # 原件名 → 给 read 看的副本(HEIC / TIFF 转出的 jpg)
 
     for src in files:
         c = initstd.classify(src)
@@ -171,8 +173,13 @@ def cmd_scan(args: argparse.Namespace) -> int:
                 manifest["files"].append(entry)
                 continue
         elif c.kind == "image":
+            # HEIC / TIFF 先转成 jpg 副本:read 打不开原件(2026-10-22 用户反馈一批 HEIC 一张没读出来)
+            readable, note = imgconv.readable_copy(snapshot, snapshot.parent)
+            if readable is not None:
+                view_of[src.name] = readable
+                entry["readable"] = str(readable.relative_to(batch))
             orders = [{"source": src.name, "text": None, "known": {}, "suggest": {}}]
-            images.append("%s —— %s" % (src.name, c.reason))
+            images.append("%s —— %s" % (src.name, note or c.reason))
         else:
             unsupported.append("%s —— %s" % (src.name, c.reason))
             manifest["files"].append(entry)
@@ -187,7 +194,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
                 "source": order["source"],
                 "source_kind": src.suffix.lower().lstrip(".") or "unknown",
                 "extracted_by": "model" if c.kind == "image" else "script",
-                "image_path": str(snapshot) if c.kind == "image" else None,
+                "image_path": str(view_of.get(src.name, snapshot)) if c.kind == "image" else None,
                 "text": order["text"],
                 "known": order["known"],
                 "suggest": order["suggest"],
