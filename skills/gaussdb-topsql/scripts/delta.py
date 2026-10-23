@@ -36,7 +36,7 @@ from __future__ import annotations
 import json
 import pathlib
 import re
-from typing import Dict, List, NamedTuple, Optional, Tuple
+from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
 # 采样宽度:算增量时先取这么多条累计榜,再在它们之间算增量、重新排序。
 # 比最终呈现的条数宽得多 —— 累计榜靠后的语句完全可能是本窗口的冲高元凶。
@@ -100,6 +100,7 @@ class DeltaResult(NamedTuple):
     span_s: float       # 两次采样相隔多久
     reset: bool         # 统计被清零 / 实例重启 → rows 无意义
     note: str           # 给报告照抄的一句话
+    system_sql: Optional[dict] = None   # 排除内核系统 SQL 的结果(common/syssql Screening.as_dict);没筛 = None
 
 
 def parse_window(text: str) -> int:
@@ -243,8 +244,12 @@ def _reset_detected(before: Sample, after: Sample) -> bool:
 
 
 def diff(before: Sample, after: Sample, span_s: float, by: str = "time",
-         limit: int = 10) -> DeltaResult:
-    """两次采样相减,按 by 排序取前 limit 条。"""
+         limit: int = 10, screen: Optional[Callable] = None) -> DeltaResult:
+    """两次采样相减,按 by 排序取前 limit 条。
+
+    screen(排好序的全部行, limit) → Screening:排除内核系统 SQL(topsql.py 传入)。**在截前 limit 条之前筛**,
+    否则排除掉几条之后榜就短了。不传 = 不筛(保持原行为)。
+    """
     if by not in DELTA_SORT_KEYS:
         raise ValueError("增量模式不支持按 %s 排序(取数脚本里没有这一列的原始值);"
                          "可用:%s" % (by, "、".join(DELTA_SORT_KEYS)))
@@ -274,7 +279,12 @@ def diff(before: Sample, after: Sample, span_s: float, by: str = "time",
     note = ("窗口增量:%s 秒内的变化量(不是累计值)。窗口内新出现的语句整条计入;"
             "增量从累计榜前 %d 条里算,极少数「累计很小、刚冲高」的语句可能不在其中。"
             % (int(span_s), SAMPLE_WIDTH))
-    return DeltaResult(rows=out[:max(1, int(limit))], span_s=span_s, reset=False, note=note)
+    want = max(1, int(limit))
+    if screen is None:
+        return DeltaResult(rows=out[:want], span_s=span_s, reset=False, note=note)
+    screening = screen(out, want)
+    return DeltaResult(rows=list(screening.kept), span_s=span_s, reset=False, note=note,
+                       system_sql=screening.as_dict())
 
 
 # ---------------------------------------------------------------- 基线存取

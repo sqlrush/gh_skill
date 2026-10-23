@@ -32,7 +32,7 @@ import sys
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-from common import access, spillnote, timewin, windata
+from common import access, spillnote, syssql, timewin, windata
 from common.finding import findings_from_json
 
 from model import (DIM_WIN_COVER, DIM_WIN_IO, DIM_WIN_LOAD, DIM_WIN_TOPSQL, DIM_WIN_TXN,
@@ -325,6 +325,9 @@ def topsql_dim(cov: timewin.Coverage, top: int, script_path, timeout: int,
                        "新" if r.get("is_new") else "", str(r.get("query") or "")[:80]])
     d.headline = ("按耗时排的前 %d 条。要看全文、执行计划或调优，直接说「看 sql_id … 的执行计划」"
                   % len(d.rows)) if d.rows else "窗口内没有语句产生新的耗时"
+    brief = str((data.get("system_sql") or {}).get("brief") or "")     # topsql 已排除内核系统 SQL
+    if brief:
+        d.headline += "；" + brief
     return d
 
 
@@ -425,14 +428,19 @@ def _spill_extra(runner, cov: timewin.Coverage, temp_bytes: float) -> Tuple[str,
         rows = runner.run(WDR_TOP_SQL, {"b": int(cov.start.ref), "e": int(cov.end.ref), "top": SPILL_WIDTH})
     except access.QueryError:
         return "取语句级落盘失败，归不到具体语句；用同一时段的 WDR 定位", ""
-    items = []
+    items, pool = [], []
     for r in rows or []:
         try:
-            items.append((str(r["sid"]), float(r.get("spill_kb") or 0) * 1024))
+            it = (str(r["sid"]), float(r.get("spill_kb") or 0) * 1024)
         except (KeyError, TypeError, ValueError):
             continue
+        items.append(it)
+        # 冠军不从内核系统 SQL 里挑(2026-10-22 客户要求);它们的落盘仍算进「能归到语句的」总量
+        q = str(r.get("query") or "")
+        if syssql.classify(q, not syssql.looks_cut(q)) != syssql.SYSTEM:
+            pool.append(it)
     stmt = sum(b for _, b in items)
-    champ = max(items, key=lambda x: x[1]) if items else None
+    champ = max(pool, key=lambda x: x[1]) if pool else None
     return (spillnote.describe(temp_bytes, stmt, champ, capped=len(items) >= SPILL_WIDTH),
             champ[0] if champ and champ[1] > 0 and stmt > 0 else "")
 

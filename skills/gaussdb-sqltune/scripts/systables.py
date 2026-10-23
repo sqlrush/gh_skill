@@ -14,17 +14,10 @@ from dataclasses import dataclass
 
 import evidence
 
-from common import sysobjects
-
-# schema 限定的引用只按 common/sysobjects.py 那张表判——不在表里的 schema 一律视为
-# 用户对象,前缀不再参与判断。名单与 proctune 共用一份:原先这里是手写的,漏了
-# pg_toast / coverage / xmltype(2026-09-21 从真库对出来的)。
-
-# 未限定 schema 时:openGauss 系统表/系统视图统一以 pg_/gs_ 开头。
-_SYSTEM_NAME_PREFIXES = ("pg_", "gs_")
-
-# 前缀盖不住的零散系统对象。
-_SYSTEM_NAMES = frozenset({"dual", "sys_dummy", "statement_history"})
+# 哪些表引用算系统对象:收在 common/syssql.py,与慢 SQL / Top SQL 排行排除系统 SQL 用同一份口径。
+# schema 限定的引用只按 common/sysobjects.py 那张表判(名单与 proctune 共用);未限定的认 pg_ / gs_ 前缀
+# 与 dual / sys_dummy / statement_history。
+from common.syssql import is_system_relation as _is_system_object  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -39,12 +32,6 @@ class SystemSQLSkipped(Exception):
     def __init__(self, objects: list[str]):
         super().__init__("system SQL — tuning skipped by policy")
         self.objects = objects
-
-
-def _is_system_object(ref: str) -> bool:
-    if "." in ref:
-        return sysobjects.is_system_schema(ref[:ref.index(".")])
-    return ref.startswith(_SYSTEM_NAME_PREFIXES) or ref in _SYSTEM_NAMES
 
 
 def system_verdict(sql_text: str) -> SystemVerdict:

@@ -160,8 +160,8 @@ metadata:
   而它让一份本该被质疑的报告看起来成立了。脚本已加 `WDR_DBTIME_INCONSISTENT` 兜底，但你自己也要看出来。
 - **Top SQL 必须与原生 WDR 报告交叉核对。** 快照两端取数有固有限制：窗口中途就从语句历史里
   老化出去的语句，两端都查不到（压测实测漏掉过累计 16288 秒的热点 UPDATE）。
-  当 Top SQL 榜首是监控语句（`dbe_perf.*`）、运维语句（TRUNCATE / ALTER / ROLLBACK PREPARED）
-  或耗时明显偏小时，**基本可以断定榜单不全**：去读 `collect` 存下的原生 WDR 报告里的
+  当 Top SQL 榜首是运维语句（TRUNCATE / ALTER / ROLLBACK PREPARED）、会话设置语句（SET / SHOW）
+  或耗时明显偏小时，**基本可以断定榜单不全**（监控语句与其他内核系统 SQL 已被排除，标题行写着排除了几条）：去读 `collect` 存下的原生 WDR 报告里的
   "SQL ordered by Elapsed Time"，以它为准，并在报告里说明依据来自原生报告。
 - **死锁：次数是硬数据，「哪几条语句成环」不是。** 快照里只有一个计数器，没有环的任何信息。
   从 Top SQL 反推同表 DML 当死锁对时，**必须写成「候选」并说明依据**，不得当成证据陈述——

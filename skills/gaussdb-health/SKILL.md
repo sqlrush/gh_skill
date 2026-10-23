@@ -54,6 +54,7 @@ metadata:
    - **`## 本次未采集到的维度`**：点名本次哪个子 skill 没采集成功、原因是什么；三个都成功时写清楚"全部采集成功"。
    - **`## 未纳入汇总的能力`**：无条件列出 `gaussdb-explain`、`gaussdb-sqltune`、`gaussdb-sqlreview`、`gaussdb-sqlfetch`、`gaussdb-proctune` 这 5 个 skill——它们都需要用户指定具体 SQL / sql_id / 存储过程才能跑，health 拿不到这类输入，**这 5 项永远不在本报告覆盖范围内**；报告本身会说明这一点，不要等用户问起来才提，也不要因为这次报告很干净就暗示"都查过了"。
 
+   `## Slow SQL` 与 `## Window Top SQL` 已排除 GaussDB 自己的系统 SQL（只访问系统表 / 系统视图 / 系统函数的语句），标题行写着「已排除 N 条内核系统 SQL」，要转告用户。
    选项：`--include/--exclude <dims>` 裁剪维度。本地维度名：`overview,slowsql,xact,conn,logs,repl,schema,storage,concurrency`；另外 `locks`、`waits`、`lwlock`、`bloat` 这四个名字继续有效，只是不再对应本地 collector，而是路由到子 skill（`locks`→`gaussdb-lockwait`，`waits`/`lwlock`→`gaussdb-waitevent`，`bloat`→`gaussdb-vacuum`）——已有的命令行不受影响。`--top N` 调列表条数；`--format json` 取结构化（额外带 `sub_skills`、`uncovered_capabilities` 两个字段）。**不要**为某一维度单独多跑命令；也不要看到 `--include locks` 就自己再单独跑一遍 lockwait——health 已经替你跑过了。
 
    **时段体检（用户说了时间：「最近 30 分钟」「昨天 10 点到 11 点」「10:46 到 11:07」）：**

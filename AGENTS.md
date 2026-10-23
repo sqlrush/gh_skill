@@ -180,6 +180,9 @@ permission:
 - 用户说“查慢 SQL”“当前有哪些慢 SQL”“给我慢 SQL 列表”时，优先使用 `gaussdb-slowsql`
 - 用户说“查 Top SQL”“最耗时 SQL”“哪些 SQL 最拖慢系统”时，优先使用 `gaussdb-topsql`；
   带时间的（“最近十分钟哪些 SQL 最耗时”“10:46 到 11:07 谁最耗时”）也用它：`--window 10m` / `--from … --to …`
+- 慢 SQL、Top SQL、健康检查的慢 SQL / Top SQL、WDR 的 Top SQL **都已排除 GaussDB 自己的系统 SQL**（WDR 快照、监控采集、
+  诊断工具查系统视图的语句），输出里写着「已排除 N 条内核系统 SQL」—— 转告用户这一句，**不要把榜上没有的系统 SQL 再找回来当元凶**；
+  用户明确要看系统 / 监控语句时，`gaussdb-slowsql` / `gaussdb-topsql` 加 `--include-system`
 <!-- ▼▼▼ skills-v12.7.1 修改：sqlfetch 这一条加了「只在要看原文时用」▼▼▼ -->
 - 用户说“根据 sql_id 查 SQL”“看完整 SQL”“查 SQL 原文”时，优先使用 `gaussdb-sqlfetch`——**只在用户要看原文时用它**；
   用户给 sql_id 是为了看计划或调优时，不经过 sqlfetch，见下面「sql_id 与 schema 规则」

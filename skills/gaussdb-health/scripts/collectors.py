@@ -45,6 +45,7 @@ for parent in _HERE.parents:
 # 取数失败只认这一个类型。换一种数据库访问方式时，改的是访问模块，
 # 不是这里 —— 详见 common/grmp/errors.py。
 from common import access  # noqa: E402
+from common import syssql  # noqa: E402
 # 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
 # 类型还原一律走这里，不用裸 int()/float()/bool()。
 from common.grmp.values import as_bool, as_int, is_null  # noqa: E402
@@ -109,12 +110,21 @@ def collect_overview(runner, th: Thresholds, _top: int) -> DimResult:
 
 
 
+# health.slow_sql 在 SQL 里把正文截到 180 字
+SLOWSQL_QUERY_CHARS = 180
+
+
 def collect_slowsql(runner, th: Thresholds, top: int) -> DimResult:
     try:
-        rows = runner.run("health.slow_sql",
-                          {"threshold_ms": int(th.slow_sql_avg_ms), "limit": top})
+        fetched = runner.run("health.slow_sql",
+                             {"threshold_ms": int(th.slow_sql_avg_ms), "limit": top + syssql.SCREEN_MARGIN})
     except access.QueryError as exc:
         return degraded(DIM_SLOWSQL, summarize_err(exc))
+    # 2026-10-22 客户要求:排除 GaussDB 自己的系统 SQL(common/syssql.py),标题里写明排除了几条
+    screening = syssql.screen(fetched, want=top, sql_id=lambda r: r["unique_sql_id"], text=lambda r: r["query"],
+                              shown_chars=SLOWSQL_QUERY_CHARS, full_text=syssql.full_text_lookup(runner),
+                              seconds=lambda r: _f(r["total_sec"]), cache=syssql.verdict_cache())
+    rows = screening.kept
     d = DimResult(dimension=DIM_SLOWSQL, available=True,
                   headers=["sql_id", "calls", "avg_ms", "total_s", "cpu_s", "query"])
     stmts = []
@@ -148,6 +158,8 @@ def collect_slowsql(runner, th: Thresholds, top: int) -> DimResult:
         d.headline = f"Top1 avg {avg_ms:.0f}ms ×{calls}（共{len(stmts)}条超阈值）"
     else:
         d.headline = "无超阈值慢 SQL"
+    if screening.brief():
+        d.headline += "；" + screening.brief()
     return d
 
 

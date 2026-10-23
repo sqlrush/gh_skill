@@ -145,6 +145,7 @@ class _Args:
     def __init__(self, **kw):
         self.by, self.limit, self.format = "time", 10, "markdown"
         self.window, self.since_last, self.live_sample = "", False, ""
+        self.include_system = False
         for k, v in kw.items():
             setattr(self, k, v)
 

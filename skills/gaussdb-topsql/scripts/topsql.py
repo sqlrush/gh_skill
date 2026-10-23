@@ -35,6 +35,7 @@ import common  # noqa: E402
 from common import access  # noqa: E402
 from common import cli  # noqa: E402
 from common import reports  # noqa: E402
+from common import syssql  # noqa: E402
 # 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
 # 类型还原一律走这里，不用裸 int()/float()/bool()。
 from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
@@ -87,6 +88,28 @@ def top_sql(runner, by: str, limit: int) -> list[StmtRow]:
                 as_float(r["total_sec"]), as_float(r["avg_ms"]), as_int(r["rows"]))
         for r in rows
     ]
+
+
+def _screener(runner, include_system: bool):
+    """排行用的筛子:(排好序的行, 要几条) → Screening。include_system 时返回 None(不筛)。
+
+    2026-10-22 客户要求:Top SQL 排除 GaussDB 自己的系统 SQL(WDR 快照、监控采集、诊断工具查系统视图),
+    报告里写明排除了几条(common/syssql.py)。正文只有 80 字,长语句按 sql_id 补取全文再判。
+    """
+    if include_system:
+        return None
+    lookup, cache = syssql.full_text_lookup(runner), syssql.verdict_cache()
+
+    def run(rows, want):
+        return syssql.screen(rows, want=want, sql_id=lambda r: r.sql_id, text=lambda r: r.query,
+                             shown_chars=QUERY_CHARS, full_text=lookup, seconds=lambda r: r.total_sec,
+                             cache=cache)
+    return run
+
+
+def _screen_line(system_sql: Optional[dict]) -> str:
+    note = (system_sql or {}).get("note") or ""
+    return ("\n> %s要连系统 SQL 一起看,加 `--include-system`。\n" % note) if note else ""
 
 
 def _sample(runner, at: str) -> "delta_mod.Sample":
@@ -151,7 +174,7 @@ def delta_table(title: str, res: "delta_mod.DeltaResult", by: str) -> str:
     return ("## " + title + "\n\n" +
             render.table(["#", "SQL_ID", "窗口内调用", "窗口内平均(ms)", "窗口内耗时(s)",
                           "窗口内返回行", "窗口内新出现", "QUERY"], body) +
-            "\n" + res.note + "\n" + _QUERY_FOOT)
+            "\n" + res.note + "\n" + _QUERY_FOOT + _screen_line(res.system_sql))
 
 
 def stmt_table(title: str, rows: list[StmtRow]) -> str:
@@ -232,7 +255,8 @@ def _run_span(runner, args, conn_name: str) -> Optional[int]:
     except access.QueryError as exc:
         print("error: 取窗口端点失败:%s" % exc, file=sys.stderr)
         return 2
-    res = delta_mod.diff(before, after, cov.span_s, by=args.by, limit=args.limit)
+    res = delta_mod.diff(before, after, cov.span_s, by=args.by, limit=args.limit,
+                         screen=_screener(runner, args.include_system))
     if "s" in live:                       # 此刻的采样留进历史,下次问「最近」能贴得更近
         delta_mod.save_baseline(bpath, live["s"])
 
@@ -247,6 +271,7 @@ def _run_span(runner, args, conn_name: str) -> Optional[int]:
                "window": {"begin_ts": cov.start.at.strftime("%Y-%m-%d %H:%M:%S"),
                           "end_ts": cov.end.at.strftime("%Y-%m-%d %H:%M:%S")},
                "window_s": int(cov.span_s), "reset": res.reset,
+               "system_sql": res.system_sql,
                "rows": [r._asdict() for r in res.rows]}
     if args.format == "json":
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -336,7 +361,8 @@ def _run_delta(runner, args, conn_name: str) -> int:
         label = "距上次采样(%s)" % (before.at or "未知时刻")
 
     try:
-        res = delta_mod.diff(before, after, span, by=args.by, limit=args.limit)
+        res = delta_mod.diff(before, after, span, by=args.by, limit=args.limit,
+                             screen=_screener(runner, args.include_system))
     except ValueError as exc:
         print("error: %s" % exc, file=sys.stderr)
         return 2
@@ -350,9 +376,12 @@ def _run_delta(runner, args, conn_name: str) -> int:
                "mode": "delta", "window_s": int(res.span_s), "reset": res.reset,
                "sampled_at": after.at, "baseline_at": before.at,
                "span_note": extra,          # 实际口径,大盘上也要看得到
+               "system_sql": res.system_sql,
                "rows": [r._asdict() for r in res.rows]}
     if args.format == "json":
         print(json.dumps(payload["rows"], ensure_ascii=False, indent=2))
+        if (res.system_sql or {}).get("note"):
+            print(res.system_sql["note"], file=sys.stderr)
     else:
         print(delta_table("Top SQL(%s,按%s)" % (label, args.by), res, args.by), end="")
         # 口径说明要跟着表走 —— 用户问的是「最近 10 分钟」,拿到的可能是「最近 55 秒」,
@@ -385,6 +414,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--limit", type=int, default=10, help="max rows")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
     ap.add_argument("--timeout", type=int, default=None)
+    ap.add_argument("--include-system", action="store_true",
+                    help="不排除内核系统 SQL(默认排除只访问系统表 / 系统视图 / 系统函数的语句,并写明排除了几条)")
     # 不带这两个开关 = 原来的行为(累计榜)。带了就是**窗口增量**,回答「最近这段时间谁在冲高」。
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--window", default="", metavar="10m",
@@ -429,19 +460,30 @@ def main(argv: Optional[list[str]] = None) -> int:
                 return 2
         if args.window or args.since_last or args.live_sample:
             return _run_delta(runner, args, conn_name)
-        rows = top_sql(runner, args.by, args.limit)
+        screen = _screener(runner, args.include_system)
+        fetched = top_sql(runner, args.by, args.limit + (syssql.SCREEN_MARGIN if screen else 0))
+        screening = screen(fetched, args.limit) if screen else syssql.keep_all(fetched[:args.limit])
+        rows = screening.kept
+        system_sql = screening.as_dict() if screen else None
         _leave_baseline(runner, conn_name)
         # conn 一定要带:没有它报告没法归到实例目录,大盘也没法显示这是哪个库
         payload = {"conn": conn_name, "by": args.by, "limit": args.limit,
-                   "mode": "cumulative",
+                   "mode": "cumulative", "system_sql": system_sql,
                    "rows": [r.__dict__ for r in rows]}
         if args.format == "json":
             print(json.dumps(payload["rows"], ensure_ascii=False, indent=2))   # stdout 形状不变
+            if screening.note():
+                print(screening.note(), file=sys.stderr)
         else:
             # 累计榜必须写明「累计了多久」—— 否则十分钟的冲高被几十天的总量摊平,
             # 而看榜的人完全不知道自己看的是多长时间的总量。
             win = _stats_window(runner)
-            print(stmt_table("Top SQL by " + args.by, rows), end="")
+            if screening.all_excluded():
+                print("## Top SQL by %s\n\n%s。\n" % (args.by, screening.all_excluded_text(
+                    args.limit + syssql.SCREEN_MARGIN, "按%s排的" % _BY_CN.get(args.by, args.by))))
+            else:
+                print(stmt_table("Top SQL by " + args.by, rows), end="")
+            print(_screen_line(system_sql), end="")
             if win:
                 print("\n> %s。要看最近一段时间的变化,用 `--window 10m` 或 `--since-last`。\n" % win)
         # 存档带 by:大盘按维度页签找最近一份;失败只 warn,不影响输出与退出码

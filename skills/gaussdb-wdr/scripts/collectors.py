@@ -34,6 +34,7 @@ for parent in _HERE.parents:
 # 不是这里 —— 详见 common/grmp/errors.py。
 from common import access  # noqa: E402
 from common import spillnote  # noqa: E402
+from common import syssql  # noqa: E402
 # 协议回来的值全是字符串,NULL 是空串而不是 None —— 累计计数器的增量**不能**
 # 把取数失败悄悄当成 0,那会把「没取到」伪装成「恰好为零」。
 from common.grmp.values import as_int, is_null  # noqa: E402
@@ -308,13 +309,20 @@ def collect_topsql(runner, opt: Options) -> DimResult:
         return degraded(DIM_TOPSQL, summarize_err(exc))
 
     # each list item: dict-like tuple (id, query, calls, elapsed, cpu, spill, phys)
-    wide = [(str(r["sid"]), str(r["query"]), _i(r["calls"]), _i(r["elapsed_us"]),
-             _i(r["cpu_us"]), _i(r["spill_kb"]), _i(r["phys_blocks"]))
-            for r in rows]
+    fetched = [(str(r["sid"]), str(r["query"]), _i(r["calls"]), _i(r["elapsed_us"]),
+                _i(r["cpu_us"]), _i(r["spill_kb"]), _i(r["phys_blocks"]))
+               for r in rows]
+    # 2026-10-22 客户要求:排除 GaussDB 自己的系统 SQL(common/syssql.py)。这里的正文是全文,
+    # 只有被内核截断(track_activity_query_size)的才按 sql_id 补取。榜单、元凶、附录都只看排除后的;
+    # 落盘总量仍按全部语句算 —— 系统 SQL 落的盘也是「能归到语句的」。
+    screening = syssql.screen(fetched, sql_id=lambda it: it[0], text=lambda it: it[1],
+                              full_text=syssql.full_text_lookup(runner), seconds=lambda it: it[3] / 1e6,
+                              cache=syssql.verdict_cache())
+    wide = screening.kept
     items = wide[:top]                 # 显示与按耗时的判定只看前 top 条;元凶从 wide 里找
     champs = _champions(wide)
-    opt.stmt_spill_kb = sum(it[5] for it in wide)
-    opt.stmt_rows_capped = len(wide) >= width
+    opt.stmt_spill_kb = sum(it[5] for it in fetched)
+    opt.stmt_rows_capped = len(fetched) >= width
     by_spill = champs["溢出"]
     opt.spill_champ = ((by_spill[0], by_spill[5], by_spill[0] in {it[0] for it in items})
                        if by_spill and by_spill[5] > 0 else ())
@@ -343,7 +351,7 @@ def collect_topsql(runner, opt: Options) -> DimResult:
     d = DimResult(dimension=DIM_TOPSQL, available=True,
                   headers=["sql_id", "calls", "elapsed_s", "cpu_s", "spill_MB", "物理读(块)", pct_header, "query"])
     if not items:
-        d.headline = "窗口内无正增量 SQL"
+        d.headline = ("窗口内只有内核系统 SQL：" + screening.brief()) if screening.brief() else "窗口内无正增量 SQL"
         return d
     def row(it, mark=""):
         sid, query, calls, elapsed, cpu, spill, phys = it
@@ -423,7 +431,8 @@ def collect_topsql(runner, opt: Options) -> DimResult:
         f"CPU:{by_cpu[0]}({by_cpu[4] / 1e6:.0f}s) ｜ 溢出:{by_spill[0]}({by_spill[5] / 1024:.0f}MB) ｜ "
         f"物理读:{by_phys[0]}({by_phys[6]}块) ｜ 调用:{by_calls[0]}({by_calls[2]}次)；"
         f"元凶从耗时前 {len(wide)} 条里找，表里显示前 {len(items)} 条"
-        + (f"，另列 {len(off_list)} 条榜外元凶" if off_list else ""))
+        + (f"，另列 {len(off_list)} 条榜外元凶" if off_list else "")
+        + (f"；{screening.brief()}" if screening.brief() else ""))
     return d
 
 

@@ -36,12 +36,15 @@ for parent in _HERE.parents:
 import common  # noqa: E402
 from common import access  # noqa: E402
 from common import cli  # noqa: E402
+from common import syssql  # noqa: E402
 # 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
 # 类型还原一律走这里，不用裸 int()/float()/bool()。
 from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
 import render  # noqa: E402
 
 SLOWSQL_MAX_ROWS = 20
+# slowsql.slow_sql 在 SQL 里把正文截到 180 字(LEFT(…, 180)):够不到 FROM 的长语句要按 sql_id 补全文才能判
+QUERY_SQL_CHARS = 180
 
 
 @dataclass(frozen=True)
@@ -88,9 +91,31 @@ def fetch_rows(runner, threshold_ms: int, limit: int, begin_time: str) -> list[t
     ]
 
 
-def slow_sql(runner, threshold_ms: int, limit: int, begin_time: str, export: bool) -> list[StmtRow]:
-    rows = fetch_rows(runner, threshold_ms, limit, begin_time)
+def slow_sql(runner, threshold_ms: int, limit: int, begin_time: str, export: bool,
+             include_system: bool = False) -> list[StmtRow]:
+    return slow_sql_screened(runner, threshold_ms, limit, begin_time, export, include_system)[0]
 
+
+def slow_sql_screened(runner, threshold_ms: int, limit: int, begin_time: str, export: bool,
+                      include_system: bool = False) -> tuple[list[StmtRow], "syssql.Screening"]:
+    """(慢 SQL 行, 排除内核系统 SQL 的结果)。
+
+    2026-10-22 客户要求:慢 SQL 定位排除 GaussDB 自己的系统 SQL(WDR 快照、监控采集、诊断工具查系统视图),
+    报告里写明排除了几条。include_system=True(--include-system)原样保留。
+    """
+    fetched = fetch_rows(runner, threshold_ms, limit if include_system else limit + syssql.SCREEN_MARGIN,
+                         begin_time)
+    if include_system:
+        screening = syssql.keep_all(fetched)
+    else:
+        screening = syssql.screen(fetched, want=limit, sql_id=lambda r: r[0], text=lambda r: r[1],
+                                  shown_chars=QUERY_SQL_CHARS, full_text=syssql.full_text_lookup(runner),
+                                  seconds=lambda r: as_float(r[4]), cache=syssql.verdict_cache())
+    return _summarize(screening.kept, export), screening
+
+
+def _summarize(rows: list[tuple], export: bool) -> list[StmtRow]:
+    """排除之后的行 → 展示行;按需导出 CSV(原 slow_sql 的后半段,逻辑未改)。"""
     # === 新增逻辑：rows > 20 时保存为 CSV 文件 ===
     if len(rows) > SLOWSQL_MAX_ROWS or export:
         # 暂时关闭导出，仅当export开启时
@@ -170,6 +195,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--export", action="store_true",
                     help="即使行数不多也导出 CSV")
     ap.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    ap.add_argument("--include-system", action="store_true",
+                    help="不排除内核系统 SQL(默认排除只访问系统表 / 系统视图 / 系统函数的语句,并写明排除了几条)")
     # 仅直连路径生效：GRMP 协议没有超时字段，走中间件时超时由服务端决定
     ap.add_argument("--timeout", type=int, default=None)
     return ap
@@ -184,11 +211,21 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     try:
-        rows = slow_sql(runner, args.threshold, args.limit, args.begin_time, args.export)
+        rows, screening = slow_sql_screened(runner, args.threshold, args.limit, args.begin_time,
+                                            args.export, args.include_system)
+        note = screening.note()
         if args.format == "json":
-            print(json.dumps([r.__dict__ for r in rows], ensure_ascii=False, indent=2))
+            print(json.dumps([r.__dict__ for r in rows], ensure_ascii=False, indent=2))   # stdout 形状不变
+            if note:
+                print(note, file=sys.stderr)
+        elif screening.all_excluded():
+            print("## Slow SQL\n\n%s。\n" % screening.all_excluded_text(
+                args.limit + syssql.SCREEN_MARGIN, "平均耗时超过 %d ms 的" % args.threshold))
+            print("> %s要连系统 SQL 一起看,加 `--include-system`。\n" % note)
         else:
             print(stmt_table("Slow SQL", rows), end="")
+            if note:
+                print("\n> %s要连系统 SQL 一起看,加 `--include-system`。\n" % note)
         return 0
     except (ValueError, KeyError, common.DBError) as exc:
         print(f"error: {exc}", file=sys.stderr)
