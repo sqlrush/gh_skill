@@ -382,7 +382,7 @@ def build(out: pathlib.Path) -> None:
     (out / "VERSION").write_text("2026.09\n", encoding="utf-8")
     (out / "README.md").write_text(
         "# 示例知识库(全部虚构)\n\n由 build_sample.py 生成:24 案例(含 5 个金丝雀、3 个干扰)、12 条规范条款、"
-        "三元组与别名表、黄金查询集。\n\n用法:复制本目录为 `<kb>/`,写 `kb.yaml` 指向你的高斯/PG 与 Neo4j,"
+        "三元组与别名表、黄金查询集。\n\n用法:复制本目录为 `<kb>/`,按需写 `kb.yaml`(embeddings、可选的 Neo4j),"
         "然后 `kb.py setup && kb.py index && kb.py eval`。\n", encoding="utf-8")
     canaries = [case_id(c) for c in CASES if c.get("canary")]
     print(f"已生成 {out}:案例 {len(CASES)}(金丝雀 {len(canaries)}) · 三元组 {len(triples)} · "

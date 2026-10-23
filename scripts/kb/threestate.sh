@@ -15,7 +15,6 @@ step "validate(样例目录)"; $PY "$KBPY" validate --kb skills/gaussdb-kb/testd
 rm -rf "$KB"; cp -R skills/gaussdb-kb/testdata/sample-kb "$KB"
 cat > "$KB/kb.yaml" <<'YAML'
 store:
-  pg: {host: 127.0.0.1, port: 5440, database: kb, user: kb, credential: kb-pg}
   graph: {url: http://127.0.0.1:7474, user: neo4j, credential: kb-graph}
 embeddings: {source: none}
 YAML

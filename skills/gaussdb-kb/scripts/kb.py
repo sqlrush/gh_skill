@@ -982,7 +982,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="kb.py",
-        description="GaussDB 客户知识库:规范/工单导入 · 选择列表确认 · 索引进高斯/PG 与 Neo4j · 检索 · 契约注入",
+        description="GaussDB 客户知识库:规范/工单导入 · 选择列表确认 · 索引(SQLite + sqlite-vec,可选 Neo4j) · 检索 · 契约注入",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -995,7 +995,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ingest.add_argument("--redact", action="store_true", help="工单原文脱敏:IP/手机号/证件号/邮箱")
     p_ingest.set_defaults(func=cmd_ingest_any)
 
-    p_index = sub.add_parser("index", help="重建 INDEX.md/RULES.md,并把文件索引进高斯/PG 与 Neo4j(kb.yaml 配了存储才写库)")
+    p_index = sub.add_parser("index", help="重建 INDEX.md/RULES.md 与 SQLite 索引(index/store.sqlite);配了 Neo4j 再写图")
     p_index.add_argument("--kb")
     p_index.add_argument("--rebuild", action="store_true", help="清两库重灌(文件是真相)")
     p_index.add_argument("--fill-missing", action="store_true", help="只补没向量的块")
@@ -1036,7 +1036,7 @@ def cmd_ingest_any(args: argparse.Namespace) -> int:
 
 
 def cmd_index_all(args: argparse.Namespace) -> int:
-    """文件级索引(INDEX.md/RULES.md)永远做;配了存储再写高斯/PG 与 Neo4j。整个索引持知识库写锁。"""
+    """文件级索引(INDEX.md/RULES.md)与 SQLite 索引(<kb>/index/store.sqlite)都做;配了 Neo4j 再写图。整个索引持知识库写锁。"""
     kb = resolve_kb_dir(args.kb)
     if not kb.is_dir():
         raise KbError(f"KB 目录不存在:{kb}(先运行 ingest 或手工创建)")
@@ -1046,24 +1046,20 @@ def cmd_index_all(args: argparse.Namespace) -> int:
 
 def _index_all_locked(args: argparse.Namespace, kb: pathlib.Path) -> int:
     import kb_store
-    from common.kb import config as kbconfig
 
     rc = cmd_index(args)
     if rc != 0:
         return rc
-    cfg = kbconfig.load(kb)
-    if cfg.store.pg is None:
-        print("存储        : kb.yaml 未配置 store.pg——文件模式:已重建 INDEX.md / RULES.md / CASES.md,"
-              "检索走文件(词法 + 图文件);要向量库/图库时按 references/storage-setup.md 配好后重跑 index 即写库")
-        return 0
     try:
         return kb_store.cmd_index(args)
     except kb_store.StoreCmdError as exc:
-        # 配了库却写不进去:文件索引已经建好,检索会自动退到文件模式。两句都要说——
+        # 索引写不进去:文件索引已经建好,检索会自动退到文件模式。两句都要说——
         # 只报错会让人以为知识库废了,只报「还能用」会把一个真故障藏起来。
-        print(f"存储        : 写库失败:{exc}")
-        print("            : 已回退到文件模式——INDEX.md / RULES.md / CASES.md 已重建,检索照常"
-              "(词法 + 图文件,无向量召回);修好存储后重跑 `kb.py index` 即写库。")
+        # 写失败时原索引文件不动(新索引在临时副本上,没换上去):有旧索引就继续用旧的,没有才是文件模式
+        print(f"存储        : 写索引失败:{exc}")
+        print("            : INDEX.md / RULES.md / CASES.md 已重建,检索照常——有旧索引时继续用旧索引"
+              "(内容停在上次 index 成功时),没有索引时走文件模式(词法 + 图文件,无向量召回);"
+              "修好后重跑 `kb.py index` 即写索引。")
         return 2
 
 

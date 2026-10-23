@@ -1,6 +1,6 @@
 #!/bin/bash
 # 模型层演示(非交互复现 演示手册.md 的 1–5 步):opencode run 驱动,确认环节用预置回答 --continue。
-# 前提:scripts/kb/containers.sh 起容器;凭据 kb-pg/kb-graph 已 set;bash install-opencode.sh 已装本分支。
+# 前提:scripts/kb/containers.sh 起 Neo4j(可选);凭据 kb-graph 已 set;bash install-opencode.sh 已装本分支。
 # 输出:~/kb-demo-out/{01-before,02-spec,03-spec-confirm,04-tickets,05-strategy,06-decide,07-after,08-rollback}.txt
 set -u
 export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH

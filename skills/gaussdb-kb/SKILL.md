@@ -1,7 +1,7 @@
 ---
 name: gaussdb-kb
 version: 2.3.3
-description: "客户知识库(原 kbimport):把客户的 GaussDB/OpenGauss 规范文档(txt/md/docx/doc/pdf)与故障工单/问题分析报告(md/docx/csv/xlsx)导入知识库——规范条款化进 rules/guides/errata,工单结构化成案例并抽成图谱关系,关键数据写入前一律生成编号选择列表交用户确认;向量进高斯/PG 向量库、关系进 Neo4j,各诊断 skill 按发现检索并优先引用客户先例。脚本负责转换、快照、校验、索引、检索、契约注入;你负责条款分类、案例抽取、呈现选择列表与收集确认。用户说「导入规范 / 导入工单 / 建知识库 / 把 xxx 加进知识库 / 更新规范库 / 知识库里有没有类似案例 / 让 skill 按我们的经验来」即用。"
+description: "客户知识库(原 kbimport):把客户的 GaussDB/OpenGauss 规范文档(txt/md/docx/doc/pdf)与故障工单/问题分析报告(md/docx/csv/xlsx)导入知识库——规范条款化进 rules/guides/errata,工单结构化成案例并抽成图谱关系,关键数据写入前一律生成编号选择列表交用户确认;向量进知识库目录里的 SQLite 索引(sqlite-vec,不用配)、关系进 Neo4j(可选),各诊断 skill 按发现检索并优先引用客户先例。脚本负责转换、快照、校验、索引、检索、契约注入;你负责条款分类、案例抽取、呈现选择列表与收集确认。用户说「导入规范 / 导入工单 / 建知识库 / 把 xxx 加进知识库 / 更新规范库 / 知识库里有没有类似案例 / 让 skill 按我们的经验来」即用。"
 allowed-tools: ["exec", "read", "write"]
 compatibility: opencode
 metadata:
@@ -27,12 +27,13 @@ python3 {baseDir}/scripts/kb.py health
 ```
 
 状态行第一行说明一切,`模式:` 是脚本按环境自动感知的,三种都正常:
-- `模式:向量库+图库`——高斯/PG 与 Neo4j 都连上了,词法 ∥ 向量 ∥ 图三路检索;
+- `模式:向量库+图库`——SQLite 索引(`<kb>/index/store.sqlite`)在、Neo4j 也连上了,词法 ∥ 向量 ∥ 图三路检索;
 - `模式:向量库+图文件`——Neo4j 没配或连不上,路径改从 `graph/*.yaml` 里走(状态行「图:图文件」);
-- `模式:文件(原因)`——高斯/PG 没配或连不上或还没 index,整个检索直接在 `<kb>/` 文件上做(词法 + 图文件),
-  导入与查询流程**一字不变**,只是没有向量语义召回;`index` 只重建 `INDEX.md / RULES.md / CASES.md`。
-`知识库未接入(原因)` 只在目录不存在 / `kb.yaml` 无效时出现。用户想升到向量库+图库时按 `{baseDir}/references/storage-setup.md`
-引导他配 `kb.yaml` 与凭据(`python3 -m common.credential_cli set kb-pg` / `kb-graph`),然后 `kb.py setup && kb.py index`。
+- `模式:文件(原因)`——还没 index 或索引文件打不开,整个检索直接在 `<kb>/` 文件上做(词法 + 图文件),
+  导入与查询流程**一字不变**,只是没有向量语义召回;跑一次 `kb.py index` 就会建出索引。
+`知识库未接入(原因)` 只在目录不存在 / `kb.yaml` 无效时出现。向量库不用配(2026-10-23 起是知识库目录里的 SQLite 文件,
+原高斯 / PG 向量库下线);要向量召回只需在 `kb.yaml` 配 embeddings,要图库再配 Neo4j,见 `{baseDir}/references/storage-setup.md`,
+然后 `kb.py setup && kb.py index`。
 **不要自己去读凭据文件**;也不要因为是文件模式就跳过导入或降低引用要求。
 
 ## 1. 规范路径(txt/md/docx/doc/pdf → 条款)
@@ -134,7 +135,7 @@ python3 {baseDir}/scripts/kb.py contract --apply    # 用户确认后执行
 - 条款分类、案例抽取是**你**的语义判断;写入前必须经用户确认(选择列表),且每项都要能指回原文;指不回去的作废。
 - `.doc` / `.pdf` 依赖系统转换器(textutil / antiword / pdftotext);扫描件不做 OCR,脚本会拒绝并说明。
 - 向量检索依赖 `kb.yaml` 配的 embedding 端点;没配或端点无嵌入模型时只走词法 + 图,状态行会写「向量:未启用」——**不要假装有向量**。
-- Neo4j 没配或不可达时路径改走 `graph/*.yaml`(状态行「图:图文件(原因)」);高斯/PG 没配或不可达时整体退到文件模式
+- Neo4j 没配或不可达时路径改走 `graph/*.yaml`(状态行「图:图文件(原因)」);还没 index 或索引文件打不开时整体退到文件模式
   (状态行「模式:文件(原因)」,词法 + 图文件,无向量召回)。这些都是降级,不是失败,skill 照常;目录不存在 / `kb.yaml` 无效才是「未接入」。
 - 「哪条边该确认」「哪个实体该归一」是用户的决定;脚本只能确定性地把候选摆出来、把回答落盘。
 
@@ -159,7 +160,7 @@ python3 {baseDir}/scripts/kb.py contract --apply    # 用户确认后执行
 
 - **只通过本技能脚本取数**：`{baseDir}/scripts/kb.py` 走只读会话、自动解密 `{baseDir}/../common/credentials/` 凭据，**你自己不要**直接写 Python/psql/gsql 连库、不要读取或解密 `{baseDir}/../common/credentials/`。脚本未覆盖的能力，如实说明「当前无此能力」并停止。
 <!-- RED-LINES:END -->
-- 本技能只连**知识库专用**的高斯/PG 与 Neo4j(口令经 `common.credential` 解密),**不连被管业务库**,不读取或解密 `credentials/`。
+- 本技能只读写 `<kb>/` 目录(含索引 `<kb>/index/store.sqlite`),只连**知识库专用**的 Neo4j(可选,口令经 `common.credential` 解密),**不连被管业务库**,不读取或解密 `credentials/`。
 - 只写 `<kb>/` 目录与各 SKILL.md 的 `KB-CONTRACT` 标记区,不改任何 skill 的其他内容、不改脚本代码。
 - `sources/` 里的原文快照只读;规范或工单内容有疑义时问用户,不得自行"修正"客户的材料。
 - 工单原文可能含 IP / 账号 / 人名:导入时用 `--redact`;呈现选择列表与案例时不复述原文里的 IP、端口、接口地址。

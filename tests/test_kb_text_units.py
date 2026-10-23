@@ -1,15 +1,12 @@
-"""common.kb.text —— 分词与 tsvector/tsquery 字面量(纯函数,无库)。
+"""common.kb.text —— 分词(纯函数,无库)。
 
-词法检索走的是 PG/openGauss 的 tsvector,但**不走它们的文本解析器**:两种引擎的
-默认 parser 对中文/标点的切分不完全一致,而且都不做中文分词。这里在 Python 侧
-把文本切成「中文二元组 + 标识符整词」,再拼成 tsvector/tsquery 的**字面量输入格式**
-(`'词':位置` / `'词' & '词'`),引擎只负责存和匹配 —— 行为在 DataVec 与 pgvector
-上完全一样,也可被单测钉死。
+不走任何引擎的文本解析器:常见的默认分词都不做中文分词、对标点的切分也各不相同。这里在 Python 侧
+把文本切成「中文二元组 + 标识符整词 + 碎片」,SQLite 索引与文件模式都直接存、直接比这些 token,
+行为可被单测钉死。
 """
 import pathlib
 import sys
 
-import pytest
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
@@ -65,52 +62,7 @@ def test_tokenize_is_deterministic_and_order_preserving():
     assert text.tokenize("a b a") == ["a", "b", "a"]
 
 
-# ---------------------------------------------------------------- tsvector literal
-
-def test_tsvector_literal_carries_positions():
-    lit = text.tsvector_literal(["偶现", "现单"])
-    assert lit == "'偶现':1 '现单':2"
-
-
-def test_tsvector_literal_escapes_single_quotes_and_backslashes():
-    """引号/反斜杠进了字面量不转义,轻则语法错,重则截断——两种都要钉住。"""
-    lit = text.tsvector_literal(["it's", "a\\b"])
-    assert lit == "'it''s':1 'a\\\\b':2"
-
-
-def test_tsvector_literal_weights():
-    """复发标志(signals)要加权:同一词在 A 权重下 ts_rank 更高。"""
-    lit = text.tsvector_literal(["慢", "锁"], weight="A")
-    assert lit == "'慢':1A '锁':2A"
-
-
-def test_tsvector_literal_merges_duplicate_lexemes_positions():
-    lit = text.tsvector_literal(["a", "b", "a"])
-    assert lit == "'a':1,3 'b':2"
-
-
-def test_tsvector_literal_empty():
-    assert text.tsvector_literal([]) == ""
-
-
-# ---------------------------------------------------------------- tsquery literal
-
-def test_tsquery_or_by_default():
-    """检索是召回,不是过滤:默认 OR,靠 ts_rank 排序;AND 只在明确要求时用。"""
-    assert text.tsquery_literal(["偶现", "现单"]) == "'偶现' | '现单'"
-
-
-def test_tsquery_and_when_requested():
-    assert text.tsquery_literal(["a", "b"], op="&") == "'a' & 'b'"
-
-
-def test_tsquery_dedups_and_escapes():
-    assert text.tsquery_literal(["it's", "it's"]) == "'it''s'"
-
-
-def test_tsquery_empty_is_empty_string():
-    assert text.tsquery_literal([]) == ""
-
+# ---------------------------------------------------------------- query tokens
 
 def test_query_tokens_from_text_drop_stop_bigrams():
     """「的」「了」这类字和它们组成的二元组只会拉低排序,查询侧不要。"""

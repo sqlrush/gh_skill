@@ -1,4 +1,4 @@
-"""common.kb.indexer —— 切块/组图纯函数单测 + 打真库的端到端索引(live)。"""
+"""common.kb.indexer —— 切块/组图纯函数单测 + 端到端索引(SQLite 索引不用服务;配了 KB_TEST_NEO4J 再连真图库)。"""
 import os
 import pathlib
 import sys
@@ -8,7 +8,7 @@ import pytest
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
-from common.kb import cases as kbcases, graphfiles as gf, indexer, store_graph as sg, store_pg, text as kbtext  # noqa: E402
+from common.kb import cases as kbcases, graphfiles as gf, indexer, store_graph as sg, store_sqlite, text as kbtext  # noqa: E402
 
 CASE_ID = "S1-20250224-CBST-偶现单条update慢"
 CASE = f"""---
@@ -159,6 +159,8 @@ def test_build_graph_drops_rejected(tmp_path):
 
 class _FakeEmbedder:
     """确定性向量:按文本哈希;'现场' 相关的文本靠近 [1,0,0,0]。"""
+    model = "fake-4d"
+
     def __init__(self):
         from common.kb.embed import EmbedStats
         self.stats = EmbedStats()
@@ -175,23 +177,25 @@ class _FakeEmbedder:
         return self.embed([text])[0]
 
 
-@pytest.mark.live
 def test_run_index_end_to_end(tmp_path):
-    spec = os.environ.get("KB_TEST_PGVECTOR")
+    """SQLite 索引端到端(2026-10-23 起取代高斯 / PG 向量库,不需要服务);配了 KB_TEST_NEO4J 再连真图库验路径。"""
+    pytest.importorskip("sqlite_vec", reason="没装 sqlite-vec,向量覆盖率断言没法做")
     gspec = os.environ.get("KB_TEST_NEO4J")
-    if not spec or not gspec:
-        pytest.skip("未配置 KB_TEST_PGVECTOR / KB_TEST_NEO4J(存储不可达/未配置)")
-    host, port, db, user, pw = spec.split(":", 4)
-    pg = store_pg.PgStore.connect(host=host, port=int(port), database=db, user=user, password=pw, dims=4)
-    url, guser, gpw = gspec.split("|", 2)
-    graph = sg.GraphStore(url, guser, gpw)
+    graph = None
+    if gspec:
+        url, guser, gpw = gspec.split("|", 2)
+        graph = sg.GraphStore(url, guser, gpw)
+    pg = store_sqlite.SqliteStore.open_writer(tmp_path / "store.sqlite", dims=4)
     kb = _fixture_kb(tmp_path)
     try:
         rep = indexer.run_index(kb, pg, graph, _FakeEmbedder(), kb_version="2026.09", rebuild=True)
         assert rep.docs_indexed == 4 and rep.docs_removed == 0
-        assert rep.graph == "ok" and rep.edges >= 5 and rep.edges_confirmed == rep.edges
+        if graph is not None:
+            assert rep.graph == "ok" and rep.edges >= 5 and rep.edges_confirmed == rep.edges
+        else:
+            assert rep.graph == "none"
         assert rep.coverage_ok and rep.chunk_total == rep.chunk_embedded > 0
-        assert rep.vector_engine == "pgvector"
+        assert rep.vector_engine == "sqlite-vec"
         assert not rep.warnings, rep.warnings
         assert indexer.read_state(kb)["docs_indexed"] == 4
 
@@ -204,8 +208,10 @@ def test_run_index_end_to_end(tmp_path):
         # 节点向量 + 图路径
         nodes = pg.search_nodes_lexical(kbtext.query_tokens("autovacuum 频繁触发"), kinds=["symptom"])
         assert nodes and nodes[0].id.startswith("symptom:")
-        paths = graph.paths([nodes[0].id], today="2026-09-02")
-        assert len(paths) == 1 and paths[0].action.startswith("表级调大") and paths[0].cases
+        assert pg.search_nodes_vector([1, 0, 0, 0], k=1), "节点向量也要写进去"
+        if graph is not None:
+            paths = graph.paths([nodes[0].id], today="2026-09-02")
+            assert len(paths) == 1 and paths[0].action.startswith("表级调大") and paths[0].cases
 
         # 增量:什么都没改 → 全部 unchanged
         rep2 = indexer.run_index(kb, pg, graph, _FakeEmbedder(), kb_version="2026.09")
@@ -229,5 +235,6 @@ def test_run_index_end_to_end(tmp_path):
         rep5 = indexer.run_index(kb, pg, graph, _Broken(), kb_version="2026.09", rebuild=True)
         assert rep5.embedding_configured and not rep5.coverage_ok and rep5.embed_failed > 0
     finally:
-        pg.rebuild(); pg.close()
-        graph.rebuild()
+        pg.close()
+        if graph is not None:
+            graph.rebuild()

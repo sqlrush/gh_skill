@@ -1,5 +1,5 @@
 """common.kb.store_files —— 文件模式存储:没配 / 连不上高斯·PG 与 Neo4j 时,直接在 <kb>/ 文件上做
-词法检索与 现象→根因→处置 路径推理。接口与 PgStore / GraphStore 检索侧一致,KbSession 不感知差别。"""
+词法检索与 现象→根因→处置 路径推理。接口与 SqliteStore / GraphStore 检索侧一致,KbSession 不感知差别。"""
 import pathlib
 import sys
 
@@ -8,7 +8,7 @@ import pytest
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
-from common.kb import store_files as sf, store_pg as spg, text as kbtext  # noqa: E402
+from common.kb import store as spg, store_files as sf, text as kbtext  # noqa: E402
 
 CASE_ID = "S1-20250224-CBST-偶现单条update慢"
 CASE2_ID = "S2-20250420-CBMS-ProcArrayLock等待"

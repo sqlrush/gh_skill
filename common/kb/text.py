@@ -1,9 +1,8 @@
-"""分词与 tsvector / tsquery 字面量 —— 词法检索的确定性半边。
+"""分词 —— 词法检索的确定性半边。
 
-为什么不用引擎自带的 to_tsvector:PG 与 openGauss 的默认 parser 都不做中文分词
-(整段中文是一个 token),对标点/冒号的处理也不完全一致。这里在 Python 侧切好
-「中文二元组 + 标识符整词 + 标识符碎片」,再拼成 tsvector/tsquery 的**字面量**输入
-(`'词':位置` / `'词' | '词'`),两种引擎只负责存和匹配,行为一致且可单测。
+为什么在 Python 侧切词、不用引擎自带的分词器:常见的默认分词都不做中文分词(整段中文是一个 token),
+对标点 / 冒号的处理也各不相同。这里切好「中文二元组 + 标识符整词 + 标识符碎片」,
+SQLite 索引与文件模式都直接存、直接比这些 token,行为一致且可单测。
 
 标识符(对象名 / GUC / 等待事件)是检索的主入口:整词保留,同时吐出按 . : _ 拆开的
 碎片,让「cosp_asyn_task_dtl」「dtl」「walwritelock」都能命中。
@@ -12,7 +11,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import Iterable, List, Optional
+from typing import List
 
 # 只在查询侧剔除:这些字组成的二元组只会拉低排序。索引侧全量保留。
 _QUERY_STOP_CHARS = frozenset("的了在是和与及或等有为把被对于从到就也都很个么这那")
@@ -82,39 +81,3 @@ def query_tokens(text: str) -> List[str]:
             seen.add(tok)
             out.append(tok)
     return out
-
-
-def _quote(lexeme: str) -> str:
-    return "'" + lexeme.replace("\\", "\\\\").replace("'", "''") + "'"
-
-
-def tsvector_literal(tokens: Iterable[str], weight: Optional[str] = None) -> str:
-    """`'词':1,3 '词':2` —— tsvector 的字面量输入,不经 to_tsvector。
-
-    weight(A/B/C/D)附在每个位置后,ts_rank 按权重加分;复发标志用 A。
-    """
-    positions: dict = {}
-    order: List[str] = []
-    for pos, tok in enumerate(tokens, 1):
-        if tok not in positions:
-            positions[tok] = []
-            order.append(tok)
-        positions[tok].append(pos)
-    suffix = weight or ""
-    return " ".join(
-        _quote(tok) + ":" + ",".join(f"{p}{suffix}" for p in positions[tok])
-        for tok in order
-    )
-
-
-def tsquery_literal(tokens: Iterable[str], op: str = "|") -> str:
-    """`'a' | 'b'` —— tsquery 字面量;默认 OR(召回),按需 AND。"""
-    if op not in ("|", "&"):
-        raise ValueError(f"tsquery op 只能是 | 或 &,拿到 {op!r}")
-    seen = set()
-    uniq: List[str] = []
-    for tok in tokens:
-        if tok not in seen:
-            seen.add(tok)
-            uniq.append(tok)
-    return f" {op} ".join(_quote(tok) for tok in uniq)

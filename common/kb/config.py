@@ -174,24 +174,6 @@ def opencode_provider(model: Optional[str] = None,
 # ---------------------------------------------------------------- kb.yaml
 
 @dataclass(frozen=True)
-class PgStore:
-    host: str
-    port: int
-    database: str
-    user: str
-    credential: str
-    sslmode: str = ""
-    # 容器化(2026-09-21):kb.yaml 在共享 NAS 上一份,而加密凭据是按用户的——口令改从这个
-    # 环境变量取(平台以 Secret 注入),就不用给每个用户各塞一份同样的凭据。
-    # 留空 = 照旧走 credential 加密文件,非容器部署不受影响。
-    password_env: str = ""
-    # 同一份 kb.yaml 要服务两种角色:runtime 用只读库用户、kb-import 用读写库用户。
-    # 一个 `user:` 字段装不下两个,所以用户名也可以按 Pod 从环境变量取。
-    # 留空 = 用上面的 user 字段。
-    user_env: str = ""
-
-
-@dataclass(frozen=True)
 class GraphStore:
     url: str
     user: str
@@ -201,8 +183,11 @@ class GraphStore:
 
 @dataclass(frozen=True)
 class StoreConfig:
-    pg: Optional[PgStore] = None
     graph: Optional[GraphStore] = None
+    # 2026-10-23 高斯 / PG 向量库下线,向量与词法索引改为 <kb>/index/store.sqlite(不用配)。
+    # kb.yaml 里还留着 store.pg 时不报错(升级不能因为一段旧配置就让知识库用不了),只记一笔,
+    # 由 health / index 提示可以删掉。
+    legacy_pg: bool = False
 
 
 @dataclass(frozen=True)
@@ -260,25 +245,6 @@ def _reject_secrets(node: Any, path: str) -> None:
             _reject_secrets(v, f"{path}.{k}")
 
 
-def _pg_store(raw: Any) -> Optional[PgStore]:
-    if not raw:
-        return None
-    if not isinstance(raw, dict):
-        raise KbConfigError("kb.yaml store.pg 必须是键值映射")
-    for key in ("host", "database", "user", "credential"):
-        if not raw.get(key):
-            raise KbConfigError(f"kb.yaml store.pg 缺少 {key}")
-    try:
-        port = int(raw.get("port") or 5432)
-    except (TypeError, ValueError):
-        raise KbConfigError(f"kb.yaml store.pg.port 不是整数:{raw.get('port')!r}")
-    return PgStore(host=str(raw["host"]), port=port, database=str(raw["database"]),
-                   user=str(raw["user"]), credential=str(raw["credential"]),
-                   sslmode=str(raw.get("sslmode") or ""),
-                   password_env=str(raw.get("password_env") or ""),
-                   user_env=str(raw.get("user_env") or ""))
-
-
 def _graph_store(raw: Any) -> Optional[GraphStore]:
     if not raw:
         return None
@@ -331,7 +297,7 @@ def _thresholds(raw: Any) -> Thresholds:
 
 
 def load(kb_dir: pathlib.Path) -> KbConfig:
-    """读 <kb>/kb.yaml;文件不存在 = 全默认(无存储、无向量),不是错误。"""
+    """读 <kb>/kb.yaml;文件不存在 = 全默认(无图库、无向量),不是错误。"""
     path = pathlib.Path(kb_dir) / "kb.yaml"
     raw: Dict[str, Any] = {}
     if path.is_file():
@@ -348,8 +314,8 @@ def load(kb_dir: pathlib.Path) -> KbConfig:
         raise KbConfigError("kb.yaml store 必须是键值映射")
     return KbConfig(
         kb_dir=pathlib.Path(kb_dir),
-        store=StoreConfig(pg=_pg_store(store_raw.get("pg")),
-                          graph=_graph_store(store_raw.get("graph"))),
+        store=StoreConfig(graph=_graph_store(store_raw.get("graph")),
+                          legacy_pg=bool(store_raw.get("pg"))),
         embeddings=_embeddings(raw.get("embeddings")),
         thresholds=_thresholds(raw.get("thresholds")),
         defaults=dict(raw.get("defaults") or {}),

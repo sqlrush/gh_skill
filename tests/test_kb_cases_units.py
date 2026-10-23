@@ -312,9 +312,9 @@ def test_strategy_rules_defaults_are_single_chain_and_merge():
     assert "只抽一条主链" in rules and "同义节点合并" in rules and "告警代码" in rules
 
 
-def test_index_without_store_only_rebuilds_files(tmp_path, capsys):
+def test_index_builds_files_and_the_sqlite_index_without_any_service(tmp_path, capsys):
     kb = _inbox(tmp_path)
     (kb / "rules").mkdir()
     rc = kbmain.main(["index", "--kb", str(kb)])
     assert rc == 0 and (kb / "INDEX.md").is_file() and (kb / "RULES.md").is_file()
-    assert "未配置 store.pg" in capsys.readouterr().out
+    assert (kb / "index" / "store.sqlite").is_file() and "文档      :" in capsys.readouterr().out

@@ -524,13 +524,14 @@ raise DBError(
 
 ## 7. 依赖约束
 
-### 7.1 运行时依赖仅三个包
+### 7.1 运行时依赖仅四个包
 
 ```
 # file: requirements.txt
 psycopg2>=1.30       # PostgreSQL wire 驱动
 cryptography>=41   # AES-256-GCM 凭据解密
 PyYAML>=6          # config.yaml 解析
+sqlite-vec==0.1.9  # 知识库向量检索(2026-10-23 起取代高斯 / PG 向量库;没装时知识库照常,只是没有向量召回)
 ```
 
 **禁止**在不修改 `requirements.txt` 并经过讨论的情况下新增运行时 pip 依赖。

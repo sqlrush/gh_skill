@@ -8,7 +8,7 @@ import pytest
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
-from common.kb import config as kbconfig, query, render, store_graph as sg, store_pg as spg  # noqa: E402
+from common.kb import config as kbconfig, query, render, store as spg, store_graph as sg  # noqa: E402
 
 try:                                              # 部署仓有 common.finding;主干还没有,用同形的本地替身
     from common.finding import Finding, Severity  # noqa: E402
@@ -44,7 +44,7 @@ class FakePg:
     @staticmethod
     def _relevant(tokens): return any("autovacuum" in t for t in tokens)
     def has_index(self): return True
-    def capabilities(self): return spg.Capabilities("postgresql", "16", self._vector, True, 4)
+    def capabilities(self): return spg.Capabilities("sqlite", "3.40", self._vector, False, 4)
     def search_chunks_lexical(self, tokens, k=10, kinds=None): return self.lex[:k] if self._relevant(tokens) else []
     def search_chunks_vector(self, emb, k=10, kinds=None): return self.vec[:k]
     def search_nodes_lexical(self, tokens, k=10, kinds=None): return self.nodes_lex[:k] if self._relevant(tokens) else []
@@ -310,7 +310,7 @@ def test_open_without_store_falls_back_to_file_mode(tmp_path):
     try:
         assert sess.attached and sess.mode == "文件"
         st = sess.status()
-        assert st.attached and st.mode == "文件" and "store.pg" in st.reason
+        assert st.attached and st.mode == "文件" and "还没建索引" in st.reason
         assert st.counts["docs.case"] == 1 and st.counts["docs.rule"] == 1
         assert st.vector.startswith("未启用") and st.graph.startswith("图文件") and "条已确认边" in st.graph
         refs = sess.search("VAC_FREQ", "🟠 VAC_FREQ", "VAC_FREQ autovacuum 次数异常高 cbst.cosp_asyn_task_dtl")
@@ -333,17 +333,27 @@ def test_file_mode_finds_case_by_pure_chinese_question(tmp_path):
         sess.close()
 
 
-def test_open_falls_back_to_files_when_credential_missing(tmp_path):
-    kb = _file_kb(tmp_path, "store:\n  pg: {host: 127.0.0.1, port: 1, database: d, user: u, credential: kb}\n")
-    sess = query.KbSession.open(kb, password_lookup=lambda n: (_ for _ in ()).throw(RuntimeError("no cred")))
-    assert sess.attached and sess.mode == "文件" and "口令" in sess.status().reason
+def test_open_falls_back_to_files_when_the_index_file_is_broken(tmp_path):
+    """索引文件坏了 / 不是 SQLite:不是「未接入」,退到文件模式,原因写进状态行。"""
+    kb = _file_kb(tmp_path)
+    (kb / "index").mkdir(exist_ok=True)
+    (kb / "index" / "store.sqlite").write_bytes(b"not a sqlite file" * 100)
+    sess = query.KbSession.open(kb)
+    try:
+        assert sess.attached and sess.mode == "文件" and "打不开索引文件" in sess.status().reason
+        assert sess.search("k", "l", "autovacuum 次数异常高 cbst.cosp_asyn_task_dtl").cases
+    finally:
+        sess.close()
 
 
-def test_open_falls_back_to_files_when_pg_unreachable(tmp_path):
+def test_legacy_store_pg_does_not_change_the_mode(tmp_path):
+    """kb.yaml 里还留着已下线的 store.pg:不连、不报错,照常走文件模式 / SQLite 索引。"""
     kb = _file_kb(tmp_path, "store:\n  pg: {host: 127.0.0.1, port: 1, database: d, user: u, credential: kb}\n")
-    sess = query.KbSession.open(kb, password_lookup=lambda n: "pw")
-    assert sess.attached and sess.mode == "文件" and sess.status().reason
-    assert sess.search("k", "l", "autovacuum 次数异常高 cbst.cosp_asyn_task_dtl").cases
+    sess = query.KbSession.open(kb, password_lookup=lambda n: (_ for _ in ()).throw(AssertionError("不该取口令")))
+    try:
+        assert sess.attached and sess.mode == "文件" and "还没建索引" in sess.status().reason
+    finally:
+        sess.close()
 
 
 def test_open_graph_uses_graph_files_when_neo4j_unreachable(tmp_path):
@@ -427,7 +437,8 @@ def test_render_file_mode_status_line_names_mode_and_reason(tmp_path):
     finally:
         sess.close()
     out = render.render_section(res)
-    assert out.startswith("## 客户知识库参照\n> 知识库 v2026.09 · 模式:文件(kb.yaml 未配置 store.pg")
+    assert out.startswith("## 客户知识库参照\n> 知识库 v2026.09 · 模式:文件(还没建索引")
+    assert "kb.py" not in out.split("\n")[1], "状态行会进诊断报告,诊断环境里没有导入命令,不能出现命令"
     assert "· 向量:未启用" in out and "· 图:图文件" in out
     assert f"- **历史相似** {CASE_ID}(结论强度:已确认,2025-02-24):处置 = 针对小表调大" in out
     assert "- **本行历史路径** 单条 update 偶发秒级 → autovacuum 持 8 级锁 → 表级调大 autovacuum_vacuum_threshold (1 案例支持:" in out

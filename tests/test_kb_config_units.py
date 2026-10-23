@@ -117,7 +117,7 @@ def test_load_without_kb_yaml_gives_usable_defaults(tmp_path):
     cfg = kbconfig.load(tmp_path)
     assert cfg.kb_dir == tmp_path
     assert cfg.embeddings.source == "none"           # 没配 = 不假装有向量
-    assert cfg.store.pg is None and cfg.store.graph is None
+    assert cfg.store.legacy_pg is False and cfg.store.graph is None
     assert cfg.thresholds.clause > 0 and cfg.thresholds.case > 0
 
 
@@ -129,8 +129,8 @@ def test_load_reads_store_and_embeddings(tmp_path):
         "embeddings: {source: opencode, model: bge-m3, dims: 1024}\n",
         encoding="utf-8")
     cfg = kbconfig.load(tmp_path)
-    assert cfg.store.pg.host == "127.0.0.1" and cfg.store.pg.port == 5439
-    assert cfg.store.pg.credential == "kb-og7"
+    # store.pg 已下线(2026-10-23 改为 index/store.sqlite):留着不报错,只记一笔给 health / index 提示
+    assert cfg.store.legacy_pg is True
     assert cfg.store.graph.url == "http://127.0.0.1:7474"
     assert cfg.store.graph.database == "neo4j"       # 默认库名
     assert cfg.embeddings.source == "opencode" and cfg.embeddings.dims == 1024

@@ -7,7 +7,7 @@
 | kind | 标签 | 例 |
 |---|---|---|
 | `case` | Case | `case:S2-20250224-CBST-偶现单条update慢` |
-| `symptom` | Symptom | 单条 update 偶发秒级(带 `signals`,节点向量放高斯/PG) |
+| `symptom` | Symptom | 单条 update 偶发秒级(带 `signals`,节点向量放 SQLite 索引) |
 | `rootcause` | RootCause | autovacuum 尾部回收持 8 级锁 |
 | `action` | Action | 表级调大 autovacuum_vacuum_threshold |
 | `object` / `guc` / `wait_event` / `error` / `component` | Object / Guc / WaitEvent / Error / Component | `object:cbst.cosp_asyn_task_dtl`、`guc:autovacuum_vacuum_threshold`、`wait_event:lwlock:walwritelock` |

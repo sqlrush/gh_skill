@@ -1,6 +1,6 @@
 """换了 embedding 模型但维度没变 —— 必须挡住(2026-09-21)。
 
-`kb_meta` 原来记了 dims / engine / vector_engine / hnsw / schema_version,**唯独没记模型名**。
+`kb_meta` 原来记了 dims / engine / vector_engine / schema_version,**唯独没记模型名**。
 于是:客户把 bge-m3 换成另一个同样 1024 维的模型、不加 --rebuild,库里就混着两套不同
 向量空间的向量。跨空间算余弦相似度没有意义,检索质量悄悄下降,而状态行仍然显示
 「覆盖 100%」——所有肉眼可见的指标都是正常的。
@@ -19,10 +19,10 @@ import pytest
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
-from common.kb import store_pg as spg  # noqa: E402
+from common.kb import store as kbstore, store_sqlite  # noqa: E402
 
 
-class _FakeStore(spg.PgStore):
+class _FakeStore(store_sqlite.SqliteStore):
     """只替掉 kb_meta 的读写,其余逻辑照跑。"""
 
     def __init__(self, recorded=None):
@@ -49,7 +49,7 @@ def test_same_model_passes():
 def test_changed_model_is_refused():
     """**核心**:同维度换模型,增量索引必须拒绝,不能默默写进去。"""
     st = _FakeStore({"embed_model": "bge-m3"})
-    with pytest.raises(spg.PgStoreError) as exc:
+    with pytest.raises(kbstore.StoreError) as exc:
         st.check_embed_model("gte-large", rebuild=False)
     msg = str(exc.value)
     assert "bge-m3" in msg and "gte-large" in msg, "要把两个模型名都说出来,否则没法判断该不该换"

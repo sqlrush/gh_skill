@@ -52,7 +52,7 @@ def test_health_json_shape_when_attached(monkeypatch, tmp_path, capsys):
     (kbdir / "index" / "misses.log").write_text(
         "2026-09-20\tNOPK_BIGTABLE\tq\n2026-09-21\tNOPK_BIGTABLE\tq\n2026-09-21\tREPL_LAG\tq\n", encoding="utf-8")
     st = kbquery.KbStatus(attached=True, version="3", counts={"docs.case": 286, "docs.rule": 412},
-                          vector="DataVec(覆盖 93%)", graph="图文件", mode="向量库+图文件")
+                          vector="sqlite-vec(覆盖 93%)", graph="图文件", mode="向量库+图文件")
     monkeypatch.setattr(kbquery.KbSession, "open", staticmethod(_fake_open(st)))
     monkeypatch.setenv("GSDB_REPORTS_DIR", str(tmp_path / "reports"))
     rc = kbcli.main(["health", "--kb", str(kbdir), "--json"])
@@ -104,7 +104,7 @@ def _ref(i):
 def test_query_appends_one_log_line_per_item(monkeypatch, tmp_path, capsys):
     items = [kbquery.FindingRefs(key="q", label="q", query="慢 SQL 全表扫描",
                                  cases=(_ref("case:1"), _ref("case:2")), clauses=(_ref("rule:1"),))]
-    monkeypatch.setattr(kbquery, "from_text", lambda q, kb_dir: _qr("向量库+图文件", "DataVec(覆盖 93%)", items))
+    monkeypatch.setattr(kbquery, "from_text", lambda q, kb_dir: _qr("向量库+图文件", "sqlite-vec(覆盖 93%)", items))
     monkeypatch.setenv("GSDB_REPORTS_DIR", str(tmp_path / "reports"))
     (tmp_path / "kb").mkdir()
     assert kbcli.main(["query", "--kb", str(tmp_path / "kb"), "--q", "慢 SQL 全表扫描", "--json"]) == 0
@@ -120,7 +120,7 @@ def test_query_how_is_keyword_in_file_mode_or_when_vector_timed_out(monkeypatch,
     (tmp_path / "kb").mkdir()
     monkeypatch.setattr(kbquery, "from_text", lambda q, kb_dir: _qr("文件", "未启用", items))
     kbcli.main(["query", "--kb", str(tmp_path / "kb"), "--q", "x", "--json"])
-    monkeypatch.setattr(kbquery, "from_text", lambda q, kb_dir: _qr("向量库", "DataVec·本次超时未用", items))
+    monkeypatch.setattr(kbquery, "from_text", lambda q, kb_dir: _qr("向量库", "sqlite-vec·本次超时未用", items))
     kbcli.main(["query", "--kb", str(tmp_path / "kb"), "--q", "x", "--json"])
     hows = [json.loads(l)["how"] for l in (tmp_path / "reports" / "kb" / "queries.jsonl").read_text().splitlines()]
     assert hows == ["keyword", "keyword"]

@@ -24,7 +24,7 @@ source .venv/bin/activate
 
 ```bash
 python3 -m pip install -r requirements.txt
-# 安装: psycopg2>=1.30  cryptography>=41  PyYAML>=6
+# 安装: psycopg2>=1.30  cryptography>=41  PyYAML>=6  sqlite-vec==0.1.9
 ```
 
 `cryptography` 与 `PyYAML` 是纯 Python；`psycopg2` 是 C 扩展，没有编译条件时用 `psycopg2-binary` 的预编译轮子。

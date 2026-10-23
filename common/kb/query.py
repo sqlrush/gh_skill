@@ -23,16 +23,18 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 from . import config as kbconfig
 from . import store_files as sf
 from . import store_graph as sg
-from . import store_pg as spg
+from . import store as spg
+from . import store_sqlite as ssq
 from . import text as kbtext
 from .embed import Embedder, EmbedError
 from .indexer import read_state
 
 # 三种模式,按环境里实际连得上什么自动感知(状态行「模式:」):
-MODE_FULL = "向量库+图库"          # 高斯/PG + Neo4j 都在
-MODE_PG_FILEGRAPH = "向量库+图文件"  # 高斯/PG 在,Neo4j 没配或不可达 → 路径改走 graph/*.yaml
-MODE_PG_ONLY = "向量库"            # 高斯/PG 在,没有任何图(只在测试替身里出现)
-MODE_FILES = "文件"                # 没配 / 连不上高斯·PG → 整个检索走 <kb>/ 文件(词法 + 图文件)
+# 「向量库」= <kb>/index/store.sqlite(SQLite + sqlite-vec,2026-10-23 起;原高斯 / PG 向量库下线)
+MODE_FULL = "向量库+图库"          # SQLite 索引 + Neo4j 都在
+MODE_PG_FILEGRAPH = "向量库+图文件"  # SQLite 索引在,Neo4j 没配或不可达 → 路径改走 graph/*.yaml
+MODE_PG_ONLY = "向量库"            # SQLite 索引在,没有任何图(只在测试替身里出现)
+MODE_FILES = "文件"                # 还没建索引 / 打不开 → 整个检索走 <kb>/ 文件(词法 + 图文件)
 
 RRF_K = 60
 TIME_BUDGET_S = 3.0
@@ -203,62 +205,20 @@ def identifiers_in(text: str) -> List[str]:
 
 # ---------------------------------------------------------------- session
 
-def store_user(store: kbconfig.PgStore) -> str:
-    """配了 user_env 就只认那个环境变量,否则用 kb.yaml 里的 user。
-
-    同一份共享 kb.yaml 要服务两种角色(runtime 只读 / kb-import 读写),用户名必须按 Pod 来。
-    配了却取不到时报错而不是回落——回落会拿错权限的用户去连库,连上了才是麻烦。
-    """
-    if not store.user_env:
-        return store.user
-    user = os.environ.get(store.user_env) or ""
-    if not user:
-        raise kbconfig.KbConfigError(
-            f"kb.yaml 配了 store.pg.user_env: {store.user_env}，但这个环境变量是空的。"
-            f"容器部署由平台按角色注入它(runtime 只读用户 / kb-import 读写用户)；"
-            f"要改回用 kb.yaml 里的 user，从 kb.yaml 里删掉 user_env 这一项。")
-    return user
-
-
-def store_password(store: kbconfig.PgStore, lookup: Callable[[str], str]) -> str:
-    """配了 password_env 就只认那个环境变量,否则走加密凭据。
-
-    **配了却取不到时报错,不回落到凭据文件。** 容器里那份凭据根本不存在,回落只会
-    报成「没有 kb-pg 的凭据」,把人往「凭据没存」的方向带,而真毛病是 Secret 没挂上。
-    """
-    if not store.password_env:
-        return lookup(store.credential)
-    pw = os.environ.get(store.password_env) or ""
-    if not pw:
-        raise kbconfig.KbConfigError(
-            f"kb.yaml 配了 store.pg.password_env: {store.password_env}，"
-            f"但这个环境变量是空的。容器部署由平台以 Secret 注入它；"
-            f"要改回用加密凭据，从 kb.yaml 里删掉 password_env 这一项。")
-    return pw
-
-
-def open_pg(cfg: kbconfig.KbConfig, lookup: Callable[[str], str]) -> Tuple[Optional[spg.PgStore], str]:
-    """(高斯/PG 连接, 连不上的原因)。没配 / 取不到口令 / 连不上 / 还没索引 都不抛,原因带回去。"""
-    if cfg.store.pg is None:
-        return None, "kb.yaml 未配置 store.pg(向量/词法存储)"
+def open_store(cfg: kbconfig.KbConfig) -> Tuple[Optional[ssq.SqliteStore], str]:
+    """(SQLite 索引, 打不开的原因)。还没建 / 打不开 / 格式旧了 都不抛,原因带回去,调用方退到文件模式。"""
     try:
-        pw = store_password(cfg.store.pg, lookup)
-    except Exception as exc:
-        return None, f"取不到存储口令 {cfg.store.pg.credential}:{exc}"
-    try:
-        pg = spg.PgStore.connect(cfg.store.pg.host, cfg.store.pg.port, cfg.store.pg.database,
-                                 store_user(cfg.store.pg), pw, dims=cfg.embeddings.dims,
-                                 sslmode=cfg.store.pg.sslmode)
-    except spg.PgStoreError as exc:
+        store = ssq.SqliteStore.open_readonly(ssq.store_path(cfg.kb_dir), dims=cfg.embeddings.dims)
+    except spg.StoreError as exc:
         return None, str(exc)
     try:
-        if not pg.has_index():
-            pg.close()
-            return None, "存储里还没有索引(先运行 kb.py index)"
-    except spg.PgStoreError as exc:
-        pg.close()
+        if not store.has_index():
+            store.close()
+            return None, "索引是旧格式或不完整(要重建索引)"
+    except spg.StoreError as exc:
+        store.close()
         return None, str(exc)
-    return pg, ""
+    return store, ""
 
 
 def _graph_files(kb: pathlib.Path) -> Optional[sf.FileGraph]:
@@ -285,11 +245,11 @@ def open_graph(cfg: kbconfig.KbConfig, lookup: Callable[[str], str]) -> Tuple[Op
 class KbSession:
     """一次调用内共用的连接。open() 永不抛:连不上就退到文件模式;目录不存在 / kb.yaml 无效才是 attached=False。"""
 
-    def __init__(self, cfg: Optional[kbconfig.KbConfig], pg: Optional[spg.PgStore],
+    def __init__(self, cfg: Optional[kbconfig.KbConfig], pg: Optional["ssq.SqliteStore"],
                  graph: Optional[sg.GraphStore], embedder: Optional[Embedder],
                  reason: str = "", notes: Sequence[str] = (), graph_reason: str = ""):
         self.cfg = cfg
-        self.pg = pg
+        self.pg = pg            # 检索用的存储:SqliteStore,或文件模式的 FileStore(名字沿用旧的 pg)
         self.graph = graph
         self.embedder = embedder
         self.reason = reason
@@ -308,7 +268,7 @@ class KbSession:
         except kbconfig.KbConfigError as exc:
             return cls(None, None, None, None, reason=f"kb.yaml 无效:{exc}")
         lookup = password_lookup or _default_password_lookup
-        pg, why = open_pg(cfg, lookup)
+        pg, why = open_store(cfg)
         if pg is None:
             return cls._open_files(cfg, why)
 
@@ -324,7 +284,7 @@ class KbSession:
             except (EmbedError, kbconfig.KbConfigError) as exc:
                 notes.append(f"向量:未启用({exc})")
         else:
-            notes.append("向量:未启用(存储引擎无 vector 类型)")
+            notes.append("向量:未启用(%s)" % (pg.vector_note or "sqlite-vec 不可用"))
         return cls(cfg, pg, graph, embedder, notes=notes, graph_reason=graph_reason)
 
     @classmethod
@@ -506,7 +466,7 @@ class KbSession:
     def _safe(self, fn: Callable[[], Any]) -> Any:
         try:
             return fn()
-        except (spg.PgStoreError, sg.GraphStoreError, OSError) as exc:
+        except (spg.StoreError, sg.GraphStoreError, OSError) as exc:
             self.notes.append(f"检索降级:{exc}")
             return None
 

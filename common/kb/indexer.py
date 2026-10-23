@@ -1,13 +1,13 @@
-"""索引器:<kb>/ 文件 → 高斯/PG(切块 + 词法 + 向量 + 节点向量)+ Neo4j(节点 + 边)。
+"""索引器:<kb>/ 文件 → SQLite 索引 <kb>/index/store.sqlite(切块 + 词法 + 向量 + 节点向量)+ Neo4j(节点 + 边)。
 
-文件是真相,两个库是派生索引:
+文件是真相,两个库是派生索引(2026-10-23 起向量库是 SQLite + sqlite-vec,原高斯 / PG 向量库下线):
   · 文档按 content_hash 增量——没变的不重写、不重算向量;文件删了库里也删;
   · 图每次整体重建(MERGE 幂等,规模小),避免"改了一条边、旧边残留"的静默漂移;
   · 向量逐块 embed、失败隔离;`fill_missing` 只补缺的;覆盖率 < 100% 由调用方按退出码 2 处理;
   · 一切统计写回 IndexReport,状态行靠它,不许有"看起来成功"的默默降级。
 
 切块规则:条款一条一块;指南按标题切、超长滑动;案例 = 摘要块 + 各小节一块(块首带 标题 › 小节),
-复发标志与 signals 作为权重 A 的信号 token 附在摘要/现场/复发标志块上;原始工单整篇按滑动切。
+复发标志与 signals 作为加权的信号 token 附在摘要/现场/复发标志块上;原始工单整篇按滑动切。
 """
 from __future__ import annotations
 
@@ -17,16 +17,19 @@ import pathlib
 import re
 import time
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import yaml
 
 from . import cases as kbcases
 from . import graphfiles as gf
 from . import store_graph as sg
-from . import store_pg as spg
+from . import store as spg
 from . import text as kbtext
 from .embed import Embedder
+
+if TYPE_CHECKING:                       # 只为类型标注;运行时不引入,免得与 store_sqlite 互相 import
+    from .store_sqlite import SqliteStore
 
 CHUNK_LEN = 800
 CHUNK_OVERLAP = 100
@@ -301,7 +304,7 @@ def _embed_texts(embedder: Optional[Embedder], texts: List[str]) -> Tuple[List[O
     return vecs, s.embedded, s.cached, s.failed
 
 
-def run_index(kb: pathlib.Path, pg: spg.PgStore, graph: Optional[sg.GraphStore],
+def run_index(kb: pathlib.Path, pg: "SqliteStore", graph: Optional[sg.GraphStore],
               embedder: Optional[Embedder], kb_version: str = "",
               rebuild: bool = False, fill_missing: bool = False) -> IndexReport:
     warnings: List[str] = []
@@ -364,13 +367,13 @@ def run_index(kb: pathlib.Path, pg: spg.PgStore, graph: Optional[sg.GraphStore],
             graph_state = "unavailable"
             warnings.append(f"图库写入失败:{exc}")
 
-    # --- 节点向量(放高斯/PG)---
+    # --- 节点向量(放 SQLite 索引)---
     if vectors:
         if caps.vector and embedder is not None:
             vecs, e, c, f = _embed_texts(embedder, [v.name for v in vectors])
             embedded += e; cached += c; failed += f
             vectors = [spg.NodeVectorRow(**{**v.__dict__, "embedding": emb}) for v, emb in zip(vectors, vecs)]
-        pg.delete_node_vectors([r[0] for r in pg._query("SELECT node_id FROM kb_node_vectors")])
+        pg.delete_node_vectors(pg.node_ids())
         pg.upsert_node_vectors(vectors)
         if fill_missing and caps.vector and embedder is not None:
             for node_id, name in pg.missing_node_embeddings():
@@ -381,7 +384,7 @@ def run_index(kb: pathlib.Path, pg: spg.PgStore, graph: Optional[sg.GraphStore],
     total, done = pg.coverage()
     vector_engine = pg.meta_get("vector_engine") or "none"
     if caps.vector and embedder is None:
-        warnings.append("引擎有向量类型但没配 embedding(kb.yaml embeddings.source)——向量列全空,检索只走词法 + 图")
+        warnings.append("sqlite-vec 可用但没配 embedding(kb.yaml embeddings.source)——向量列全空,检索只走词法 + 图")
     report = IndexReport(
         docs_indexed=indexed, docs_unchanged=unchanged, docs_removed=removed, chunks_written=chunks_written,
         embedded=embedded, embed_cached=cached, embed_failed=failed,

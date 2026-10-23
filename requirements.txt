@@ -8,3 +8,7 @@
 psycopg2==2.9.10    # PostgreSQL-wire driver; connects to openGauss & GaussDB
 cryptography>=41    # AES-256-GCM credential decryption (gdaa-compatible)
 PyYAML>=6           # ~/.gdaa/config.yaml parsing
+# 知识库的向量检索(2026-10-23 起取代高斯 / PG 向量库;索引是知识库目录里的 index/store.sqlite)。
+# 未到 1.0,锁定版本;有 x86_64 与 aarch64 的 manylinux 轮子。没装或 Python 不许加载扩展时
+# 知识库照常工作,只是没有向量召回(状态行写「向量:未启用」)。
+sqlite-vec==0.1.9

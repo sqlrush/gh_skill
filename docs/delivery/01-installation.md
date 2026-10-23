@@ -120,8 +120,9 @@ python3 -m pip install -r requirements.txt
 | `psycopg2` | 2.9.10 | PostgreSQL 协议驱动，用于连接 openGauss/GaussDB |
 | `cryptography` | ≥ 41 | AES-256-GCM 凭据解密 |
 | `PyYAML` | ≥ 6 | 读取 `$GSDB_HOME/config.yaml` |
+| `sqlite-vec` | 0.1.9 | 客户知识库（gaussdb-kb）的向量检索，索引在 `<kb>/index/store.sqlite`；没装知识库照常，只是没有向量召回 |
 
-**`psycopg2` 是 C 扩展，不是纯 Python，装法二选一**（另两个包是纯 Python，随便装）：
+**`psycopg2` 是 C 扩展，不是纯 Python，装法二选一**（`cryptography`、`PyYAML` 随便装；`sqlite-vec` 是按 CPU 架构分的轮子，离线装法见下）：
 
 | 现场条件 | 装法 | 说明 |
 |---|---|---|
@@ -142,9 +143,11 @@ for PY in 38 39 310 311 312 313; do
       --only-binary :all: --python-version $PY --platform manylinux2014_x86_64
 done
 pip download cryptography PyYAML -d ./wheels/          # 纯 Python，一份通用
+pip download sqlite-vec==0.1.9 --no-deps -d ./wheels/ \
+    --only-binary :all: --platform manylinux2014_x86_64   # 知识库向量用；按架构一份，不分 Python 版本
 
 # 目标机（无网络）：
-python3 -m pip install --no-index --find-links ./wheels/ psycopg2-binary==2.9.10 cryptography PyYAML
+python3 -m pip install --no-index --find-links ./wheels/ psycopg2-binary==2.9.10 cryptography PyYAML sqlite-vec==0.1.9
 ```
 
 目标机架构是鲲鹏时把 `manylinux2014_x86_64` 换成 `manylinux2014_aarch64`。
@@ -407,7 +410,7 @@ PY
 
 ### 5.4 装了 gaussdb-kb 还要准备什么
 
-`gaussdb-kb`(客户知识库)随本脚本一起安装,但它还需要两个**知识库专用**的后台服务:高斯/PG 向量库(openGauss ≥ 7.0 DataVec 或 PostgreSQL + pgvector)和 Neo4j 图库,以及可选的 embedding 端点。这两个库的安装、用户与认证、`kb.yaml` 与凭据配置、验证与排障,见 [10-知识库安装手册](10-知识库安装手册.md)。不装它们,其余 skill 照常工作,只是报告里的「客户知识库参照」小节会写「未接入」。
+`gaussdb-kb`(客户知识库)随本脚本一起安装,**不需要另装数据库**:向量 + 词法索引是知识库目录里的一个文件 `<kb>/index/store.sqlite`(SQLite + sqlite-vec,`requirements.txt` 已含;2026-10-23 起取代原高斯/PG 向量库),`kb.py index` 建它。可选的只有知识库专用的 Neo4j 图库与 embedding 端点;它们的安装、`kb.yaml` 与凭据配置、验证与排障,见 [10-知识库安装手册](10-知识库安装手册.md)。不装它们知识库照常工作(词法 + 图文件);还没导入材料时,报告里的「客户知识库参照」小节会写「未接入」。
 
 ### 5.5 安装后目录结构
 

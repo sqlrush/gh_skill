@@ -34,7 +34,7 @@ autovacuum 检测到表尾部空页时触发 page 回收,持 8 级锁;正常 DML
 
 ## 各部分进哪个库
 
-| 部分 | 高斯/PG(向量 + 词法) | Neo4j(图) |
+| 部分 | SQLite 索引 `index/store.sqlite`(向量 + 词法) | Neo4j(图,可选) |
 |---|---|---|
 | 头部字段 | 摘要块 + 元数据过滤(system / occurred_at / conclusion) | 案例节点 `case:<id>`;`objects` → `INVOLVES` 边;`rules` → `REFERENCES` 边 |
 | 现场 | 一块(块首 `标题 › 现场`),带信号权重 | `(:Case)-[:EXHIBITS]->(:Symptom)` |

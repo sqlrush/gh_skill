@@ -1,86 +1,51 @@
-"""文件模式存储 —— 没配 / 连不上高斯·PG 与 Neo4j 时,直接在 <kb>/ 的文件上检索。
+"""文件模式存储 —— 还没建索引(<kb>/index/store.sqlite)或打不开时,直接在 <kb>/ 的文件上检索。
 
-文件本来就是真相,两个库只是派生索引;这里把「派生」这一步放在内存里做:
+文件本来就是真相,SQLite 索引与 Neo4j 只是派生索引;这里把「派生」这一步放在内存里做:
   · 文档与切块用 indexer 同一套规则(rule_docs / md_docs / case_docs / raw_docs),同一条案例在三种模式下
     切出来的块、带的信号 token 完全一样;
-  · 词法打分是 BM25(信号 token 加权,对应 tsvector 的权重 A),归一到 0..1 —— 与 ts_rank_cd 一样只保证序,
+  · 词法打分是 BM25(信号 token 加权),归一到 0..1,与 SQLite 索引同一套算式(bm25.py),
     query.py 的绝对/相对门槛照常生效;
   · 图用 indexer.build_graph 组出的节点与边(案例自带的 involves/references + graph/*.yaml 三元组),
     路径推理与 GraphStore.paths 的 Cypher 逐条对应:只走 confidence ≥ min 且在有效期内的边。
 没有向量:capabilities().vector=False,向量检索恒空,状态行会写「向量:未启用(文件模式)」。
-对外只暴露 PgStore / GraphStore 在检索侧用到的那一小截接口,KbSession 不感知差别。
+对外只暴露 SqliteStore / GraphStore 在检索侧用到的那一小截接口,KbSession 不感知差别。
 """
 from __future__ import annotations
 
-import math
 import pathlib
-from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from . import cases as kbcases
 from . import graphfiles as gf
 from . import indexer
 from . import store_graph as sg
-from . import store_pg as spg
+from . import bm25
+from . import store as spg
 
-BM25_K1 = 1.2
-BM25_B = 0.75
-SIGNAL_WEIGHT = 3.0          # 信号 token(复发标志 / keywords)的词频权重,对应 tsvector 权重 A
 ENGINE = "files"
+SIGNAL_WEIGHT = bm25.SIGNAL_WEIGHT
 
 
-# ---------------------------------------------------------------- BM25 (pure)
-
-@dataclass(frozen=True)
-class _Posting:
-    key: int
-    tf: Dict[str, float]
-    length: float
-
+# ---------------------------------------------------------------- BM25
 
 class Lexicon:
-    """一组文本的 BM25 倒排。文本 = (tokens, signal_tokens);打分对 query token 去重。"""
+    """一组文本的 BM25 倒排。文本 = (tokens, signal_tokens);打分在 bm25.py,与 SQLite 索引同一套算式。"""
 
     def __init__(self, items: Sequence[Tuple[Sequence[str], Sequence[str]]]):
-        postings: List[_Posting] = []
+        self._docs: List[Tuple[int, float, Dict[str, float]]] = []
         df: Dict[str, int] = {}
         for key, (tokens, signals) in enumerate(items):
-            tf: Dict[str, float] = {}
-            for t in tokens:
-                tf[t] = tf.get(t, 0.0) + 1.0
-            for t in signals:
-                tf[t] = tf.get(t, 0.0) + SIGNAL_WEIGHT
+            tf, length = bm25.term_freqs(list(tokens), list(signals))
             for t in tf:
                 df[t] = df.get(t, 0) + 1
-            postings.append(_Posting(key=key, tf=tf, length=float(len(tokens) + len(signals))))
-        self._postings = postings
+            self._docs.append((key, length, tf))
         self._df = df
-        self._n = len(postings)
-        self._avg = (sum(p.length for p in postings) / self._n) if self._n else 1.0
-
-    def _idf(self, token: str) -> float:
-        d = self._df.get(token, 0)
-        return math.log(1.0 + (self._n - d + 0.5) / (d + 0.5)) if d else 0.0
+        self._n = len(self._docs)
+        self._avg = (sum(length for _k, length, _tf in self._docs) / self._n) if self._n else 1.0
 
     def scores(self, query_tokens: Sequence[str]) -> List[Tuple[int, float]]:
         """[(key, 0..1 分)],只含命中的;分 = BM25 / 「每个查询 token 都饱和命中」的理想分。"""
-        q = [t for t in dict.fromkeys(query_tokens) if t]
-        weights = {t: self._idf(t) for t in q}
-        ideal = sum(w * (BM25_K1 + 1.0) for w in weights.values() if w > 0)
-        if ideal <= 0:
-            return []
-        out: List[Tuple[int, float]] = []
-        for p in self._postings:
-            s = 0.0
-            for t, w in weights.items():
-                tf = p.tf.get(t)
-                if not tf or w <= 0:
-                    continue
-                norm = BM25_K1 * (1.0 - BM25_B + BM25_B * p.length / self._avg)
-                s += w * tf * (BM25_K1 + 1.0) / (tf + norm)
-            if s > 0:
-                out.append((p.key, min(1.0, s / ideal)))
-        return out
+        return bm25.scores(query_tokens, self._df, self._n, self._avg, self._docs)
 
 
 # ---------------------------------------------------------------- graph
@@ -202,7 +167,7 @@ def load_graph(kb: pathlib.Path) -> FileGraph:
 
 
 class FileStore:
-    """接口对齐 PgStore 的检索侧;`graph` 属性是同一棵文件树组出的 FileGraph。"""
+    """接口对齐 SqliteStore 的检索侧;`graph` 属性是同一棵文件树组出的 FileGraph。"""
 
     def __init__(self, docs: Sequence[Tuple[spg.DocRow, List[spg.ChunkRow]]],
                  vectors: Sequence[spg.NodeVectorRow], graph: FileGraph, warnings: Sequence[str] = ()):
@@ -292,7 +257,7 @@ class FileStore:
         return {i: self._docs[i] for i in ids if i in self._docs}
 
     def doc_sections(self, doc_id: str) -> Dict[str, str]:
-        """section → 正文(去掉面包屑首行);与 PgStore.doc_sections 同规则。"""
+        """section → 正文(去掉面包屑首行);与 SqliteStore.doc_sections 同规则。"""
         out: Dict[str, str] = {}
         for ch, _d in self._chunks:
             if ch.doc_id != doc_id:
