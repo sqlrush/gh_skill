@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 from typing import Dict, NamedTuple, Optional, Tuple
 
 BASELINE_NAME = "_counters.json"
@@ -59,19 +60,24 @@ def baseline_path(base_dir, instance_key: str):
     return _path(base_dir, instance_key)
 
 
+# 读不到基线的原因只说「为什么没有可比的」;这次留没留下基线由调用方补(它才知道存没存成)。
+NO_ARCHIVE = "没有报告存档目录(GSDB_REPORTS_DIR 未设置),没有上一次巡检可比"
+FIRST_RUN = "这是第一次对这个实例做完整巡检,没有上一次可比"
+
+
 def load(path: Optional[pathlib.Path]) -> Tuple[Dict[str, int], str, str]:
     """读基线。返回 (计数器, 基线时刻, 读不到的原因)。"""
     if path is None:
-        return {}, "", "没有报告存档目录,无法保存/读取基线"
+        return {}, "", NO_ARCHIVE
     if not path.exists():
-        return {}, "", "这是第一次对这个实例巡检,本次留下基线,下次就能给出「距上次新增」"
+        return {}, "", FIRST_RUN
     try:
         d = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        return {}, "", "基线读不出来(%s),本次重新留一份" % exc
+        return {}, "", "基线读不出来(%s)" % exc
     vals = d.get("counters")
     if not isinstance(vals, dict):
-        return {}, "", "基线里没有计数器,本次重新留一份"
+        return {}, "", "基线里没有计数器"
     out: Dict[str, int] = {}
     for k, v in vals.items():
         try:
@@ -79,8 +85,66 @@ def load(path: Optional[pathlib.Path]) -> Tuple[Dict[str, int], str, str]:
         except (TypeError, ValueError):
             continue
     if not out:
-        return {}, "", "基线里的计数器都解析不了,本次重新留一份"
+        return {}, "", "基线里的计数器都解析不了"
     return out, str(d.get("at") or ""), ""
+
+
+def load_baseline(path: Optional[pathlib.Path]) -> Tuple[Dict[str, int], str, str]:
+    """先读基线文件;没有 / 读不出来时退回存档里上一份完整巡检报告(同一目录)。"""
+    vals, at, why = load(path)
+    if vals or path is None:
+        return vals, at, why
+    rvals, rat, _ = load_from_reports(path.parent)
+    return (rvals, rat, "") if rvals else (vals, at, why)
+
+
+# 存档报告里这几个计数器所在的维度与行(collectors.collect_concurrency 写的形状)。
+REPORT_DIM = "Transactions / Concurrency"
+_COMMIT_ROLLBACK = re.compile(r"^\s*(\d+)/(\d+)")
+
+
+def load_from_reports(report_dir: Optional[pathlib.Path]) -> Tuple[Dict[str, int], str, str]:
+    """存档里上一份**完整「此刻」巡检**报告 → (计数器, 报告时刻, 读不到的原因)。
+
+    基线文件是 2026-10-17 才有的,在那之前存档的实例第一次升级上来时没有它,
+    而上一份报告里明明写着当时的累计值 —— 不用它,就白白再等一次巡检。
+    时段报告(*.span.json)不算:它的数是窗口内的增量,维度也不同。
+    """
+    if report_dir is None:
+        return {}, "", NO_ARCHIVE
+    idx = _read_json(report_dir / "index.json")
+    entries = [e for e in (idx if isinstance(idx, list) else [])
+               if isinstance(e, dict) and ".span" not in str(e.get("file", ""))]
+    if not entries:
+        return {}, "", FIRST_RUN
+    last = max(entries, key=lambda e: str(e.get("at", "")))
+    vals = _counters_in_report(_read_json(report_dir / str(last.get("file"))))
+    if not vals:
+        return {}, "", "上一份存档报告(%s)里找不到死锁 / 提交回滚计数" % last.get("at", "?")
+    return vals, str(last.get("at") or ""), ""
+
+
+def _read_json(path: pathlib.Path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _counters_in_report(payload) -> Dict[str, int]:
+    dims = payload.get("dims") if isinstance(payload, dict) else None
+    dim = next((d for d in dims or [] if isinstance(d, dict) and d.get("dimension") == REPORT_DIM), {})
+    out: Dict[str, int] = {}
+    for row in dim.get("rows") or []:
+        if not isinstance(row, list) or len(row) < 2:
+            continue
+        label, value = str(row[0]), str(row[1])
+        if label == "deadlocks" and value.strip().isdigit():
+            out["deadlocks"] = int(value)
+        m = _COMMIT_ROLLBACK.match(value) if label == "commit/rollback" else None
+        if m:
+            out["xact_commit"], out["xact_rollback"] = int(m.group(1)), int(m.group(2))
+    return out
 
 
 def save(path: Optional[pathlib.Path], at: str, counters: Dict[str, int]) -> bool:
@@ -101,9 +165,9 @@ def save(path: Optional[pathlib.Path], at: str, counters: Dict[str, int]) -> boo
 def compute(now: Dict[str, int], before: Dict[str, int], since: str) -> Deltas:
     """现在的计数器 vs 基线 → 每项的增量。"""
     if not before:
+        # 留没留下基线这里不知道(局部巡检不留、存档目录可能没有),不在这里许诺
         return Deltas(items={k: Delta(k, int(now.get(k, 0)), None) for k in TRACKED},
-                      since="", reset=False,
-                      note="没有基线,这次只能给累计值;本次已留基线,下次可给出「距上次新增」")
+                      since="", reset=False, note="没有基线,这次只能给累计值")
     # 任一项变小 → 统计被重置过。只看两边都有的项。
     shrunk = [k for k in TRACKED
               if k in before and int(now.get(k, 0)) < int(before[k])]

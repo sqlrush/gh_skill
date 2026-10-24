@@ -55,6 +55,7 @@ metadata:
    - **`## 未纳入汇总的能力`**：无条件列出 `gaussdb-explain`、`gaussdb-sqltune`、`gaussdb-sqlreview`、`gaussdb-sqlfetch`、`gaussdb-proctune` 这 5 个 skill——它们都需要用户指定具体 SQL / sql_id / 存储过程才能跑，health 拿不到这类输入，**这 5 项永远不在本报告覆盖范围内**；报告本身会说明这一点，不要等用户问起来才提，也不要因为这次报告很干净就暗示"都查过了"。
 
    `## Slow SQL` 与 `## Window Top SQL` 已排除 GaussDB 自己的系统 SQL（只访问系统表 / 系统视图 / 系统函数的语句），标题行写着「已排除 N 条内核系统 SQL」，要转告用户。
+   `## Slow SQL` 的表只有**已完成**的执行；**还在跑的长 SQL** 由 `SLOWSQL_RUNNING` 报（标题里「执行中超过 5m0s 的 SQL …」，证据带 pid 与 SQL 摘要）。用户问「为什么卡」时先看这一条；标题里「另有 N 条…在等锁」的不是 SQL 慢，是被锁挡住，去锁阻塞那几条找根。
    选项：`--include/--exclude <dims>` 裁剪维度。本地维度名：`overview,slowsql,xact,conn,logs,repl,schema,storage,concurrency`；另外 `locks`、`waits`、`lwlock`、`bloat` 这四个名字继续有效，只是不再对应本地 collector，而是路由到子 skill（`locks`→`gaussdb-lockwait`，`waits`/`lwlock`→`gaussdb-waitevent`，`bloat`→`gaussdb-vacuum`）——已有的命令行不受影响。`--top N` 调列表条数；`--format json` 取结构化（额外带 `sub_skills`、`uncovered_capabilities` 两个字段）。**不要**为某一维度单独多跑命令；也不要看到 `--include locks` 就自己再单独跑一遍 lockwait——health 已经替你跑过了。
 
    **时段体检（用户说了时间：「最近 30 分钟」「昨天 10 点到 11 点」「10:46 到 11:07」）：**
@@ -144,7 +145,10 @@ metadata:
   - 有「距上次新增」时,**以它为准**回答「现在有没有问题」,累计值只用来说明历史;
     零新增时脚本已经撤掉那条发现,你也不要再把累计值说成当前问题。
   - 写着「统计被重置过,给不出增量」时,**照实说**,不要说成「距上次没有新增」。
-  - 第一次巡检没有基线,脚本会说明;这时只报累计值,并告诉用户下次就能给出新增量。
+  - 给不出增量时脚本写 `deadlocks 距上次新增 | 给不出：<原因>`,DEADLOCKS 那条的证据开头也带着原因。
+    原因有几种:第一次巡检(本次留下基线,下次就有)、没有报告存档目录(`GSDB_REPORTS_DIR` 未设置,
+    这台机器上**一直**给不出,不要说成「下次就有」)、局部巡检不留基线、统计被重置过。**照脚本的原因转述**,只报累计值。
+    基线文件没有时脚本会退回存档里上一份完整巡检报告来算,不用你自己去翻历史报告。
   同理:用户问「最近十分钟的 Top SQL」时,累计榜会把十分钟的冲高摊平,要用
   `gaussdb-topsql --window 10m` 或 `--from/--to`(见那个 skill 的执行规则第 0 条)。
 - **死锁的明细在数据库日志里。** 死锁那条发现只有次数;环上是哪几条语句、谁被牺牲,数据库里不留,本工具也读不到日志。

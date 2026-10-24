@@ -19,10 +19,11 @@
 - 来自 `dbe_perf.statement`。gaussdb-health 只做发现与导流，**不在此深调**——对具体 SQL 用 `/gaussdb-sqltune`，对存储过程用 `/gaussdb-proctune`。
 - 关注 avg 高 × calls 多（总耗时大）的条目。
 - **辨别"假慢"——`cpu_s` 列是关键判据**：慢 SQL 表带 `cpu_s`（该语句累计 CPU 秒）。若 Top1 的 `cpu_s / total_s` 极低（<10%），脚本会产 `SLOWSQL_LOW_CPU` 确定性发现——它的确定性结论是**这条不是 CPU/缺索引类资源问题**：耗时花在了等待（锁/睡眠）或 I/O（物理读/排序溢出）上，而非计算。典型：小表上的单行 `UPDATE/DELETE ... WHERE pk=?` avg 极大（几十秒~几小时），是**锁等待累积**进了 `dbe_perf.statement`（其耗时含锁等待、且为累计值，一次长阻塞会永久抬高 avg），**不是缺索引**。
+- **执行中、还没结束的 SQL（`SLOWSQL_RUNNING`）**：上面那张表只有**已完成**的执行，一条跑了二十分钟还没完的 SQL 不在表里。这一项来自 `pg_stat_activity`：客户端会话 active、不在等锁、已执行超过阈值。证据里带 pid 与 SQL 摘要 —— 看它此刻的计划用 `/gaussdb-explain --pid <pid>`，深调用 `/gaussdb-sqltune`。在等锁的长语句只在标题里点数（「另有 N 条…在等锁」），去 Locks 维找根阻塞，**不要**导去调 SQL。同一会话通常也有一条 `XACT_LONG`：那条说它持着快照多久（影响 vacuum），这条说语句还没跑完（影响响应），两条都要处理，不是重复。
 - **据此分流**：`SLOWSQL_LOW_CPU` 命中（cpu_s≈0，或 EXPLAIN cost 极低却 avg 极高）→ 去 **Locks / Xact / Wait Events** 维查锁与等待，必要时看临时文件/排序，**别盲目导流 `/gaussdb-sqltune` 建索引**；只有 `cpu_s` 占比高（真 CPU 消耗）的慢 SQL 才适合 `/gaussdb-sqltune` 深调。
 
 ### Long & Idle Transactions（长事务与空闲事务）
-- 只看真实客户端会话（`connection_info` 非空，已排除 WLM 等 GaussDB 内部后台线程；TCP 与本地 socket 客户端都纳入）。
+- 只看真实客户端会话（`client_port` 非空，已排除 WLM 等 GaussDB 内部后台线程；TCP 与本地 socket 客户端都纳入，不论驱动填不填 `connection_info`）。
 - 活动长事务（XACT_LONG）：长时间 active 的事务持有快照，阻止 vacuum 回收旧版本 → 关联 Dead Tuples & Bloat。
 - 空闲事务（XACT_IDLE，idle in transaction）：开了事务不提交，**既持锁又卡 vacuum**，是阻塞链与膨胀的常见根因 → 关联 Locks 与 Bloat。多由应用连接池泄漏 / 漏 commit / `idle_in_transaction_session_timeout` 未设导致。
 
@@ -43,7 +44,7 @@
 - 处置建议：业务确认根阻塞 pid 可中断后由人工 `SELECT pg_terminate_backend(<pid>);`；并排查应用事务边界。**gaussdb-health 绝不自动 kill。**
 
 ### Connections（连接）
-- `pg_stat_activity` 按 state 分布。此维为上下文证据，本身不产严重度发现（连接使用率的严重度在 Overview，长/空闲事务在 Xact）。
+- `pg_stat_activity` 按 state 分布，只数 `sessionid <> 0` 的会话（开线程池时 `sessionid = 0` 的是空闲工作线程条目，不是会话）。此维为上下文证据，本身不产严重度发现（连接使用率的严重度在 Overview，长/空闲事务在 Xact）。
 - idle 堆积 → 连接池过大或未回收；IIT 计数高 → 与 Xact/Locks 维交叉印证。
 
 ### Checkpoint / WAL / Archiving（日志类纯 SQL 信号）
@@ -59,7 +60,7 @@
 ### Schema / Objects（对象 / Schema 健康）
 - `INDEX_UNUSED`：`idx_scan=0` 且体积大的索引——白占空间、拖慢写入；删前**确认不是低频/周期性查询所用**。（已排除主键/唯一约束索引——它们 idx_scan=0 正常但不可删）。
 - `INDEX_INVALID`：`indisvalid=false`——建索引失败遗留，需重建或删除。
-- `STALE_STATS`：`last_data_changed` 晚于 `last_analyze`（数据变更后未重新统计）→ 执行计划可能劣化，建议 ANALYZE。已排除 GaussDB 内部 schema。
+- `STALE_STATS`：`pg_stats` 里没有统计列（从没被 ANALYZE 覆盖）、冻结页数 `relpages` 为 0（没有基准），或冻结页数与实时页数偏离超过 10%（表在上次 ANALYZE 之后长大了）→ 执行计划可能劣化，建议 ANALYZE。判据只用不会被 `pg_stat_reset()` 清掉的信号，`last_analyze` 只作参考。候选表先排「没统计 / 没基准」的，再按偏离比例、体积排，从没 ANALYZE 过的大表不会被截掉。已排除 GaussDB 内部 schema。
 
 ### Transactions / Concurrency（事务 / 并发）
 - `DEADLOCKS`：`pg_stat_database.deadlocks` 累计>0——曾发生死锁，查应用加锁顺序。

@@ -129,6 +129,59 @@ def test_baseline_path_lives_next_to_the_archived_reports():
     assert p == pathlib.Path("/nas/me/reports/health/api_10-0-0-9-postgres/_counters.json")
 
 
+# ---------------------------------------------------------------- 退回上一份存档报告
+
+def _archived(tmp_path, monkeypatch, *reports_):
+    """用真的 reports.archive 写存档(与 health.py 同一个函数),返回该实例的目录。"""
+    from common import reports
+    monkeypatch.setenv(reports.ENV_DIR, str(tmp_path))
+    for stamp, name, rows in reports_:
+        payload = {"dims": [{"dimension": "Transactions / Concurrency", "available": True, "rows": rows}]}
+        reports.archive("health", payload, name=name, now=stamp, instance="api/10-0-0-9-postgres",
+                        latest=not (name or "").endswith(".span"))
+    return tmp_path / "health" / reports.instance_key("api/10-0-0-9-postgres")
+
+
+def test_previous_archived_report_gives_the_counters(tmp_path, monkeypatch):
+    """基线文件没有(比如从没有基线文件的老版本升级上来)时,上一份完整巡检报告里就有
+    这几个累计值 —— 拿它算增量,不必白白再等一次巡检。"""
+    d = _archived(tmp_path, monkeypatch,
+                  ("20261024T014700Z", None, [["deadlocks", "80"], ["commit/rollback", "4000/200 (4.8%回滚)"],
+                                              ["prepared 2PC", "2"]]))
+    vals, at, why = C.load_from_reports(d)
+    assert why == "" and at == "20261024T014700Z"
+    assert vals == {"deadlocks": 80, "xact_commit": 4000, "xact_rollback": 200}
+
+
+def test_span_reports_are_not_a_baseline(tmp_path, monkeypatch):
+    """时段报告的「死锁」是窗口内增量(Window Transactions),维度也不同 —— 只认「此刻」巡检。"""
+    d = _archived(tmp_path, monkeypatch,
+                  ("20261024T014700Z", None, [["deadlocks", "80"]]),
+                  ("20261024T015000Z", "20261024T015000Z.span", [["deadlocks", "3"]]))
+    vals, at, _ = C.load_from_reports(d)
+    assert vals == {"deadlocks": 80} and at == "20261024T014700Z"
+
+
+def test_no_archived_report_says_why(tmp_path):
+    vals, at, why = C.load_from_reports(tmp_path / "nothing-here")
+    assert vals == {} and "第一次" in why
+    assert C.load_from_reports(None)[2]
+
+
+def test_load_baseline_prefers_the_baseline_file_then_the_archive(tmp_path, monkeypatch):
+    d = _archived(tmp_path, monkeypatch, ("20261024T014700Z", None, [["deadlocks", "80"]]))
+    vals, at, _ = C.load_baseline(d / C.BASELINE_NAME)
+    assert vals == {"deadlocks": 80}, "基线文件不存在时退回上一份报告"
+    C.save(d / C.BASELINE_NAME, "20261024T015500Z", {"deadlocks": 90})
+    vals, at, _ = C.load_baseline(d / C.BASELINE_NAME)
+    assert vals == {"deadlocks": 90} and at == "20261024T015500Z"
+
+
+def test_no_reports_dir_names_the_setting():
+    """Mac / 非容器线没有存档目录 —— 原因要说到人能照着办的程度。"""
+    assert "GSDB_REPORTS_DIR" in C.load_baseline(None)[2]
+
+
 def test_tracked_counters_are_the_cumulative_ones():
     """跟踪的必须是**累计型**计数器。瞬时量(连接数、锁、死元组)不能放进来 ——
     对瞬时量做差没有意义,「现在 10 个连接、上次 8 个」不代表「新增 2 个连接」。"""

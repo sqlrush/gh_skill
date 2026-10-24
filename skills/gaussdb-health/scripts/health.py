@@ -141,43 +141,76 @@ def annotate_counters(ev: HealthEvidence, conn: str, full_run: bool) -> str:
 
     只有完整巡检才更新基线(与存档同一个条件):局部巡检(--include)拿到的计数器是一样的,
     但如果它也更新基线,下一次完整巡检的「距上次」就被这次局部运行截断了。
+
+    **给不出增量时,原因必须进报告**(维度表一行 + DEADLOCKS 那条的证据)。faultlab 那轮
+    (2026-10-24)死锁 80 → 96,报告只有累计值、一句没说为什么 —— 原因其实算出来了,
+    只是从没写进报告。
     """
     dim = next((d for d in ev.dims if d.raw.get("deadlocks") is not None), None)
     if dim is None:
         return ""
     now = {k: int(dim.raw.get(k, 0) or 0) for k in counters_mod.TRACKED}
     path = counters_mod.baseline_path(reports.reports_dir(), reports.instance_key(conn))
-    before, since, why = counters_mod.load(path)
+    before, since, why = counters_mod.load_baseline(path)
     res = counters_mod.compute(now, before, since)
-
-    if full_run:
-        counters_mod.save(path, reports.utc_stamp(), now)
+    saved = full_run and counters_mod.save(path, reports.utc_stamp(), now)
+    note = res.note if before else why + _baseline_outcome(path, full_run, saved)
 
     dl = res.items.get("deadlocks")
     if dl is not None and dl.delta is not None:
-        dim.rows.append(["deadlocks 距上次新增", "%d（累计 %d）" % (dl.delta, dl.now)])
-        # 判定按增量来:零新增就不该再占着一条发现
-        if dl.delta <= 0:
-            dim.findings[:] = [f for f in dim.findings if f.code != "DEADLOCKS"]
-            ev.findings[:] = [f for f in ev.findings if f.code != "DEADLOCKS"]
-            dim.rows.append(["deadlocks 判定", "累计 %d 次，但距上次巡检没有新增" % dl.now])
-        else:
-            # Finding 是 frozen dataclass:**不能改字段,只能换一条新的**。
-            # (第一版直接赋值,报 "cannot assign to field 'metric'",而它发生在
-            #  「确实有新增死锁」这条路径上 —— 正是最该报出来的时候整份报告挂掉。
-            #  仓库的不可变规范本来也要求重建而不是原地改。)
-            def _as_delta(f):
-                if f.code != "DEADLOCKS":
-                    return f
-                return dataclasses.replace(
-                    f, metric="死锁（距上次新增）",
-                    value="%d（累计 %d）" % (dl.delta, dl.now), threshold=">0")
-            dim.findings[:] = [_as_delta(f) for f in dim.findings]
-            ev.findings[:] = [_as_delta(f) for f in ev.findings]
+        _deadlocks_by_delta(ev, dim, dl)
+    elif dl is not None and dl.now > 0:
+        # 有基线却给不出:要么统计被重置过(note 已经说了),要么老基线里没记这一项
+        _deadlocks_without_delta(ev, dim, note if (not before or res.reset)
+                                 else "上一次巡检的基线里没有死锁计数")
     rb = counters_mod.rollback_pct(res, "delta")
     if rb is not None:
         dim.rows.append(["回滚率 距上次", "%.1f%%" % rb])
-    return res.note or why
+    return note
+
+
+def _baseline_outcome(path, full_run: bool, saved: bool) -> str:
+    """没有基线时,这次留没留下 —— 告诉读报告的人下次能不能给出增量。"""
+    if path is None:
+        return ""
+    if not full_run:
+        return "；局部巡检（--include/--exclude）不留基线"
+    if saved:
+        return "；本次已留基线，下次完整巡检可给出「距上次新增」"
+    return "；本次基线也没存下来（存档目录不可写）"
+
+
+def _replace_deadlock_finding(ev: HealthEvidence, dim, **changes) -> None:
+    """Finding 是 frozen dataclass:**不能改字段,只能换一条新的**。
+    (第一版直接赋值,报 "cannot assign to field 'metric'",而它发生在
+     「确实有新增死锁」这条路径上 —— 正是最该报出来的时候整份报告挂掉。
+     仓库的不可变规范本来也要求重建而不是原地改。)"""
+    def _swap(f):
+        return dataclasses.replace(f, **changes) if f.code == "DEADLOCKS" else f
+    dim.findings[:] = [_swap(f) for f in dim.findings]
+    ev.findings[:] = [_swap(f) for f in ev.findings]
+
+
+def _deadlocks_by_delta(ev: HealthEvidence, dim, dl) -> None:
+    dim.rows.append(["deadlocks 距上次新增", "%d（累计 %d）" % (dl.delta, dl.now)])
+    # 判定按增量来:零新增就不该再占着一条发现
+    if dl.delta <= 0:
+        dim.findings[:] = [f for f in dim.findings if f.code != "DEADLOCKS"]
+        ev.findings[:] = [f for f in ev.findings if f.code != "DEADLOCKS"]
+        dim.rows.append(["deadlocks 判定", "累计 %d 次，但距上次巡检没有新增" % dl.now])
+        return
+    _replace_deadlock_finding(ev, dim, metric="死锁（距上次新增）",
+                              value="%d（累计 %d）" % (dl.delta, dl.now), threshold=">0")
+
+
+def _deadlocks_without_delta(ev: HealthEvidence, dim, reason: str) -> None:
+    """给不出增量:值仍是累计值(不编增量),但要写明这是只增不减的累计值、为什么给不出。"""
+    dim.rows.append(["deadlocks 距上次新增", "给不出：" + reason])
+    prefix = ("累计值（自上次统计重置以来只增不减，不会自己清零），分不出是正在发生还是早就发生过；"
+              "这次给不出「距上次新增」：%s。" % reason)
+    found = next((f for f in dim.findings if f.code == "DEADLOCKS"), None)
+    if found is not None:
+        _replace_deadlock_finding(ev, dim, evidence=prefix + found.evidence)
 
 
 def _split_dim_list(s: str) -> list[str]:

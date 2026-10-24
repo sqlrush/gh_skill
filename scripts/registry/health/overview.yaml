@@ -1,4 +1,9 @@
-# SQL 取自 common/sql.py 的 skill_health_001。列名齐全，未改动。
+# SQL 取自 common/sql.py 的 skill_health_001。
+#
+# **改动（2026-10-24 faultlab）：最老事务只认客户端会话的条件，connection_info 换成 client_port。**
+# 理由同 health.long_xact 顶部的说明：psycopg2 这类驱动不填 connection_info，它们的事务
+# 全被滤掉，faultlab 里 S1 一条 SQL 跑了 1123 秒，Overview 仍写「最老事务 无」。
+# 内核后台线程的 client_port 都是 NULL，照样排除在外。
 name: health.overview
 description: 实例概览（缓存命中率/连接数/恢复态/最老事务）
 sql: |
@@ -11,5 +16,5 @@ sql: |
     (SELECT COALESCE(EXTRACT(EPOCH FROM now()-min(xact_start)),0)::bigint
      FROM pg_stat_activity
      WHERE state IN ('active','idle in transaction') AND xact_start IS NOT NULL
-       AND COALESCE(connection_info,'')<>'') AS oldest_xact_s
+       AND client_port IS NOT NULL) AS oldest_xact_s
   FROM pg_stat_database;

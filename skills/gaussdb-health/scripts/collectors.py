@@ -24,6 +24,7 @@ from model import (
     DIM_CONCURRENCY, DIM_CONN, DIM_LOGS, DIM_OVERVIEW, DIM_REPL, DIM_SCHEMA,
     DIM_SLOWSQL, DIM_STORAGE, DIM_XACT, DimResult, Finding, Severity, degraded,
 )
+import running_sql
 from thresholds import Thresholds, go_duration
 from util import f2, human_bytes, i64, sev_by_duration, summarize_err, trunc
 
@@ -49,8 +50,6 @@ from common import syssql  # noqa: E402
 # 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
 # 类型还原一律走这里，不用裸 int()/float()/bool()。
 from common.grmp.values import as_bool, as_int, is_null  # noqa: E402
-
-
 
 
 def _f(x, default: float = 0.0) -> float:
@@ -107,19 +106,24 @@ def collect_overview(runner, th: Thresholds, _top: int) -> DimResult:
 
 # --- slow SQL ----------------------------------------------------------------
 
-
-
-
 # health.slow_sql 在 SQL 里把正文截到 180 字
 SLOWSQL_QUERY_CHARS = 180
 
 
 def collect_slowsql(runner, th: Thresholds, top: int) -> DimResult:
+    """已完成执行的慢 SQL(dbe_perf.statement)+ 执行中、还没结束的长 SQL(running_sql.py)。"""
     try:
         fetched = runner.run("health.slow_sql",
                              {"threshold_ms": int(th.slow_sql_avg_ms), "limit": top + syssql.SCREEN_MARGIN})
     except access.QueryError as exc:
-        return degraded(DIM_SLOWSQL, summarize_err(exc))
+        # dbe_perf.statement 取不到(权限 / 备机)不等于 pg_stat_activity 也取不到
+        return running_sql.attach(degraded(DIM_SLOWSQL, summarize_err(exc)),
+                                  running_sql.check(runner, th, top))
+    return running_sql.attach(_completed_slowsql(runner, th, top, fetched),
+                              running_sql.check(runner, th, top))
+
+
+def _completed_slowsql(runner, th: Thresholds, top: int, fetched) -> DimResult:
     # 2026-10-22 客户要求:排除 GaussDB 自己的系统 SQL(common/syssql.py),标题里写明排除了几条
     screening = syssql.screen(fetched, want=top, sql_id=lambda r: r["unique_sql_id"], text=lambda r: r["query"],
                               shown_chars=SLOWSQL_QUERY_CHARS, full_text=syssql.full_text_lookup(runner),
@@ -222,11 +226,7 @@ def collect_xact(runner, th: Thresholds, top: int) -> DimResult:
 
 
 # --- connections -------------------------------------------------------------
-
-
-#_CONN_Q = ("SELECT COALESCE(state,'<null>') AS state, count(*) "
-#           "FROM pg_stat_activity GROUP BY state ORDER BY 2 DESC")
-
+# SQL 在 scripts/registry/health/conn_states.yaml(只数 sessionid <> 0,见那里的说明)。
 
 
 def collect_conn(runner, th: Thresholds, _top: int) -> DimResult:
@@ -517,13 +517,6 @@ _SCHEMA_SYS_FILTER = ("('pg_catalog','information_schema','snapshot','dbe_perf',
 #ORDER BY pg_relation_size(s.indexrelid) DESC LIMIT %s"""
 
 
-#_STALE_STATS_Q = """
-#SELECT schemaname||'.'||relname FROM pg_stat_user_tables
-#WHERE n_live_tup > %s AND schemaname NOT IN """ + _SCHEMA_SYS_FILTER + """
-#  AND (last_analyze IS NULL OR (last_data_changed IS NOT NULL AND last_data_changed > last_analyze))
-#ORDER BY n_live_tup DESC LIMIT %s"""
-
-
 def collect_schema(runner, th: Thresholds, top: int) -> DimResult:
     d = DimResult(dimension=DIM_SCHEMA, available=True, headers=["项", "对象", "值"])
     n_unused = n_stale = 0
@@ -594,11 +587,13 @@ def collect_schema(runner, th: Thresholds, top: int) -> DimResult:
     # 3) stale stats (best-effort)
     try:
         srows = runner.run("health.stale_stats",
-                           {"min_rows": int(th.stale_min_rows),
+                           {"min_rows": int(th.stale_min_rows), "min_pages": int(th.stale_min_pages),
                             "schema_filter": _SCHEMA_SYS_FILTER, "limit": top})
-    except access.QueryError:
-        srows = []
-    for row in srows:
+    except access.QueryError as exc:
+        # 说出来:白名单还是旧版(没有 min_pages 参数)时就会走到这里,静默的话像是「没有陈旧的表」
+        d.rows.append(["统计新鲜度", "（取不到）", summarize_err(exc)])
+        srows = None
+    for row in srows or []:
         name = row["tbl_name"]
         frozen_pages = _f(row["frozen_pages"])
         cur_pages = _f(row["cur_pages"])
@@ -641,7 +636,8 @@ def collect_schema(runner, th: Thresholds, top: int) -> DimResult:
     # 措辞不写「无用索引」：那是个关于未来的断言，而我们只观测到了一个窗口。
     n_part = _partitions(runner, th, d)
     d.headline = (f"窗口内未使用的索引 {n_unused}、失效索引 {invalid}、"
-                  f"统计不足以支撑估算的表 {n_stale}（观测窗口 {window_text}）"
+                  f"统计不足以支撑估算的表 {n_stale if srows is not None else '取不到'}"
+                  f"（观测窗口 {window_text}）"
                   + (f"；分区表 {n_part} 张" if n_part else ""))
     return d
 
