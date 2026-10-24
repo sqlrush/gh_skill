@@ -7,7 +7,7 @@ no DB lookups. Callers may supply --bind values to override the first N.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 _TO_CHAR_FORMAT_RE = re.compile(r"(?i)to_char\s*\(\s*[a-z_][a-z0-9_.]*\s*,\s*$")
 _NUMERIC_LITERAL_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$")
@@ -28,7 +28,7 @@ class Substitution:
     token: str
     context: str
     value: str
-    source: str  # rule | rule-format-followup | default | bind | type
+    source: str  # rule | rule-format-followup | default | bind | type | fallback
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,23 @@ class SubstituteResult:
     sql: str
     substitutions: list = field(default_factory=list)
     placeholders: int = 0
+    # 降级说明:首个合成值被数据库拒绝、换值重取计划时记一句(见 with_values / coltypes.fallback_for_error)
+    notes: tuple = ()
+
+
+def with_values(result: SubstituteResult, sql_text: str, replacements: dict,
+                note: str = "", source: str = "fallback") -> SubstituteResult:
+    """按位置换掉若干占位符的值,返回新结果(原结果不动)。
+
+    sql_text 必须是生成 result 的那份原文:Substitution.position 是原文里的偏移。
+    """
+    subs = [replace(s, value=replacements[i], source=source) if i in replacements else s
+            for i, s in enumerate(result.substitutions)]
+    out = sql_text
+    for s in reversed(subs):            # 从后往前换,前面的偏移不受影响
+        out = out[:s.position] + s.value + out[s.position + len(s.token):]
+    notes = result.notes + ((note,) if note else ())
+    return SubstituteResult(sql=out, substitutions=subs, placeholders=result.placeholders, notes=notes)
 
 
 def substitute(sql_text: str, binds: list[str] | None = None,
@@ -221,6 +238,10 @@ def _choose(left_ctx: str) -> tuple[str, str]:
         return "'%test%'", "rule"
     if _TO_CHAR_FORMAT_RE.search(left_ctx):
         return "'YYYY-MM-DD'", "rule"
+    # `c.grade + ?`:算术运算的另一侧只能是数(日期加减的也是天数),'test' 必炸。
+    # 列类型查得到时 coltypes 已按另一侧的列给了类型,走不到这里。
+    if is_arithmetic_context(trimmed):
+        return "1", "rule"
 
     if _ends_with_op(trimmed, "=") or _ends_with_op(trimmed, "<>") or _ends_with_op(trimmed, "!="):
         if _looks_like_int_column(trimmed):
@@ -235,8 +256,11 @@ def _choose(left_ctx: str) -> tuple[str, str]:
             return "'2024-01-01'", "rule"
         return "50", "rule"
 
-    if "in (" in trimmed or "in(" in trimmed:
-        if _looks_like_int_column(trimmed):
+    # 只认「占位符就在 IN 列表里」:原先是 `"in (" in trimmed` 子串判断,80 字窗口里出现过
+    # `NOT IN (SELECT …` 就当成 IN 列表填 'test'(og5 S3 的 `c.grade + ?` 就是这么炸的)。
+    if _IN_LIST_TAIL_RE.search(trimmed):
+        col = comparison_column(left_ctx)
+        if col and _int_like_name(col):
             return "1", "rule"
         return "'test'", "rule"
 
@@ -273,10 +297,38 @@ def _looks_like_int_column(ctx: str) -> bool:
             continue
         if "." in t:
             t = t[t.rindex(".") + 1:]
-        return (t.endswith("_id") or t == "id" or t.endswith("_no") or t.endswith("_num")
-                or t.endswith("count") or t.endswith("qty") or t.endswith("amount")
-                or t.endswith("price"))
+        return _int_like_name(t)
     return False
+
+
+def _int_like_name(t: str) -> bool:
+    return (t.endswith("_id") or t == "id" or t.endswith("_no") or t.endswith("_num")
+            or t.endswith("count") or t.endswith("qty") or t.endswith("amount")
+            or t.endswith("price"))
+
+
+# 占位符就在 IN 列表里:`IN (` 之后只有前面几个占位符 / 字面量和逗号(左上下文取自原文,前面的占位符还没换)
+_IN_LIST_TAIL_RE = re.compile(
+    r"\bin\s*\(\s*(?:(?:\?|\$\d+|:\d+|'(?:''|[^'])*'|[-+]?\d+(?:\.\d+)?)\s*,\s*)*$")
+_ARITH_OPS = "+-*/%^"
+# 算术运算符左边紧挨着的列(可带表别名):`c.grade +`、`(o.id %`
+_ARITH_OPERAND_RE = re.compile(r"([a-z_][a-z0-9_$]*(?:\.[a-z_][a-z0-9_$]*)*)\s*[-+*/%^]\s*$")
+
+
+def is_arithmetic_context(left_ctx: str) -> bool:
+    """占位符是不是算术运算的右操作数(`col + ?`、`(x % ?) + ?`)。`||` 拼接、`*/` 注释尾不算。"""
+    t = left_ctx.rstrip()
+    if not t or t[-1] not in _ARITH_OPS:
+        return False
+    return not t.endswith(("||", "*/", "--"))
+
+
+def _arithmetic_operand(left_ctx: str):
+    m = _ARITH_OPERAND_RE.search(left_ctx.lower().rstrip())
+    if not m:
+        return None
+    name = m.group(1).rsplit(".", 1)[-1]
+    return None if name in _NONCOLUMN_KEYWORDS else name
 
 
 def placeholder_contexts(sql_text: str) -> list[str]:
@@ -304,7 +356,12 @@ def comparison_column(left_ctx: str) -> str | None:
     so `o.stock_quantity = `, `total_items=` and `category_id IN (` all yield
     the bare column name. Non-identifier contexts (function calls, literals)
     yield None — callers fall back to text heuristics.
+
+    算术上下文(`c.grade + ?`)取运算符左边那一列:占位符的类型跟着它走,
+    怎么从列类型换成操作数类型见 arithmetic_operand_type。
     """
+    if is_arithmetic_context(left_ctx):
+        return _arithmetic_operand(left_ctx)
     for raw in reversed(left_ctx.lower().split()):
         t = raw.rstrip("=<>!,()").lstrip("(")
         # For the second and later item in IN (?, ?, ...) or BETWEEN ? AND ?,
@@ -331,6 +388,21 @@ def is_numeric_type(type_name: str | None) -> bool:
         return False
     t = type_name.strip().lower()
     return t in _INT_TYPES or t in _NUMERIC_TYPES
+
+
+def arithmetic_operand_type(column_type: str | None) -> str | None:
+    """`col + ?` 里 ? 该是什么类型 —— 不是列本身的类型:date + 1 是明天,
+    date + '2024-01-01' 是 date + date,没有这个运算符。拿不准(字符串列上的算术)返回 None。"""
+    if not column_type:
+        return None
+    t = column_type.strip().lower()
+    if is_numeric_type(t):
+        return t
+    if t == "date":
+        return "integer"
+    if t.startswith("time") or t == "smalldatetime" or t == "interval":
+        return "interval"
+    return None
 
 
 def value_for_type(type_name: str | None) -> str | None:

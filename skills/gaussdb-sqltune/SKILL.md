@@ -74,7 +74,7 @@ metadata:
 
 2b. **系统对象 SQL —— 直接结束。** 若输出是「# SQL Tune — 系统对象 SQL,按策略跳过」（脚本正常退出，不是报错），说明这条 SQL 只访问系统表/系统视图。**到此为止**：把跳过的原因和涉及的对象如实转达给用户，不要重跑、不要换 `--sql-stdin` 再试、不要绕开脚本自己分析，也不要给出任何索引/改写/参数建议。可以提示排查方向在监控采集频率与系统整体负载，但那不属于本技能的调优输出。
 
-3. **合成值提醒——看小节标题，别看有没有这一节。** `## Placeholder Substitution (synthetic values)` 表示至少有一个值是脚本合成的：计划「形状」可靠，但行数/选择性是近似值，要把这点说清楚，并指出索引/改写验证用的就是这些合成值。若标题是 `## Placeholder Substitution (real values from --bind)`，说明每个占位符都用了调用方给的真实值，**此时不要再加合成值免责**，那会把可靠的结论说弱。替换值的 Source 列：`bind` = 调用方给的真实值；`type` = 按 catalog 真实列类型生成（类型可靠）；`rule`/`default` = 纯文本启发式猜测。若报 `invalid input syntax`，报错里会点名坏值出自哪个占位符；若提示 bind 顺序错位，核对 `--bind` 传值顺序后重试——**手上没有真实值就不要用 `--bind` 顶上去**，把报错原样告诉用户并索要该占位符的真实值。
+3. **合成值提醒——看小节标题，别看有没有这一节。** `## Placeholder Substitution (synthetic values)` 表示至少有一个值是脚本合成的：计划「形状」可靠，但行数/选择性是近似值，要把这点说清楚，并指出索引/改写验证用的就是这些合成值。若标题是 `## Placeholder Substitution (real values from --bind)`，说明每个占位符都用了调用方给的真实值，**此时不要再加合成值免责**，那会把可靠的结论说弱。替换值的 Source 列：`bind` = 调用方给的真实值；`type` = 按 catalog 真实列类型生成（类型可靠）；`rule`/`default` = 纯文本启发式猜测；`fallback` = 首个合成值被数据库按类型拒绝后，脚本按报错里的目标类型换值重取了计划（表下那句说明要转达：这几个位置的类型没推断出来，选择率按换上的值估）。若报 `invalid input syntax`，报错里会点名坏值出自哪个占位符；若提示 bind 顺序错位，核对 `--bind` 传值顺序后重试——**手上没有真实值就不要用 `--bind` 顶上去**，把报错原样告诉用户并索要该占位符的真实值。
 
 3b. **运行态计划——有就以它为准。** 按 unique_sql_id 调优时，脚本会探测内核：GaussDB 有 `gs_get_explain` 且这条 SQL
    **此刻正有会话在执行**，报告里会多出 `## Runtime Plan (gs_get_explain, pid=…)`——那是内核里该会话实际在走的计划，
@@ -82,7 +82,8 @@ metadata:
    （多半是绑定值、统计信息过期或计划跳变）。没有这一节是常态（openGauss 没有该函数；或 SQL 早跑完了）；
    若这一节只有一句说明（会话不在跑 / 函数返回为空 / GaussDB 该有而没有 / pid 超出 integer 范围），如实转达，不要自己补一个「运行态计划」。
 
-4. **加载方法论。** 阅读 `{baseDir}/references/tuning-methodology.md`，对照证据各节按其检查清单分析（`## Execution Plan`、`## Tables`、`## Indexes`、`## Column Statistics`、`## Key Parameters (GUC)`、`## Deterministic Findings`）。深度判断按需查 GaussDB 专项知识：CBO 与诊断边界 → `{baseDir}/references/gaussdb-cbo-and-diagnosis.md`；改写候选 → `{baseDir}/references/gaussdb-rewrite-patterns.md`；A 兼容库（`sql_compatibility='A'`）→ `{baseDir}/references/gaussdb-a-compat-gotchas.md`；分区表/分布式 → `{baseDir}/references/gaussdb-partition-distribution.md`。
+4. **加载方法论。** 阅读 `{baseDir}/references/tuning-methodology.md`，对照证据各节按其检查清单分析（`## Execution Plan`、`## Tables`、`## Indexes`、`## Column Statistics`、`## Key Parameters (GUC)`、`## Deterministic Findings`）。
+   `## Deterministic Findings` 里排在前面的 `correlated_subplan`（相关子查询逐行执行）、`not_in_subplan`（NOT IN 退化成子计划 / NULL 语义）、`cast_on_indexed_column` / `func_on_indexed_column`（索引列上套了类型转换 / 函数，索引用不上）、`like_join_pattern`（LIKE 模式取自另一侧的列）、`like_leading_wildcard`（左模糊）是**根因线索**：脚本只在计划节点与 SQL 正文、索引 / 统计证据同时成立时才报，「根因」一节以它们为准、改写方向照它给的写；其后的 `seq_scan` / `sort` 等是通用警告，不能替代根因。根因线索里的索引与改写同样**未经验证**，照第 5–7 步验证后才能进「已验证推荐」。深度判断按需查 GaussDB 专项知识：CBO 与诊断边界 → `{baseDir}/references/gaussdb-cbo-and-diagnosis.md`；改写候选 → `{baseDir}/references/gaussdb-rewrite-patterns.md`；A 兼容库（`sql_compatibility='A'`）→ `{baseDir}/references/gaussdb-a-compat-gotchas.md`；分区表/分布式 → `{baseDir}/references/gaussdb-partition-distribution.md`。
 
 5. **索引建议——只用已验证的那一节。**
    `sqltune.py` 的输出含 `## Verified Index Candidates` 一节。这些是用假设（虚拟）索引硬验证过的——cost 是真实的 EXPLAIN 对比。

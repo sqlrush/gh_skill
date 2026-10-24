@@ -54,6 +54,8 @@ from evidence import (  # noqa: E402
     explain_json_via_script,
 )
 from hypoindex import MIN_SPEEDUP, IndexCandidate, verify_indexes  # noqa: E402
+import placeholder  # noqa: E402
+import planrules  # noqa: E402
 from placeholder import SubstituteResult, substitute  # noqa: E402
 from sqlfetch import sql_fetch  # noqa: E402
 
@@ -265,6 +267,63 @@ def _guard_sql(sql_text: str, analyze: bool) -> None:
             % (stmt_mod.leading_keyword(sql_text).upper() or "非查询语句"))
 
 
+# 合成值被数据库按类型拒绝后、按报错换值重取计划的轮数上限。每轮换掉同一个坏值的全部位置,
+# 一条 SQL 里猜错的值很少超过两种;换过的值再被拒就如实报错,不无限试。
+MAX_FALLBACK_ROUNDS = 3
+
+
+def _collect_tolerant(runner, db, original_sql: str, sub: SubstituteResult, do_analyze: bool,
+                      schema: str) -> tuple:
+    """取证据包,返回 (证据, 最终的占位符替换结果)。
+
+    **列类型推断不出来不该让整条调优失败**(og5 2026-10-24:S3 的 `c.grade + ?` 被猜成 'test',
+    EXPLAIN 报 invalid input syntax for integer,rc=1)。数据库拒了一个合成值时,报错里写着它要的类型:
+    按 coltypes.fallback_for_error 换成那个类型解析得了的值重取计划,替换表里记成 fallback、报告里说明。
+    bind 值不替用户改;换值后仍失败、或报错与合成值无关,就带着点名坏值的说明原样抛。
+    """
+    first, rounds = sub, 0
+    while True:
+        try:
+            return collect(runner, db, sub.sql, do_analyze, schema=schema), sub
+        except Exception as exc:
+            fb = (coltypes.fallback_for_error(str(exc), sub.substitutions)
+                  if rounds < MAX_FALLBACK_ROUNDS else None)
+            if not fb:
+                err = _explain_failure(exc, sub, first)
+                if err is exc:
+                    raise
+                raise err from exc
+            rounds += 1
+            note = coltypes.fallback_note(str(exc), sub.substitutions, fb)
+            sub = placeholder.with_values(sub, original_sql, fb, note=note)
+            if db is None:
+                _guard_sql(sub.sql, do_analyze)     # 换过值的 SQL 照样要过模板守卫
+
+
+def _explain_failure(exc, sub: SubstituteResult, first: SubstituteResult):
+    """类型转换错时点名坏值出自哪个占位符;与占位符无关的报错原样返回。
+
+    换过值之后坏值可能已不在当前替换表里,那就对照首轮的替换表点名(首轮才是猜错的那一处)。
+    """
+    enriched = coltypes.enrich_type_error(str(exc), sub.substitutions)
+    if not enriched and sub is not first:
+        enriched = coltypes.enrich_type_error(str(exc), first.substitutions)
+    if not enriched:
+        return exc
+    if sub is not first:
+        enriched += "\n(已按报错里的目标类型给合成值换过值重取计划,仍被拒绝。)"
+    try:
+        return type(exc)(enriched)
+    except Exception:  # 异常类构造签名特殊时,宁可保留原报错
+        return exc
+
+
+def _with_root_causes(ev, original_sql: str):
+    """证据包里补上根因规则的发现(planrules);一条都没有就原样返回。"""
+    causes = planrules.root_causes(ev, original_sql=original_sql)
+    return replace(ev, findings=list(causes) + list(ev.findings)) if causes else ev
+
+
 def _tune(runner, db, *, original_sql: str, binds: list[str], do_analyze: bool,
           sql_id: str = "", source: str = "", schema: str = "") -> TuneResult:
     verdict = systables.system_verdict(original_sql)
@@ -277,18 +336,9 @@ def _tune(runner, db, *, original_sql: str, binds: list[str], do_analyze: bool,
         # 没有会话时 SQL 要递进 EXPLAIN 模板 —— 无论它从哪来都得过守卫。
         # 按 sql_id 取的 SQL 走的是另一条入口，早先漏了这一道。
         _guard_sql(sub.sql, do_analyze)
-    try:
-        ev = collect(runner, db, sub.sql, do_analyze, schema=schema)
-    except Exception as exc:
-        # 类型转换错时点名坏值出自哪个占位符;非类型错原样抛。
-        enriched = coltypes.enrich_type_error(str(exc), sub.substitutions)
-        if not enriched:
-            raise
-        try:
-            wrapped = type(exc)(enriched)
-        except Exception:  # 异常类构造签名特殊时,宁可保留原报错
-            raise exc
-        raise wrapped from exc
+    ev, sub = _collect_tolerant(runner, db, original_sql, sub, do_analyze, schema)
+    # 根因规则(planrules)排在通用的 seq_scan / sort 警告前面:那几条只说「有全表扫」,不说为什么
+    ev = _with_root_causes(ev, original_sql)
 
     verified: list[IndexCandidate] = []
     note = ""
@@ -401,6 +451,35 @@ def kb_section(tr: TuneResult) -> tuple:
     return kbquery.section_for(kb_items(tr))
 
 
+def _substitution_section(sub: SubstituteResult) -> str:
+    """`## Placeholder Substitution` 小节;没有占位符时空串。"""
+    if sub.placeholders <= 0:
+        return ""
+    # 小节名固定以 "## Placeholder Substitution" 开头(SKILL.md 按它取节),
+    # 但**不能无条件自称合成值**:调用方全程用 --bind 传了真实值时,再劝
+    # 一句"re-run with --bind"会让模型给真实结论硬加一条合成值免责,
+    # 把已经可靠的倍数说弱。降级要说出口,没降级也别装。
+    if any(s.source != "bind" for s in sub.substitutions):
+        out = "## Placeholder Substitution (synthetic values)\n\n"
+        out += ("> Placeholders have been replaced with synthetic values to generate "
+                "an execution plan. **Plan shape is reliable; row counts and "
+                "selectivity estimates are approximate.**\n")
+        out += "> For precise analysis, re-run with `--bind` to supply real values.\n\n"
+    else:
+        out = "## Placeholder Substitution (real values from `--bind`)\n\n"
+        out += ("> Every placeholder was replaced with a real value supplied via "
+                "`--bind`. **Row counts and selectivity reflect these actual "
+                "parameters** — the approximate-value caveat does not apply "
+                "to this report.\n\n")
+    rows = [[str(i + 1), s.token, s.value, s.source, render.truncate(s.context, 60)]
+            for i, s in enumerate(sub.substitutions)]
+    out += render.table(["#", "Token", "Value", "Source", "Context"], rows) + "\n"
+    # 换过值(Source = fallback)要说出口:那几个位置的类型是数据库报错告诉我们的,不是推断出来的
+    for note in getattr(sub, "notes", ()) or ():
+        out += "> " + note + "\n\n"
+    return out
+
+
 def sqltune_report(tr: TuneResult) -> str:
     sb = ["# SQL Tune\n"]
     if tr.sql_id:
@@ -419,29 +498,7 @@ def sqltune_report(tr: TuneResult) -> str:
     if len(sb) > 1:
         sb.append("")
     out = "\n".join(sb) + "\n"
-
-    sub = tr.substitution
-    if sub.placeholders > 0:
-        # 小节名固定以 "## Placeholder Substitution" 开头(SKILL.md 按它取节),
-        # 但**不能无条件自称合成值**:调用方全程用 --bind 传了真实值时,再劝
-        # 一句"re-run with --bind"会让模型给真实结论硬加一条合成值免责,
-        # 把已经可靠的倍数说弱。降级要说出口,没降级也别装。
-        if any(s.source != "bind" for s in sub.substitutions):
-            out += "## Placeholder Substitution (synthetic values)\n\n"
-            out += ("> Placeholders have been replaced with synthetic values to generate "
-                    "an execution plan. **Plan shape is reliable; row counts and "
-                    "selectivity estimates are approximate.**\n")
-            out += "> For precise analysis, re-run with `--bind` to supply real values.\n\n"
-        else:
-            out += "## Placeholder Substitution (real values from `--bind`)\n\n"
-            out += ("> Every placeholder was replaced with a real value supplied via "
-                    "`--bind`. **Row counts and selectivity reflect these actual "
-                    "parameters** — the approximate-value caveat does not apply "
-                    "to this report.\n\n")
-        rows = [[str(i + 1), s.token, s.value, s.source, render.truncate(s.context, 60)]
-                for i, s in enumerate(sub.substitutions)]
-        out += render.table(["#", "Token", "Value", "Source", "Context"], rows) + "\n"
-
+    out += _substitution_section(tr.substitution)
     out += evidence_report(tr.evidence)
 
     # 运行态计划紧跟估算计划:两者不一致时以运行态为准,这是 gs_get_explain 存在的全部意义。
@@ -504,6 +561,7 @@ def _to_jsonable(tr: TuneResult) -> dict:
             "sql": tr.substitution.sql,
             "placeholders": tr.substitution.placeholders,
             "substitutions": [s.__dict__ for s in tr.substitution.substitutions],
+            "notes": list(getattr(tr.substitution, "notes", ()) or ()),
         },
         "evidence": {
             "version": tr.evidence.version,

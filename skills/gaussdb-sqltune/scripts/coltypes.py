@@ -61,7 +61,14 @@ def infer_types(runner, sql_text: str, schema: str = "") -> list:
         print(f"warning: 列类型探测失败,占位符替换退回启发式: {exc}",
               file=sys.stderr)
         return [None] * len(contexts)
-    return [mapping.get(c) if c else None for c in columns]
+    return [_operand_type(ctx, mapping.get(c)) if c else None for ctx, c in zip(contexts, columns)]
+
+
+def _operand_type(left_ctx: str, column_type):
+    """比较位就是列的类型;算术位(`c.grade + ?`)换成运算另一侧该有的类型。"""
+    if placeholder.is_arithmetic_context(left_ctx):
+        return placeholder.arithmetic_operand_type(column_type)
+    return column_type
 
 
 def _unambiguous(pairs) -> dict:
@@ -104,6 +111,57 @@ def validate_binds(substitutions, types: list) -> None:
         raise ValueError(
             "bind 值与占位符类型不符——检查 --bind 顺序是否错位:\n"
             + "\n".join(problems))
+
+
+# 降级用:报错里点名了目标类型 / 运算符两侧类型
+_TYPE_ERR_TARGET_RE = re.compile(r'invalid input syntax for (?:type )?([\w ]+?):\s*"([^"]*)"')
+_OPERATOR_ERR_RE = re.compile(r"operator does not exist: ([\w ]+?) (?:=|<>|!=|<=|>=|<|>) ([\w ]+)")
+_SYNTHETIC_SOURCES = frozenset({"rule", "rule-format-followup", "default"})
+_CMP_TAIL_RE = re.compile(r"(?:=|<>|!=|<=|>=|<|>|\bin\s*\([^()]*)\s*$", re.I)
+
+
+def _quoted(value: str) -> str:
+    return value if value.startswith("'") else "'" + value.replace("'", "''") + "'"
+
+
+def fallback_for_error(message: str, substitutions):
+    """EXPLAIN 因合成值类型不对被拒时,给出「换成什么能过」:{占位符下标: 新值};不适用返回 None。
+
+    两类报错,都只动 sqltune 自己猜的值(bind 是用户给的,错了要让用户知道,不替他改):
+      · invalid input syntax for <类型>: "<值>" —— 那个位置接受未定类型的字面量、按 <类型> 解析失败。
+        换成 <类型> 解析得了的带引号字面量('1'、'2024-01-01'),这一处就一定能过;
+        同值的其他位置一起换,'1' 落在字符串列上也照样合法。
+      · operator does not exist: character varying = integer —— 按列名猜成整数的裸数字撞上了字符串列。
+        比较位上的裸数字一律加引号:'1' 对整数列、字符串列都成立。
+    换出来的值只保证计划生成得了,选择率按它估 —— 报告里要说明(见 placeholder.with_values 的 note)。
+    """
+    m = _TYPE_ERR_TARGET_RE.search(message or "")
+    if m:
+        target, bad = m.group(1).strip(), m.group(2)
+        hits = [i for i, s in enumerate(substitutions) if s.value == bad or s.value.strip("'") == bad]
+        literal = placeholder.value_for_type(target)
+        if not hits or literal is None or any(substitutions[i].source == "bind" for i in hits):
+            return None
+        return {i: _quoted(literal) for i in hits}
+    m = _OPERATOR_ERR_RE.search(message or "")
+    if m and any(placeholder.is_numeric_type(t) for t in m.groups()):
+        hits = {i: _quoted(s.value) for i, s in enumerate(substitutions)
+                if s.source in _SYNTHETIC_SOURCES and _NUMERIC_LITERAL_RE.match(s.value)
+                and _CMP_TAIL_RE.search(s.context)}
+        return hits or None
+    return None
+
+
+def fallback_note(message: str, substitutions, replacements: dict) -> str:
+    """报告里那一句:哪个占位符的哪个值被拒、按什么报错换成了什么。
+
+    只引报错里的那一句(invalid input syntax … / operator does not exist …):中间件的报错前缀
+    带 task_id 之类的内部标识,不进报告。"""
+    m = _TYPE_ERR_TARGET_RE.search(message or "") or _OPERATOR_ERR_RE.search(message or "")
+    why = m.group(0) if m else "类型不符"
+    parts = ["#%d %s → %s" % (i + 1, substitutions[i].value, v) for i, v in sorted(replacements.items())]
+    return ("首个合成值被数据库拒绝(%s),已改填 %s 重取计划 —— 这几个位置的列类型没推断出来,"
+            "改填的值只保证计划能生成,行数与选择率按它估。" % (why, "、".join(parts)))
 
 
 def enrich_type_error(message: str, substitutions):

@@ -19,6 +19,11 @@
 # {{limit}} 给起点用时要取宽(调用方传 5000):终点只取前 500 条,但每一条都要在起点里
 # 找到它的前值 —— 起点取得窄,终点里排第 300 的语句可能在起点里被截掉,于是被当成
 # 「窗口里新出现」整条计入,虚高。og5 的 instr_unique_sql_count 是 10000,5000 足够。
+#
+# **2026-10-24 改:多带 cpu_sec / io_sec。** 与 topsql.top_sql 同一次改动、同一个理由:快照表里也没有
+# 锁等待列,时间段榜要标「等待占比」、按 --by self 排,两端都得有 CPU 与数据 IO 才能相减。只加列,
+# 筛选与排序不动(终点仍按总耗时取前 N 条 —— 自身耗时不会超过总耗时,与按调用次数排时是同一个前提,
+# 见 skills/gaussdb-topsql/scripts/delta.py 模块说明 ③)。
 name: topsql.snap_statement
 description: 指定快照时刻的语句累计值（按 sql_id 聚合），用于时间段 Top SQL
 readonly: true
@@ -37,7 +42,9 @@ sql: |
     sum(snap_n_calls) AS calls,
     ROUND(sum(snap_total_elapse_time)/1000000::numeric, 2) AS total_sec,
     ROUND((sum(snap_total_elapse_time)/NULLIF(sum(snap_n_calls),0))/1000::numeric, 2) AS avg_ms,
-    sum(snap_n_returned_rows) AS rows
+    sum(snap_n_returned_rows) AS rows,
+    ROUND(sum(snap_cpu_time)/1000000::numeric, 2) AS cpu_sec,
+    ROUND(sum(snap_data_io_time)/1000000::numeric, 2) AS io_sec
   FROM snapshot.snap_summary_statement
   WHERE snapshot_id = {{snap}}
   GROUP BY snap_unique_sql_id

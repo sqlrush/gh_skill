@@ -17,6 +17,12 @@
 # {{order}} 落在 ORDER BY 位，注册时会被标 IDENT_POSITION + STRING_PARAM：
 # 标识符位无法做类型校验。防线在调用方 —— topsql.py 的 _SORT_COLS 白名单，
 # 取值只能来自那张映射表，绝不直接来自用户输入。
+#
+# **2026-10-24 改:多带 cpu_sec / io_sec 两列(聚合子查询里 sum 上 cpu_time / data_io_time)。**
+# faultlab 在 og5 上全量混跑时,总耗时榜首是一条等锁的 UPDATE(6778.9 秒,CPU 0),平均耗时榜首是
+# 一条等锁的 FOR UPDATE(1081 秒,CPU 0)—— 榜上分不出「被锁挡住」和「自己慢」。dbe_perf.statement
+# 里没有锁等待时间列,能拿来区分的只有 CPU 与数据 IO 时间:总耗时减去这两项就是等待(锁 / 轻量锁 /
+# 排队等 CPU 等)。只加列、不改筛选与原有列,原来的 --by 取值照旧;新 --by self / self_avg 按这两列排。
 name: topsql.top_sql
 description: 资源消耗最高的语句（dbe_perf.statement）
 sql: |
@@ -27,14 +33,18 @@ sql: |
     n_calls AS calls,
     ROUND(total_elapse_time/1000000::numeric, 2) AS total_sec,
     ROUND((total_elapse_time/NULLIF(n_calls,0))/1000::numeric, 2) AS avg_ms,
-    n_returned_rows AS rows
+    n_returned_rows AS rows,
+    ROUND(cpu_time/1000000::numeric, 2) AS cpu_sec,
+    ROUND(data_io_time/1000000::numeric, 2) AS io_sec
   FROM (SELECT unique_sql_id,
                max(query)             AS query,
                sum(n_calls)           AS n_calls,
                sum(total_elapse_time) AS total_elapse_time,
                sum(n_returned_rows)   AS n_returned_rows,
                sum(n_blocks_hit)      AS n_blocks_hit,
-               sum(n_blocks_fetched)  AS n_blocks_fetched
+               sum(n_blocks_fetched)  AS n_blocks_fetched,
+               sum(cpu_time)          AS cpu_time,
+               sum(data_io_time)      AS data_io_time
           FROM dbe_perf.statement
          GROUP BY unique_sql_id) s
   WHERE n_calls > 0

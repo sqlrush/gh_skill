@@ -42,6 +42,7 @@ from common.grmp.values import as_bool, as_float, as_int  # noqa: E402
 import delta as delta_mod  # noqa: E402
 import render  # noqa: E402
 import span as span_mod  # noqa: E402
+import waits  # noqa: E402
 from common import timewin  # noqa: E402
 
 # Whitelisted --by values; ORDER BY clause is injected, so it MUST come from
@@ -52,8 +53,12 @@ _SORT_COLS = {
     "calls": "n_calls DESC",
     "reads": "n_blocks_hit + n_blocks_fetched DESC",
     "rows": "n_returned_rows DESC",
+    # 自身耗时 = CPU + 数据 IO,不含等锁等等待(waits.py)。两列 2026-10-24 才进取数脚本,
+    # 老白名单上按它排会报列不存在 —— top_sql() 里接住并说明。
+    "self": "cpu_time + data_io_time DESC",
+    "self_avg": "(cpu_time + data_io_time)/NULLIF(n_calls,0) DESC",
 }
-SORT_KEYS = ["time", "avg", "calls", "reads", "rows"]
+SORT_KEYS = ["time", "avg", "calls", "reads", "rows", "self", "self_avg"]
 
 
 @dataclass(frozen=True)
@@ -64,6 +69,17 @@ class StmtRow:
     total_sec: float
     avg_ms: float
     rows: int
+    # None = 取数脚本里没有这一列(客户还没重导白名单),不是 0 —— 当 0 会把每条都标成「全在等」
+    cpu_sec: Optional[float] = None
+    io_sec: Optional[float] = None
+
+    @property
+    def self_sec(self) -> Optional[float]:
+        return waits.self_sec(self.cpu_sec, self.io_sec)
+
+    @property
+    def wait_ratio(self) -> Optional[float]:
+        return waits.wait_ratio(self.total_sec, self.self_sec)
 
 
 TOP_SQL_SCRIPT = "topsql.top_sql"
@@ -71,7 +87,7 @@ TOP_SQL_SCRIPT = "topsql.top_sql"
 # 脚本 SELECT 列表的列名。用名字取值而不是下标：列序变了会当场 KeyError，
 # 而不是安静地把 avg_ms 当成 total_sec。
 TOP_SQL_COLUMNS = (
-    "unique_sql_id", "query", "calls", "total_sec", "avg_ms", "rows",
+    "unique_sql_id", "query", "calls", "total_sec", "avg_ms", "rows", "cpu_sec", "io_sec",
 )
 
 
@@ -82,10 +98,19 @@ def top_sql(runner, by: str, limit: int) -> list[StmtRow]:
         raise ValueError(f"--by {by!r}: must be one of {SORT_KEYS}")
     # order 落在 ORDER BY 位，类型校验对标识符位无效 —— 取值只能来自
     # 上面那张白名单，绝不能直接来自用户输入。
-    rows = runner.run(TOP_SQL_SCRIPT, {"order": order, "limit": int(limit)})
+    try:
+        rows = runner.run(TOP_SQL_SCRIPT, {"order": order, "limit": int(limit)})
+    except access.QueryError as exc:
+        if by in waits.SELF_KEYS and ("cpu_time" in str(exc) or "data_io_time" in str(exc)):
+            raise ValueError("按自身耗时排要用 2026-10-24 起的 topsql.top_sql(聚合里带 cpu_time / data_io_time);"
+                             "这套白名单里还是旧版本,请先重新注册。改用 --by time / avg 仍可用。原始报错:%s"
+                             % exc) from exc
+        raise
     return [
         StmtRow(r["unique_sql_id"], r["query"], as_int(r["calls"]),
-                as_float(r["total_sec"]), as_float(r["avg_ms"]), as_int(r["rows"]))
+                as_float(r["total_sec"]), as_float(r["avg_ms"]), as_int(r["rows"]),
+                # 可选列用 get:老白名单没有它们,缺列要降级成「未知」,不能 KeyError
+                as_float(r.get("cpu_sec"), None), as_float(r.get("io_sec"), None))
         for r in rows
     ]
 
@@ -169,24 +194,28 @@ def delta_table(title: str, res: "delta_mod.DeltaResult", by: str) -> str:
         return ("## %s\n\n这个窗口里没有语句产生新的耗时(增量为零)。%s\n"
                 % (title, res.note))
     body = [[str(i + 1), r.sql_id, str(r.calls), "%.2f" % r.avg_ms, "%.2f" % r.total_sec,
+             waits.sec_cell(r.self_sec), waits.share_cell(waits.wait_ratio(r.total_sec, r.self_sec)),
              str(r.rows), ("新" if r.is_new else ""), render.truncate(r.query, QUERY_CHARS)]
             for i, r in enumerate(res.rows)]
     return ("## " + title + "\n\n" +
-            render.table(["#", "SQL_ID", "窗口内调用", "窗口内平均(ms)", "窗口内耗时(s)",
-                          "窗口内返回行", "窗口内新出现", "QUERY"], body) +
-            "\n" + res.note + "\n" + _QUERY_FOOT + _screen_line(res.system_sql))
+            render.table(["#", "SQL_ID", "窗口内调用", "窗口内平均(ms)", "窗口内耗时(s)", "窗口内CPU+IO(s)",
+                          "等待占比", "窗口内返回行", "窗口内新出现", "QUERY"], body) +
+            "\n" + res.note + "\n" + waits.board_note(res.rows, by) + _QUERY_FOOT + _screen_line(res.system_sql))
 
 
-def stmt_table(title: str, rows: list[StmtRow]) -> str:
+def stmt_table(title: str, rows: list[StmtRow], by: str = "time") -> str:
     if not rows:
         return (f"## {title}\n\nNo matching statements. "
                 f"Check `enable_stmt_track` / lower --threshold.\n")
-    body = [[str(i + 1), r.sql_id, str(r.calls), f"{r.avg_ms:.2f}",
-             f"{r.total_sec:.2f}", str(r.rows), render.truncate(r.query, QUERY_CHARS)]
+    # 等待占比 = 1 − (CPU + 数据 IO) / 总耗时:榜首被等锁语句占住时,读榜的人要一眼看出它不是自己慢(waits.py)
+    body = [[str(i + 1), r.sql_id, str(r.calls), f"{r.avg_ms:.2f}", f"{r.total_sec:.2f}",
+             waits.sec_cell(r.self_sec), waits.share_cell(r.wait_ratio),
+             str(r.rows), render.truncate(r.query, QUERY_CHARS)]
             for i, r in enumerate(rows)]
     return ("## " + title + "\n\n" +
-            render.table(["#", "SQL_ID", "CALLS", "AVG_MS", "TOTAL_S", "ROWS", "QUERY"], body) +
-            _QUERY_FOOT)
+            render.table(["#", "SQL_ID", "CALLS", "AVG_MS", "TOTAL_S", "CPU+IO_S", "等待占比", "ROWS", "QUERY"],
+                         body) +
+            waits.board_note(rows, by) + _QUERY_FOOT)
 
 
 def _leave_baseline(runner, conn_name: str) -> None:
@@ -210,7 +239,7 @@ def _leave_baseline(runner, conn_name: str) -> None:
 
 
 _BY_CN = {"time": "耗时", "avg": "平均耗时", "calls": "调用次数", "rows": "返回行数",
-          "reads": "读块数"}
+          "reads": "读块数", "self": "自身耗时(CPU+IO)", "self_avg": "平均自身耗时(CPU+IO)"}
 
 
 def _run_span(runner, args, conn_name: str) -> Optional[int]:
@@ -482,7 +511,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 print("## Top SQL by %s\n\n%s。\n" % (args.by, screening.all_excluded_text(
                     args.limit + syssql.SCREEN_MARGIN, "按%s排的" % _BY_CN.get(args.by, args.by))))
             else:
-                print(stmt_table("Top SQL by " + args.by, rows), end="")
+                print(stmt_table("Top SQL by " + args.by, rows, args.by), end="")
             print(_screen_line(system_sql), end="")
             if win:
                 print("\n> %s。要看最近一段时间的变化,用 `--window 10m` 或 `--since-last`。\n" % win)

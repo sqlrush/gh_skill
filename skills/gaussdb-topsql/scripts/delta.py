@@ -38,6 +38,8 @@ import pathlib
 import re
 from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
+import waits
+
 # 采样宽度:算增量时先取这么多条累计榜,再在它们之间算增量、重新排序。
 # 比最终呈现的条数宽得多 —— 累计榜靠后的语句完全可能是本窗口的冲高元凶。
 SAMPLE_WIDTH = 500
@@ -68,15 +70,18 @@ BASELINE_NAME = "_baseline.json"
 
 # 增量模式下能排序的维度。`reads` 不在列:取数脚本的 SELECT 里没有块数列,
 # 没有原始值就算不出增量 —— 宁可明确拒绝,也不能悄悄按别的维度排。
-DELTA_SORT_KEYS = ("time", "avg", "calls", "rows")
+# self / self_avg 按 CPU + 数据 IO(自身耗时)排,见 waits.py。
+DELTA_SORT_KEYS = ("time", "avg", "calls", "rows") + waits.SELF_KEYS
 
 
 class Counters(NamedTuple):
-    """一条语句在某一刻的累计值。"""
+    """一条语句在某一刻的累计值。cpu_sec / io_sec 为 None = 那一刻的取数没有这两列(老白名单 / 老基线)。"""
     calls: int
     total_sec: float
     rows: int
     query: str = ""
+    cpu_sec: Optional[float] = None
+    io_sec: Optional[float] = None
 
 
 class Sample(NamedTuple):
@@ -93,6 +98,7 @@ class DeltaRow(NamedTuple):
     avg_ms: float       # 窗口内平均耗时
     rows: int           # 窗口内返回行数
     is_new: bool        # 窗口里才出现的语句(基线里没有)
+    self_sec: Optional[float] = None   # 窗口内自身耗时(CPU + 数据 IO);任一端缺这两列时为 None
 
 
 class DeltaResult(NamedTuple):
@@ -196,12 +202,18 @@ def to_sample(at: str, rows) -> Sample:
         c = Counters(calls=int(getattr(r, "calls", 0) or 0),
                      total_sec=float(getattr(r, "total_sec", 0.0) or 0.0),
                      rows=int(getattr(r, "rows", 0) or 0),
-                     query=str(getattr(r, "query", "") or ""))
+                     query=str(getattr(r, "query", "") or ""),
+                     cpu_sec=getattr(r, "cpu_sec", None), io_sec=getattr(r, "io_sec", None))
         prev = out.get(sid)
         out[sid] = c if prev is None else Counters(
             calls=prev.calls + c.calls, total_sec=prev.total_sec + c.total_sec,
-            rows=prev.rows + c.rows, query=prev.query or c.query)
+            rows=prev.rows + c.rows, query=prev.query or c.query,
+            cpu_sec=_add(prev.cpu_sec, c.cpu_sec), io_sec=_add(prev.io_sec, c.io_sec))
     return Sample(at=at, rows=out)
+
+
+def _add(a: Optional[float], b: Optional[float]) -> Optional[float]:
+    return None if a is None or b is None else a + b
 
 
 class _Row(NamedTuple):
@@ -210,6 +222,16 @@ class _Row(NamedTuple):
     total_sec: float
     rows: int
     query: str
+    cpu_sec: Optional[float] = None
+    io_sec: Optional[float] = None
+
+
+def _opt_float(v) -> Optional[float]:
+    """可选列:缺列 / 空串 / 解析不了 → None(老白名单没有这一列,不能当 0)。"""
+    try:
+        return None if v is None or v == "" else float(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def from_rows(at: str, rows) -> Sample:
@@ -224,7 +246,9 @@ def from_rows(at: str, rows) -> Sample:
                                calls=num(r.get("calls"), int),
                                total_sec=num(r.get("total_sec"), float),
                                rows=num(r.get("rows"), int),
-                               query=str(r.get("query") or ""))
+                               query=str(r.get("query") or ""),
+                               cpu_sec=_opt_float(r.get("cpu_sec")),
+                               io_sec=_opt_float(r.get("io_sec")))
                           for r in rows or []])
 
 
@@ -241,6 +265,28 @@ def _reset_detected(before: Sample, after: Sample) -> bool:
         if a.calls < b.calls or a.total_sec < b.total_sec - 1e-6:
             return True
     return False
+
+
+def _self_delta(a: Counters, b: Optional[Counters]) -> Optional[float]:
+    """窗口内自身耗时。新出现的语句整条计入;任一端缺 CPU / IO 列就是未知(不当 0 —— 当 0 会把它标成全在等)。"""
+    after_self = waits.self_sec(a.cpu_sec, a.io_sec)
+    if after_self is None or b is None:
+        return after_self
+    before_self = waits.self_sec(b.cpu_sec, b.io_sec)
+    return None if before_self is None else max(0.0, after_self - before_self)
+
+
+def _self_avg_ms(r: "DeltaRow") -> float:
+    return r.self_sec * 1000.0 / r.calls if r.self_sec is not None and r.calls > 0 else 0.0
+
+
+# 自身耗时未知的行排在最后,不和「自身耗时为 0」的混在一起
+_DELTA_KEYS = {"time": lambda r: -r.total_sec,
+               "avg": lambda r: -r.avg_ms,
+               "calls": lambda r: -r.calls,
+               "rows": lambda r: -r.rows,
+               "self": lambda r: (r.self_sec is None, -(r.self_sec or 0.0)),
+               "self_avg": lambda r: (r.self_sec is None, -_self_avg_ms(r))}
 
 
 def diff(before: Sample, after: Sample, span_s: float, by: str = "time",
@@ -270,12 +316,13 @@ def diff(before: Sample, after: Sample, span_s: float, by: str = "time",
         avg_ms = (d_total * 1000.0 / d_calls) if d_calls > 0 else 0.0
         out.append(DeltaRow(sql_id=sid, query=a.query or (b.query if b else ""),
                             calls=max(0, d_calls), total_sec=max(0.0, d_total),
-                            avg_ms=avg_ms, rows=max(0, d_rows), is_new=b is None))
-    key = {"time": lambda r: -r.total_sec,
-           "avg": lambda r: -r.avg_ms,
-           "calls": lambda r: -r.calls,
-           "rows": lambda r: -r.rows}[by]
-    out.sort(key=key)
+                            avg_ms=avg_ms, rows=max(0, d_rows), is_new=b is None,
+                            self_sec=_self_delta(a, b)))
+    if by in waits.SELF_KEYS and out and all(r.self_sec is None for r in out):
+        raise ValueError("按自身耗时(CPU + 数据 IO)排不了:这个窗口有一端没有 CPU / 数据 IO 列 —— 起点是升级前"
+                         "留下的基线,或白名单里的 topsql.top_sql / topsql.snap_statement 还没更新。"
+                         "改用 --by time / avg,或等下一次采样之后再看")
+    out.sort(key=_DELTA_KEYS[by])
     note = ("窗口增量:%s 秒内的变化量(不是累计值)。窗口内新出现的语句整条计入;"
             "增量从累计榜前 %d 条里算,极少数「累计很小、刚冲高」的语句可能不在其中。"
             % (int(span_s), SAMPLE_WIDTH))
@@ -336,7 +383,8 @@ def save_baseline(path: Optional[pathlib.Path], sample: Sample) -> bool:
 def _sample_to_dict(s: Sample, keep_query: bool = True) -> dict:
     return {"at": s.at,
             "rows": {sid: {"calls": c.calls, "total_sec": c.total_sec, "rows": c.rows,
-                           **({"query": c.query} if keep_query else {})}
+                           **({"query": c.query} if keep_query else {}),
+                           **({"cpu_sec": c.cpu_sec, "io_sec": c.io_sec} if c.cpu_sec is not None else {})}
                      for sid, c in s.rows.items()}}
 
 
@@ -354,7 +402,10 @@ def _sample_from_dict(d) -> Optional[Sample]:
             out[str(sid)] = Counters(calls=int(v.get("calls") or 0),
                                      total_sec=float(v.get("total_sec") or 0.0),
                                      rows=int(v.get("rows") or 0),
-                                     query=str(v.get("query") or ""))
+                                     query=str(v.get("query") or ""),
+                                     # 升级前留下的基线没有这两列 —— 读成 None,不是 0
+                                     cpu_sec=_opt_float(v.get("cpu_sec")),
+                                     io_sec=_opt_float(v.get("io_sec")))
         except (TypeError, ValueError):
             continue
     if not out:
