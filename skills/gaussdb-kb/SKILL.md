@@ -1,7 +1,7 @@
 ---
 name: gaussdb-kb
 version: 2.4.0
-description: "客户知识库(原 kbimport):把客户的 GaussDB/OpenGauss 规范文档(txt/md/docx/doc/pdf)与故障工单/问题分析报告(md/docx/csv/xlsx)导入知识库——规范条款化进 rules/guides/errata,工单结构化成案例并抽成图谱关系,关键数据写入前一律生成编号选择列表交用户确认;向量进知识库目录里的 SQLite 索引(sqlite-vec,不用配)、关系进 Neo4j(可选),各诊断 skill 按发现检索并优先引用客户先例。脚本负责转换、快照、校验、索引、检索、契约注入;你负责条款分类、案例抽取、呈现选择列表与收集确认。用户说「导入规范 / 导入工单 / 建知识库 / 把 xxx 加进知识库 / 更新规范库 / 知识库里有没有类似案例 / 让 skill 按我们的经验来」即用。"
+description: "客户知识库(原 kbimport):把客户的 GaussDB/OpenGauss 规范文档(txt/md/docx/doc/pdf)与故障工单/问题分析报告(md/docx/csv/xlsx)导入知识库——规范条款化进 rules/guides/errata,工单结构化成案例并抽成图谱关系,关键数据写入前一律生成编号选择列表交用户确认;向量进知识库目录里的 SQLite 索引(sqlite-vec,不用配)、关系写进图文件 graph/*.yaml(配了 Neo4j 再同步进图库,可选;没有图库时路径直接走图文件),各诊断 skill 按发现检索并优先引用客户先例。脚本负责转换、快照、校验、索引、检索、契约注入;你负责条款分类、案例抽取、呈现选择列表与收集确认。用户说「导入规范 / 导入工单 / 建知识库 / 把 xxx 加进知识库 / 更新规范库 / 知识库里有没有类似案例 / 让 skill 按我们的经验来」即用。"
 allowed-tools: ["exec", "read", "write"]
 compatibility: opencode
 metadata:
@@ -10,7 +10,7 @@ metadata:
   family: sql-governance
 ---
 
-# KB(客户知识库:规范 + 工单 → 文件 + 向量库 + 图库;后两者按环境自动感知,没有也能用)
+# KB(客户知识库:规范 + 工单 → 文件 + 向量库(SQLite 索引)+ 图库(Neo4j,可选);后两者按环境自动感知,没有也能用)
 
 分工铁律:**确定性工作由脚本做**(转换 / 快照 / 校验 / 出处回指 / 索引 / 检索 / 契约注入 / 写库),
 **语义工作由你做**(条款分类、案例抽取、把选择列表呈现给用户并收集回答)。
@@ -83,7 +83,8 @@ python3 {baseDir}/scripts/kb.py health
    - 边只写原文能支撑的 现象→根因(`caused_by`)、根因→处置(`handled_by`),`confidence` 是你的把握(0.5–0.9);
    - 每轮 5–10 单,多的下一轮 `propose --offset` 续跑。
 4. **选择列表(写库前的唯一闸门)**:`kb.py review <slug>` 生成 `review.md`——**原样呈现给用户**(格式与各类默认见
-   `{baseDir}/references/selection-list.md`),收集回答。`[边]` 没有默认接受:用户不答就留候选(可检索,不进「本行历史路径」);
+   `{baseDir}/references/selection-list.md`),收集回答。`[边]` 没有默认接受:用户不答就留候选(可检索,不进「本行历史路径」——
+   路径只认 `status: accepted`,把候选边的 confidence 改成 1.0 也进不去);
    用户不答的你不要替他答。清单里有 `[error]`(出处回指失败、ID 重复、字段缺失)先修候选再 review。
 5. **落盘**:把用户的回答翻成参数执行
    `kb.py apply <slug> --all-but-edges --accept 7,8 [--reject 10] [--edit 2:S1] --user <工号>`,
@@ -99,7 +100,8 @@ python3 {baseDir}/scripts/kb.py query --q "<用户的问题>"
 
 输出就是各诊断 skill 里同款的「客户知识库参照」小节:贵行规范 / 历史相似(带结论强度与处置)/ 本行历史路径
 (只含客户确认过的边,标几个案例支持)/ 原始工单。**引用必带 ID 与出处**;写着「无」就如实说「本行无先例,以下为通用做法」;
-绝不编案例或规范。有 findings 的 skill(health / sqltune / …)不用你查——它们的脚本已经把这一节写进输出了。
+绝不编案例或规范。有 findings 的 9 个诊断 skill(health / lockwait / waitevent / vacuum / wdr / memanalyze / sqltune /
+proctune / sqlreview)不用你查——它们的脚本已经把这一节写进 markdown 输出了(wdr 在 `collect` 的证据包里)。
 三种模式输出同一格式;文件模式的状态行写「模式:文件(原因)」,引用要求不变。要看案例全文时先读 `<kb>/CASES.md`
 (案例逐条清单)再读 `<kb>/cases/` 的文件,不要整目录灌进上下文。
 
