@@ -1,6 +1,6 @@
 ---
 name: gaussdb-kb-init
-version: 1.1.0
+version: 1.2.0
 description: "入库前的标准化(知识库导入的第一步,管理员用):把客户给的各种工单材料——word / pdf / txt / md / csv / xlsx / 照片截图——统一整理成同一种 md(时间、系统、现场、判断、处置、复发标志六要素),作为导入知识库之前的标准格式;整理完再交给 gaussdb-kb 入库(md + 向量 + 图)。用户说「这些工单/报告怎么入库」「格式乱七八糟先整理一下」「把这堆材料标准化」「照片里的工单怎么导进去」即用。脚本负责快照、分类、抽文本、渲染、校验;你负责读原文(照片要用 read 工具看图)把六要素写出来。"
 allowed-tools: ["exec", "read", "write"]
 compatibility: opencode
@@ -66,6 +66,15 @@ python3 {baseDir}/scripts/kb_init.py scan <文件或目录> [--batch 批次名]
 
 用户给的是自己电脑上的路径(`D:\…`、`~/Desktop/…`)时,skill 在沙箱里读不到:把收件目录告诉他
 (`$GSDB_KB_INBOX`,默认 `<kb>/inbox/uploads`),让他先通过对话界面上传,再用沙箱内路径重试。
+
+## 1.5 先给每份材料提议类型(八类知识)
+
+工单 / 问题分析报告 = **历史案例排查思路**,走下面的六要素。材料不是一次故障的经过时(运维手册、Wiki 帖、产品文档章节、
+系统说明、指标口径、厂商缺陷通告),**不写六要素**——按 `gaussdb-kb` 的 `references/knowledge-types.md` 定类型,用
+`python3 {baseDir}/../gaussdb-kb/scripts/kb.py template <runbook|defect|baseline|product|wiki|profile>` 的骨架
+写到 `<kb>/inbox/drafts/`(长文档按章节拆成多条,每条写摘要),之后交 `kb.py add` 入库。
+先给用户一张「文件 · 提议类型 · 理由」清单确认,再动手;一份材料混着几类就拆开,共用同一份原件出处。
+六要素里的「现场」要带**现场背景**(系统、版本、时段、负载);能看出排查过程的,把候选原因、取证顺序、排除理由写进「判断」。
 
 ## 2. 写草稿(你的核心工作)
 

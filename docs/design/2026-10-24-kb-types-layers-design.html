@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>知识库增强：知识类型标签 + 渐进式披露（设计稿 2026-10-24）</title>
+<style>
+:root{--ink:#1b2430;--ink2:#4a5566;--mute:#7a8596;--line:#d9dfe8;--bg:#f6f8fb;--card:#fff;
+  --blue:#2f6fdb;--blue-l:#e7effc;--amber:#c98a12;--amber-l:#fbf1dc;--gray-l:#eef1f5;--green:#1f8a5b;--green-l:#e3f4ec;--red:#c0392b;--red-l:#fbe7e5;--violet:#6b4fd8;--violet-l:#efebfd}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.7 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1120px;margin:0 auto;padding:32px 28px 80px}
+header{background:linear-gradient(120deg,#123a73,#2f6fdb 60%,#5b8def);color:#fff;border-radius:14px;padding:30px 34px;margin-bottom:26px}
+header h1{margin:0 0 6px;font-size:28px;letter-spacing:.5px}
+header .sub{opacity:.92;font-size:15px}
+header .meta{margin-top:14px;font-size:13px;opacity:.85}
+nav{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 22px;margin-bottom:24px;font-size:14px}
+nav b{margin-right:10px}
+nav a{color:var(--blue);text-decoration:none;margin-right:14px;white-space:nowrap}
+section{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:24px 30px;margin-bottom:22px}
+h2{margin:0 0 14px;font-size:21px;border-left:5px solid var(--blue);padding-left:12px}
+h3{margin:22px 0 10px;font-size:17px;color:#123a73}
+p{margin:8px 0}
+table{border-collapse:collapse;width:100%;margin:12px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;vertical-align:top;text-align:left}
+th{background:#f0f4fa;font-weight:600}
+td.c,th.c{text-align:center}
+code{background:#f0f3f7;border-radius:4px;padding:1px 5px;font-size:13px;font-family:Menlo,Consolas,monospace}
+pre{background:#0f1b2d;color:#dce6f5;border-radius:10px;padding:14px 16px;font-size:12.5px;line-height:1.6;overflow:auto;font-family:Menlo,Consolas,monospace;margin:10px 0}
+pre .c{color:#7f93b0}pre .k{color:#8fc1ff}pre .b{color:#9fd6a8}
+.callout{border-radius:10px;padding:12px 16px;margin:12px 0;font-size:14.5px}
+.callout.blue{background:var(--blue-l);border:1px solid #c9daf6}
+.callout.amber{background:var(--amber-l);border:1px solid #efd9a8}
+.callout.green{background:var(--green-l);border:1px solid #bfe3d1}
+.callout.red{background:var(--red-l);border:1px solid #f0c4be}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:14px 0}
+.kpi{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.kpi .v{font-size:26px;font-weight:700;color:#123a73}
+.kpi .v small{font-size:14px;font-weight:600;margin-left:3px}
+.kpi .l{font-size:13px;color:var(--ink2)}
+figure{margin:14px 0 6px}
+figure svg{width:100%;height:auto;display:block;background:#fbfcfe;border:1px solid var(--line);border-radius:10px}
+figcaption{font-size:13px;color:var(--mute);margin-top:6px;text-align:center}
+.tag{display:inline-block;font-size:12px;padding:0 7px;border-radius:9px;margin-left:4px;vertical-align:1px;white-space:nowrap}
+.tag.new{background:var(--green-l);color:var(--green)}.tag.keep{background:var(--gray-l);color:var(--ink2)}.tag.chg{background:var(--amber-l);color:var(--amber)}.tag.del{background:var(--red-l);color:var(--red)}
+.L{display:inline-block;font-weight:700;font-size:12px;border-radius:5px;padding:0 6px;color:#fff;margin-right:4px}
+.L0{background:#123a73}.L1{background:#2f6fdb}.L2{background:#1f8a5b}.L3{background:#7a8596}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.two>div{min-width:0}
+.small{font-size:13px;color:var(--ink2)}
+ol.q{padding-left:22px}ol.q li{margin:10px 0}
+.rec{color:var(--green);font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>知识库增强：知识类型标签 + 渐进式披露</h1>
+  <div class="sub">每条知识带上「是什么类型」——规范、案例、画像、基线、缺陷、手册……各按各的要点记；知识库按 L0 总索引 → L1 专题导航 → L2 知识条目 → L3 原始证据 分层，模型逐层往下读，读多少由脚本和规则管住</div>
+  <div class="meta">gaussdb-skills 主干 + 容器版 · 设计稿 v1（2026-10-24，待评审）· 目标版本：v1.4.0 之后的下一版（暂定 v1.5.0 / skills-v13）· 沿用现有导入流程（模型起草 → 人确认 → 脚本校验落盘）</div>
+</header>
+
+<nav><b>目录</b>
+  <a href="#s0">0 一页看懂</a><a href="#s1">1 需求与现状</a><a href="#s2">2 知识类型</a><a href="#s3">3 分层与文件组织</a>
+  <a href="#s4">4 读取机制</a><a href="#s5">5 导入怎么变</a><a href="#s6">6 检索与诊断联动</a>
+  <a href="#s7">7 存量迁移</a><a href="#s8">8 改动与工作量</a><a href="#s9">9 风险</a><a href="#s10">10 待确认</a>
+</nav>
+
+<!-- ============================================================ 0 -->
+<section id="s0">
+<h2>0　一页看懂</h2>
+<div class="kpis">
+  <div class="kpi"><div class="v">8<small>类</small></div><div class="l">知识类型，每条知识一个主类型，按类型校验必填要点</div></div>
+  <div class="kpi"><div class="v">4<small>层</small></div><div class="l">L0 总索引 · L1 专题导航 · L2 知识条目 · L3 原始证据</div></div>
+  <div class="kpi"><div class="v">3<small>个命令</small></div><div class="l"><code>topic</code> / <code>show</code> / <code>evidence</code>：逐层下钻的唯一入口，单次输出有上限</div></div>
+  <div class="kpi"><div class="v">≈4.5<small>周</small></div><div class="l">含存量迁移、样例库与评测、容器版同步和测试环境验证</div></div>
+</div>
+<table>
+<tr><th style="width:22%">要点</th><th>做法</th></tr>
+<tr><td>类型是「标签 + 按类型的必填要点」</td><td>类型决定这条知识<b>必须记什么</b>（规范要审批与生效版本，缺陷要受影响版本与厂商结论，手册要前提与回退……），导入时校验；不是只贴个名字。</td></tr>
+<tr><td>谁打标签</td><td>导入时<b>模型提议、人确认、脚本校验</b>——和现在「条款化 / 案例化」的分工一样。确认清单里多一列「类型」。</td></tr>
+<tr><td>分层靠「生成 + 命令」，不是只拆文件</td><td>L2 条目是唯一需要人维护的正文；L0、L1 由 <code>kb.py index</code> 从 L2 的元数据和图谱<b>生成</b>，有大小上限；模型通过 <code>topic / show / evidence</code> 逐层取，不再整份读 <code>RULES.md</code> / <code>CASES.md</code>。</td></tr>
+<tr><td>L0「每次诊断先读」由脚本保证</td><td>9 个诊断技能的脚本已经在输出里自动附「客户知识库参照」；这一节的开头改成 L0 摘要（含<b>本实例的环境画像</b>），模型不用自己记得去读。</td></tr>
+<tr><td>新增四类此前没有的知识</td><td>环境与业务画像、指标口径与正常基线、已知缺陷与版本例外、处置与恢复手册——它们让「这条知识适不适用于本环境」可以判断（版本、部署形态、批量窗口）。</td></tr>
+<tr><td>反例</td><td>「看起来相同、根因不同」的案例在 L1 里并排展示，并要求写<b>区分证据</b>；导入时发现同症状不同根因而没写区分证据，审核清单会提示。</td></tr>
+<tr><td>兼容</td><td>旧知识库不迁移也能用（类型显示「未分类」）；<code>kb.py migrate</code> 给存量条目提议类型与专题，人确认后落盘。<code>RULES.md</code> / <code>CASES.md</code> 再保留一个版本。</td></tr>
+</table>
+</section>
+
+<!-- ============================================================ 1 -->
+<section id="s1">
+<h2>1　需求与现状</h2>
+<h3>1.1 需求（2026-10-24）</h3>
+<ol>
+  <li><b>知识类型标签</b>：参考下表的 8 类，对导入的知识打类型标签；每类有自己的记录重点。另补两样：<b>现场背景</b>与<b>判断边界</b>；尤其要保存「看起来相同，但根因不同」的反例，案例必须记下区分它们的证据。</li>
+  <li><b>渐进式披露</b>：知识库的 md 按 L0 / L1 / L2 / L3 拆分和组织；<b>要有明确的读取机制，仅仅拆成很多 md 还不够</b>。</li>
+</ol>
+<table>
+<tr><th>层次</th><th>内容</th><th>何时读取</th></tr>
+<tr><td><span class="L L0">L0</span>总索引</td><td>知识范围、专题入口、适用环境</td><td>每次诊断先读</td></tr>
+<tr><td><span class="L L1">L1</span>专题导航</td><td>症状、同义词、候选原因、相关条目摘要</td><td>按问题选择</td></tr>
+<tr><td><span class="L L2">L2</span>知识条目</td><td>完整规范、案例或排查步骤</td><td>命中后读取</td></tr>
+<tr><td><span class="L L3">L3</span>原始证据</td><td>原文、照片、日志、报告</td><td>核对细节或处理冲突</td></tr>
+</table>
+<p class="small">建议的导入顺序：最小环境画像和现行规范 → 高频故障案例及排查步骤 → 对应产品章节 → Wiki 持续补齐。不必先把全部产品手册搬完。</p>
+
+<h3>1.2 现状</h3>
+<table>
+<tr><th style="width:18%">现在有的</th><th>形态</th><th>缺口</th></tr>
+<tr><td><code>rules/*.yaml</code> 条款</td><td>GS-域-NNN，severity / check / applies / keywords</td><td>没有「审批与变更要求」「生效版本」</td></tr>
+<tr><td><code>cases/*.md</code> 案例</td><td>S1–S4 ID；现场 / 判断 / 处置 / 复发标志；结论强度</td><td>「判断」一段写完，看不出候选原因、取证顺序、排除理由、最终验证；没有反例 / 区分证据</td></tr>
+<tr><td><code>guides/*.md</code> 指南</td><td>id + description，自由正文</td><td>产品文档、Wiki 经验、操作手册混在一起；不分产品系列与版本——openGauss / PostgreSQL 的行为可能被当成 GaussDB 的</td></tr>
+<tr><td><code>errata/</code> 修正</td><td>首行一句结论</td><td>契约说它优先级最高，检索时却没有加权</td></tr>
+<tr><td><code>sources/</code>、原始工单、kb-init 的照片</td><td>原文快照，只读</td><td>条目和原文之间没有可回指的「证据」链接</td></tr>
+<tr><td><code>INDEX.md / RULES.md / CASES.md</code></td><td>index 生成的平铺清单；契约要求判定前<b>整份读 RULES.md</b></td><td>条目一多就读不动、也读不完；没有按问题选择的入口</td></tr>
+<tr><td>—</td><td>—</td><td><b>完全没有</b>：环境与业务画像、指标口径与基线、已知缺陷、处置手册。于是「这条知识适不适用于本环境」无从判断</td></tr>
+</table>
+<div class="callout blue">现有的检索（词法 + 向量 + 图，按每条发现自动附「客户知识库参照」）保留不动，是这次改造的底座；改的是<b>条目的结构</b>、<b>层与层之间怎么走</b>，以及<b>输出给模型的量</b>。</div>
+</section>
+
+<!-- ============================================================ 2 -->
+<section id="s2">
+<h2>2　知识类型</h2>
+<h3>2.1 八类知识与各自的必填要点</h3>
+<table>
+<tr><th style="width:14%">类型</th><th style="width:9%">代码 / ID</th><th style="width:11%">存放</th><th>必填要点（导入时校验）</th><th style="width:27%">诊断时怎么用</th></tr>
+<tr><td>公司内部规范</td><td><code>norm</code><br>GS-域-NNN</td><td><code>rules/</code> <span class="tag keep">沿用</span><br><code>errata/</code> 修正</td><td>规定（允许 / 禁止什么操作）、适用范围、<b>审批与变更要求</b> <span class="tag new">新</span>、<b>生效版本 / 日期</b> <span class="tag new">新</span>、出处</td><td>处置建议的措辞、窗口、审批按它来；违规判定仍以脚本为准</td></tr>
+<tr><td>存量 Wiki 经验</td><td><code>wiki</code><br>WK-NNNN</td><td><code>wiki/</code> <span class="tag new">新</span></td><td>可复用结论（摘要）、原文出处、时间、<b>验证状态</b>（已验证 / 未验证 / 已过时）</td><td>只作参考；未验证的引用时必须带标签</td></tr>
+<tr><td>高斯产品文档</td><td><code>product</code><br>PD-NNNN</td><td><code>product/</code> <span class="tag new">新</span></td><td><b>产品系列</b>（GaussDB 集中式 / 分布式 / openGauss）、<b>版本范围</b>、<b>部署形态</b>、出处章节</td><td>与环境画像比对：系列或版本不符的标「不适用本环境」并降权，绝不当成本环境行为</td></tr>
+<tr><td>历史案例排查思路</td><td><code>case</code><br>S1–S4-日期-系统-标题</td><td><code>cases/</code> <span class="tag chg">扩展</span></td><td>现场（含<b>现场背景</b>：系统、版本、时段、负载）、症状、<b>候选原因</b>、<b>取证顺序</b>、<b>排除理由</b>、判断、处置、<b>最终验证</b>、复发标志；有同症状不同根因的案例时写<b>区分证据</b></td><td>「历史相似」；L1 里给出候选原因与区分证据，模型按取证顺序去验证</td></tr>
+<tr><td>环境与业务画像</td><td><code>profile</code><br>EP-系统</td><td><code>profiles/</code> <span class="tag new">新</span></td><td>数据库产品与版本、部署拓扑、对应的连接别名、应用连接池、批量窗口、关键业务依赖、高峰时段。<b>不写 IP、主机名、口令</b>（校验拦截）</td><td>L0 的「适用环境」；按连接别名自动带出本实例的画像；版本比对的依据</td></tr>
+<tr><td>指标口径与正常基线</td><td><code>baseline</code><br>BL-系统-指标</td><td><code>baselines/</code> <span class="tag new">新</span></td><td>指标来源（哪个技能 / 视图）、单位、采样窗口、累计值还是差值、正常时段表现（日间 / 批量 / 月末）</td><td>在对应发现旁并列「贵行基线：平时 …」；<b>不改 severity</b></td></tr>
+<tr><td>已知缺陷与版本例外</td><td><code>defect</code><br>KD-NNNN</td><td><code>defects/</code> <span class="tag new">新</span></td><td>现象、<b>受影响版本</b>、修复补丁 / 版本、复现条件、<b>厂商确认结论</b>（已确认 / 待确认）、规避办法</td><td>与画像版本比对，写「本环境版本受影响 / 不受影响 / 未知」</td></tr>
+<tr><td>处置与恢复手册</td><td><code>runbook</code><br>RB-域-NNN</td><td><code>runbooks/</code> <span class="tag new">新</span></td><td>适用场景、<b>执行前提</b>、<b>影响</b>、步骤、<b>验证方法</b>、<b>回退步骤</b>、需要的审批（可引用规范 ID）</td><td>处置建议优先给手册；图谱里的「处置」节点可指向手册</td></tr>
+</table>
+<p class="small">原始工单（未结构化）不是一种类型，它是 L3 证据，等着被整理成案例；照旧显示「有一单类似，未结构化」。</p>
+
+<h3>2.2 所有类型共用的字段</h3>
+<table>
+<tr><th style="width:18%">字段</th><th>说明</th><th style="width:16%">层</th></tr>
+<tr><td><code>id</code> / <code>type</code> / <code>title</code></td><td>类型与所在目录必须一致（校验）；ID 永不复用</td><td><span class="L L1">L1</span>显示</td></tr>
+<tr><td><code>摘要</code></td><td>≤ 200 字，一句话结论在前。L1 里只显示这一段</td><td><span class="L L1">L1</span>显示</td></tr>
+<tr><td><code>topics</code></td><td>所属专题（可多个），见 3.3</td><td>决定进哪个 L1</td></tr>
+<tr><td><code>applies</code> / <code>not_applies</code></td><td><b>判断边界</b>：产品系列、版本范围、系统、时段、前提条件；以及明确不适用的情形</td><td><span class="L L1">L1</span>摘要 · <span class="L L2">L2</span>全文</td></tr>
+<tr><td><code>source</code> / <code>as_of</code> / <code>verification</code></td><td>出处、时间、验证状态（案例沿用结论强度：已确认 / 推测 / 待验证）</td><td><span class="L L1">L1</span>显示</td></tr>
+<tr><td><code>evidence</code></td><td>指向 L3 的链接：<code>sources/原文.docx#第12页</code>、照片、日志、报告，可带原文引句</td><td><span class="L L3">L3</span>入口</td></tr>
+<tr><td><code>synonyms</code></td><td>现场的叫法（沿用条款的 keywords、案例的复发标志）；汇入 L1 的「同义词」</td><td>检索</td></tr>
+</table>
+
+<h3>2.3 怎么判定类型（导入时给模型的规则，人最终确认）</h3>
+<table>
+<tr><th style="width:40%">这段内容在说什么</th><th>类型</th></tr>
+<tr><td>「必须 / 禁止 / 需审批 / 自某日起执行」</td><td>公司内部规范</td></tr>
+<tr><td>某一次故障从发现到恢复的经过</td><td>历史案例排查思路</td></tr>
+<tr><td>某个系统是什么样：版本、拓扑、连接池、批量</td><td>环境与业务画像</td></tr>
+<tr><td>某个指标怎么算、平时多少</td><td>指标口径与正常基线</td></tr>
+<tr><td>某版本有缺陷、打什么补丁、厂商怎么说</td><td>已知缺陷与版本例外</td></tr>
+<tr><td>遇到某情况按什么步骤做、怎么回退</td><td>处置与恢复手册</td></tr>
+<tr><td>出自 GaussDB 官方文档 / 产品手册</td><td>高斯产品文档</td></tr>
+<tr><td>其余的经验总结、技术帖</td><td>存量 Wiki 经验</td></tr>
+</table>
+<div class="callout amber"><b>一个条目一个主类型。</b>一篇 Wiki 里同时有规定、步骤和经验时，拆成多个条目（规范 + 手册 + 经验），共用同一份 L3 原文；不做多类型标签——多类型会让必填要点没法校验，L1 里也会重复出现。</div>
+
+<h3>2.4 反例：看起来相同、根因不同</h3>
+<p>例如「连接数打满」，可能来自业务增量、锁阻塞，也可能是应用连接泄漏。做法：</p>
+<ul>
+  <li><code>kb.py index</code> 从图谱里找出<b>同一症状节点、不同根因</b>的案例组，在该专题的 L1 里并排列出，每行带「区分证据」；</li>
+  <li>新案例导入时，若库里已有同症状不同根因的案例而本案例没写「区分证据」，审核清单标黄提示（不阻断）；</li>
+  <li>诊断时 L1 先给模型「候选原因 + 区分证据」，模型据此决定先取哪项证据，而不是看到一个相似案例就照搬处置。</li>
+</ul>
+</section>
+
+<!-- ============================================================ 3 -->
+<section id="s3">
+<h2>3　分层与文件组织</h2>
+<h3>3.1 四层分别是什么</h3>
+<table>
+<tr><th style="width:10%">层</th><th style="width:22%">文件</th><th style="width:16%">谁写</th><th style="width:12%">大小上限</th><th>读取方式</th></tr>
+<tr><td><span class="L L0">L0</span></td><td><code>L0-总索引.md</code></td><td><code>kb.py index</code> 生成，勿手改</td><td>≤ 3 KB</td><td>诊断技能的脚本自动附在「客户知识库参照」开头；<code>kb.py query</code> 同样附；也可 <code>kb.py overview</code></td></tr>
+<tr><td><span class="L L1">L1</span></td><td><code>topics/&lt;专题&gt;.md</code></td><td><code>kb.py index</code> 生成；专题定义 <code>topics/_taxonomy.yaml</code> 由管理员维护</td><td>每个 ≤ 6 KB</td><td>脚本按发现映射到专题后自动附命中部分；模型要看全貌用 <code>kb.py topic &lt;专题&gt;</code></td></tr>
+<tr><td><span class="L L2">L2</span></td><td><code>rules/ cases/ wiki/ product/ profiles/ baselines/ defects/ runbooks/ errata/</code></td><td>导入流程（模型起草、人确认）</td><td>单条 ≤ 8 KB（超出拆条）</td><td><code>kb.py show &lt;ID&gt;</code>：一次只取一条；<code>--brief</code> 只取元数据 + 摘要</td></tr>
+<tr><td><span class="L L3">L3</span></td><td><code>sources/</code>（原文快照）、<code>evidence/</code>（照片、日志、报告）、原始工单</td><td>导入时原样存档，只读</td><td>按引句截取</td><td><code>kb.py evidence &lt;ID&gt;</code>：列出该条的证据位置与原文引句；照片给路径，需要时模型再读图</td></tr>
+</table>
+
+<h3>3.2 目录</h3>
+<pre><span class="c"># &lt;kb&gt;/   （与 skills/ 同级，重装不丢 —— 沿用）</span>
+VERSION  kb.yaml
+<span class="k">L0-总索引.md</span>               <span class="c"># L0  生成</span>
+<span class="k">topics/</span>                    <span class="c"># L1</span>
+  _taxonomy.yaml           <span class="c">#     专题定义（源）：名称、同义词、对应哪些发现维度 / 代码</span>
+  lock.md  conn.md  sql.md …  <span class="c">#     生成</span>
+rules/  errata/  cases/      <span class="c"># L2  沿用（规范、修正、案例）</span>
+<span class="b">wiki/  product/  profiles/  baselines/  defects/  runbooks/</span>   <span class="c"># L2  新增（guides/ 拆入这几处）</span>
+graph/                     <span class="c">#     图谱三元组（沿用）；「处置」节点可指向 RB- 手册</span>
+sources/  <span class="b">evidence/</span>          <span class="c"># L3  原文快照 / 照片、日志、报告（只读）</span>
+inbox/  init/  index/  archive/   <span class="c"># 沿用：导入工作区、kb-init、检索索引、废止条款</span>
+<span class="c"># RULES.md / CASES.md / INDEX.md：再生成一个版本作兼容，契约不再要求整份读</span></pre>
+
+<h3>3.3 专题（L1 的划分）</h3>
+<p>初始 12 个，按「现场怎么描述问题」划分，并映射到诊断技能的发现维度，客户可在 <code>_taxonomy.yaml</code> 里增删改：</p>
+<table>
+<tr><th>专题</th><th>常见说法（同义词示例）</th><th>对应的发现</th></tr>
+<tr><td>连接与会话 <code>conn</code></td><td>连接数打满、连不上、会话堆积</td><td>health 连接维度</td></tr>
+<tr><td>锁与阻塞 <code>lock</code></td><td>锁等待、阻塞、死锁、卡住</td><td>lockwait、health 锁维度</td></tr>
+<tr><td>慢 SQL 与执行计划 <code>sql</code></td><td>变慢、跑不完、计划变了</td><td>sqltune、Top SQL</td></tr>
+<tr><td>存储过程 <code>proc</code></td><td>存过慢、批量过程超时</td><td>proctune</td></tr>
+<tr><td>等待事件 <code>wait</code></td><td>IO 等待、LWLock、WAL 等待</td><td>waitevent、WDR</td></tr>
+<tr><td>WAL 与日志 <code>wal</code></td><td>日志暴涨、刷盘慢、归档堆积</td><td>health、WDR</td></tr>
+<tr><td>内存 <code>mem</code></td><td>内存高、OOM、下盘</td><td>memanalyze</td></tr>
+<tr><td>膨胀与回收 <code>vacuum</code></td><td>表膨胀、回收不掉、统计过期</td><td>vacuum、health</td></tr>
+<tr><td>主备与复制 <code>repl</code></td><td>备机延迟、切换</td><td>health</td></tr>
+<tr><td>参数配置 <code>param</code></td><td>参数调整、默认值</td><td>health 参数维度</td></tr>
+<tr><td>空间与存储 <code>space</code></td><td>磁盘满、表空间</td><td>health</td></tr>
+<tr><td>批量与作业 <code>batch</code></td><td>跑批、作业超时、批量窗口</td><td>按时段关联</td></tr>
+</table>
+
+<h3>3.4 每层文件长什么样</h3>
+<div class="two">
+<div>
+<p><span class="L L0">L0</span><b>L0-总索引.md</b>（节选，示例数据）</p>
+<pre># 知识库总索引（L0）v2026.11 · 2026-11-05 生成
+## 知识范围
+| 类型 | 条目 | 最近更新 |
+| 公司内部规范 | 42 | 2026-10-30 |
+| 历史案例排查思路 | 27（已确认 19）| 2026-11-02 |
+| 环境与业务画像 | 3 个系统 | 2026-10-28 |
+| 已知缺陷与版本例外 | <b>0 —— 未登记</b> | |
+## 适用环境
+| 系统 | 产品与版本 | 部署 | 批量窗口 | 画像 |
+| CBST | GaussDB 集中式 505.2 | 一主两备 | 22:00–02:00 | EP-CBST |
+## 专题入口
+| 专题 | 常见说法 | 条目 | 入口 |
+| 锁与阻塞 | 锁等待 阻塞 死锁 | 规范3 案例9 手册2 | topic lock |
+## 读法
+专题 → kb.py topic；引用前 → kb.py show；核原文 → kb.py evidence</pre>
+</div>
+<div>
+<p><span class="L L1">L1</span><b>topics/lock.md</b>（节选，示例数据）</p>
+<pre># 锁与阻塞（L1 专题导航）
+## 症状与同义词
+锁等待 阻塞 死锁 卡住 事务挂起 LockMgrLock …
+## 候选原因（本行确认过的，按案例数）
+| 现象 | 候选根因 | 案例 | 区分证据 |
+| 大量会话等事务锁 | 空闲事务持锁 | 5 | 根会话 idle in transaction，事务早于阻塞开始 |
+| 同上 | 批量 DDL 抢锁 | 2 | 根会话是 DDL，落在批量窗口 |
+## 相关条目（摘要）
+- 规范 GS-XACT-003《事务内禁止人机交互》…
+- 案例 S2-…-空闲事务持锁阻塞（已确认）…
+- 手册 RB-LCK-001《终止阻塞根会话》前提…回退…
+- 反例 S3-…（看似死锁，根因是应用重试风暴）
+（其余 6 条：kb.py topic lock --all）</pre>
+</div>
+</div>
+<p><span class="L L2">L2</span><b>条目内部也按「先摘要、后细节、最后证据」排</b>，<code>show --brief</code> 只取到摘要为止：</p>
+<pre>---
+id: RB-LCK-001
+type: runbook
+title: 终止阻塞根会话
+topics: [lock]
+applies: {product: GaussDB 集中式, versions: "≥ 503", systems: ["*"]}
+not_applies: 根会话是主备同步、备份或 DDL 变更窗口内的进程
+source: 运维手册 v3 §4.2
+as_of: 2026-06
+verification: 已验证
+evidence: ["sources/运维手册v3.docx#p12"]
+---
+## 摘要          <span class="c">← L1 里只显示这一段</span>
+## 执行前提
+## 影响
+## 步骤
+## 验证方法
+## 回退步骤
+## 判断边界      <span class="c">← 什么情况下不能用</span>
+## 证据          <span class="c">← 指向 L3</span></pre>
+</section>
+
+<!-- ============================================================ 4 -->
+<section id="s4">
+<h2>4　读取机制</h2>
+<figure>
+<svg viewBox="0 0 1060 330" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,PingFang SC,Microsoft YaHei,sans-serif" font-size="13">
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#4a5566"/></marker></defs>
+  <!-- 左：诊断 -->
+  <text x="20" y="28" font-weight="600" fill="#123a73" font-size="14">诊断（有发现）</text>
+  <rect x="20" y="42" width="220" height="54" rx="8" fill="#eef1f5" stroke="#b9c4d4"/>
+  <text x="34" y="64" fill="#1b2430">技能脚本跑完，得到发现</text>
+  <text x="34" y="84" fill="#7a8596" font-size="12">health / lockwait / sqltune …</text>
+  <!-- 中：自动附 -->
+  <rect x="290" y="30" width="330" height="140" rx="10" fill="#e7effc" stroke="#c9daf6"/>
+  <text x="304" y="52" font-weight="600" fill="#123a73">脚本自动附「客户知识库参照」（确定性）</text>
+  <rect x="304" y="64" width="300" height="40" rx="6" fill="#fff" stroke="#123a73"/>
+  <text x="314" y="89"><tspan font-weight="700" fill="#123a73">L0</tspan>  范围 + 本实例画像（按连接别名匹配）</text>
+  <rect x="304" y="114" width="300" height="44" rx="6" fill="#fff" stroke="#2f6fdb"/>
+  <text x="314" y="133"><tspan font-weight="700" fill="#2f6fdb">L1</tspan>  发现 → 专题：候选原因 + 区分证据</text>
+  <text x="340" y="150" fill="#4a5566" font-size="12">+ 相关条目摘要（按类型分组，带 ID）</text>
+  <line x1="240" y1="69" x2="288" y2="95" stroke="#4a5566" stroke-width="1.5" marker-end="url(#a)"/>
+  <!-- 右：模型 -->
+  <rect x="680" y="30" width="360" height="66" rx="10" fill="#e3f4ec" stroke="#bfe3d1"/>
+  <text x="694" y="54"><tspan font-weight="700" fill="#1f8a5b">L2</tspan>  模型要引用哪条，先 <tspan font-family="Menlo,monospace">kb.py show &lt;ID&gt;</tspan></text>
+  <text x="694" y="78" fill="#4a5566" font-size="12">步骤、审批、版本结论不许只凭 L1 摘要写；每次 ≤ 5 条</text>
+  <line x1="620" y1="120" x2="678" y2="72" stroke="#4a5566" stroke-width="1.5" marker-end="url(#a)"/>
+  <rect x="680" y="118" width="360" height="98" rx="10" fill="#eef1f5" stroke="#b9c4d4"/>
+  <text x="694" y="142"><tspan font-weight="700" fill="#7a8596">L3</tspan>  只在以下情况 <tspan font-family="Menlo,monospace">kb.py evidence &lt;ID&gt;</tspan></text>
+  <text x="704" y="164" fill="#4a5566" font-size="12">① 两条知识说法冲突　② 用户要看原文</text>
+  <text x="704" y="184" fill="#4a5566" font-size="12">③ 依据未验证 / 推测的条目给高风险操作建议</text>
+  <text x="704" y="204" fill="#4a5566" font-size="12">④ 照片、日志里的数字需要核对</text>
+  <line x1="860" y1="96" x2="860" y2="116" stroke="#4a5566" stroke-width="1.5" marker-end="url(#a)"/>
+  <!-- 下：纯问答 -->
+  <text x="20" y="250" font-weight="600" fill="#123a73" font-size="14">纯问答（没有发现）</text>
+  <rect x="20" y="262" width="220" height="50" rx="8" fill="#eef1f5" stroke="#b9c4d4"/>
+  <text x="34" y="292" fill="#1b2430">「以前有没有类似情况」</text>
+  <rect x="290" y="262" width="330" height="50" rx="8" fill="#e7effc" stroke="#c9daf6"/>
+  <text x="304" y="284" font-family="Menlo,monospace" font-size="12">kb.py query --q "…"</text>
+  <text x="304" y="302" fill="#4a5566" font-size="12">同样输出 L0 + 命中专题的 L1，再按右侧规则下钻</text>
+  <line x1="240" y1="287" x2="288" y2="287" stroke="#4a5566" stroke-width="1.5" marker-end="url(#a)"/>
+  <path d="M620,287 C650,287 650,100 678,80" fill="none" stroke="#4a5566" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#a)"/>
+</svg>
+<figcaption>上两层由脚本保证一定读到、而且量有上限；下两层由模型按规则按需取，每次只取一条</figcaption>
+</figure>
+
+<h3>4.1 规则（写进知识库契约，替换现在「先整份读 RULES.md」那一段）</h3>
+<ol>
+  <li><b>先看 L0</b>：脚本输出的「客户知识库参照」第一段就是 L0；知识库里<b>没登记</b>的类型（如缺陷为 0）要如实说「本行未登记」，不要用通用知识冒充。</li>
+  <li><b>按 L1 选</b>：先看候选原因与区分证据，决定要取哪项证据、引用哪几条；不要整个专题全读（<code>--all</code> 只在用户要「全部列出来」时用）。</li>
+  <li><b>引用前读 L2</b>：处置步骤、审批要求、受影响版本、基线数值，必须出自 <code>show</code> 过的条目；L1 摘要只能用来说「有一条相关规定 / 一单类似案例」。每次回答最多 5 条。</li>
+  <li><b>L3 只在四种情况读</b>（见上图）。冲突时两边并列呈现、附原文，交用户裁决；默认采信顺序：修正 &gt; 规范 &gt; 本环境版本的缺陷与例外 &gt; 手册 &gt; 已确认案例 &gt; 产品文档 &gt; 其余。</li>
+  <li><b>适用性</b>：条目与本实例画像的产品系列、版本、部署形态不符时，写「不适用本环境」，不得当作依据；没有画像时写「适用性未知」。</li>
+  <li><b>标蓝</b>（v1.4.0 已做）：出自知识库的内容照旧标蓝，前面加类型名，如「〔手册 RB-LCK-001〕」。</li>
+</ol>
+
+<h3>4.2 为什么这样分工</h3>
+<table>
+<tr><th style="width:20%">做法</th><th>原因</th></tr>
+<tr><td>L0 / L1 由脚本附带</td><td>「每次诊断先读」如果只写在提示词里，模型会漏；现在 9 个诊断技能的脚本本来就在输出里附知识库一节，把它改成 L0 + L1 是零额外调用，而且可以断言模型「看到了」。</td></tr>
+<tr><td>L2 / L3 用命令取而不是读文件</td><td>命令能保证一次只取一条、有长度上限、自动去掉废止条款和敏感内容；读文件会整份进上下文。命令行权限里技能脚本本来就放行，不用改权限。</td></tr>
+<tr><td>L0 / L1 生成、不手写</td><td>人只维护 L2；L0/L1 由元数据生成，永远和条目一致，不会出现「索引里有、条目已删」。</td></tr>
+<tr><td>大小上限</td><td>L0 ≤ 3 KB、单个专题 ≤ 6 KB、单条 ≤ 8 KB：知识库从几十条长到几千条，进上下文的量基本不变；超出时按「已确认优先、近期优先、案例支持数」截断并提示 <code>--all</code>。</td></tr>
+</table>
+</section>
+
+<!-- ============================================================ 5 -->
+<section id="s5">
+<h2>5　导入怎么变</h2>
+<table>
+<tr><th style="width:16%">步骤</th><th>现在</th><th>改后</th></tr>
+<tr><td>kb-init（入库前标准化）</td><td>工单统一成六要素 md</td><td>先给每份材料<b>提议类型</b>；案例照旧（六要素扩成「候选原因 / 取证顺序 / 排除理由 / 最终验证」可选小节）；其他类型按各自模板生成，长文档按章节拆成多条并各写摘要 <span class="tag chg">扩展</span></td></tr>
+<tr><td><code>ingest</code></td><td>按后缀分规范 / 工单</td><td>可带 <code>--type</code> 提示整批类型；原文存入 <code>sources/</code>，照片、日志存 <code>evidence/</code> <span class="tag chg">扩展</span></td></tr>
+<tr><td><code>propose</code></td><td>给模型发工作单与案例模板</td><td>工作单带上<b>该类型的模板与必填要点</b>、专题清单、已有画像（便于填「现场背景」） <span class="tag chg">扩展</span></td></tr>
+<tr><td><code>review</code></td><td>核原文引句、结论强度、ID 冲突，出编号清单</td><td>清单多两列：<b>类型、专题</b>；按类型报缺失要点；同症状不同根因而缺区分证据的标黄；产品文档缺系列 / 版本的标红 <span class="tag chg">扩展</span></td></tr>
+<tr><td>人确认</td><td>边、合并建议</td><td>另外确认类型与专题；可整批改：「1–8 都是 Wiki」 <span class="tag chg">扩展</span></td></tr>
+<tr><td><code>apply</code> / <code>index</code></td><td>落盘、建索引、生成三份清单</td><td>落到对应类型目录；生成 L0、各专题 L1；<code>validate</code> 按类型校验 <span class="tag chg">扩展</span></td></tr>
+<tr><td>环境画像</td><td>—</td><td><code>kb.py profile draft --alias og5</code>：用现有技能<b>只读</b>取版本、部署形态、参数概况起草，管理员补连接池、批量窗口、业务依赖后确认。不改客户库 <span class="tag new">新</span></td></tr>
+<tr><td>改类型</td><td>—</td><td><code>kb.py retype &lt;ID&gt; --to wiki</code>：换目录与 ID 前缀，旧 ID 留跳转，报告里引用过的旧 ID 仍能追溯 <span class="tag new">新</span></td></tr>
+</table>
+<div class="callout green"><b>导入顺序建议</b>（写进 <code>kb.py health</code> 的「下一步」提示）：① 环境画像 + 现行规范 → ② 高频故障案例与排查步骤、处置手册 → ③ 对应的产品文档章节 → ④ Wiki 持续补齐。health 按类型统计覆盖度，缺画像时明确提示「适用性无法判断」。</div>
+</section>
+
+<!-- ============================================================ 6 -->
+<section id="s6">
+<h2>6　检索与诊断联动</h2>
+<table>
+<tr><th style="width:22%">改动</th><th>内容</th></tr>
+<tr><td>索引带上类型与专题</td><td>每条带 <code>type</code>、<code>topics</code>、<code>applies</code>（系列 / 版本 / 系统）；按类型分配名额（现在是条款 3 / 案例 3 / 原始 2 / 指南 2，改为按 8 类配置）。</td></tr>
+<tr><td>适用性过滤</td><td>脚本知道当前连接别名 → 找到画像 → 比对产品系列与版本：不符的降权并标「不适用本环境」，不丢弃（让模型能说明「这条是 openGauss 的行为」）。</td></tr>
+<tr><td>修正优先</td><td>补上现在缺的：同一主题命中修正时，修正排在被修正条目之前。</td></tr>
+<tr><td>新类型的展示</td><td>「贵行基线」并列在对应发现旁；「已知缺陷」写本环境是否受影响；「处置手册」接在本行历史路径的处置节点后。<b>severity 一律仍以脚本为准</b>（契约不变）。</td></tr>
+<tr><td>知识库一节的输出</td><td>由「状态行 + 每条发现的五类引用」改为「L0 摘要 + 每条发现的 L1（候选原因 / 区分证据 / 按类型分组的条目摘要）」；长度有上限，比现在更短。</td></tr>
+<tr><td>cite-check</td><td>认识新 ID 前缀（WK / PD / EP / BL / KD / RB），改过类型的旧 ID 按跳转核对。</td></tr>
+</table>
+</section>
+
+<!-- ============================================================ 7 -->
+<section id="s7">
+<h2>7　存量迁移与兼容</h2>
+<table>
+<tr><th style="width:20%">存量</th><th>迁移</th></tr>
+<tr><td><code>rules/</code> 条款</td><td>直接是「公司内部规范」；审批、生效版本缺失只告警。专题由关键词匹配提议。</td></tr>
+<tr><td><code>cases/</code> 案例</td><td>直接是「历史案例排查思路」；新增小节可选，旧案例照常有效。专题按图谱的症状节点提议。</td></tr>
+<tr><td><code>guides/</code> 指南</td><td><code>kb.py migrate</code> 逐条提议类型（产品文档 / Wiki / 手册），人确认后移入对应目录；未确认前显示「Wiki 经验（类型待确认）」。</td></tr>
+<tr><td><code>errata/</code></td><td>保留；加 <code>corrects:</code> 指向被修正的条目 ID（可选）。</td></tr>
+<tr><td>原始工单、<code>sources/</code></td><td>即 L3，不动。</td></tr>
+</table>
+<ul>
+  <li><b>不迁移也能用</b>：没有类型的条目显示「未分类」，检索与引用照旧；L0/L1 照常生成（未分类单列）。</li>
+  <li><b>迁移命令</b>：<code>kb.py migrate</code>（只出清单）→ 人确认 → <code>kb.py migrate --apply</code> → <code>kb.py index</code>。全程可重复执行，已迁移的跳过。</li>
+  <li><b>兼容期</b>：<code>RULES.md / CASES.md / INDEX.md</code> 再生成一个版本；契约改为走 L0/L1，下一版删除。</li>
+  <li><b>容器版</b>：只读的 <code>gaussdb-kb</code>（诊断环境）新增 <code>overview / topic / show / evidence</code>；<code>gaussdb-kb-import</code>（导入环境）承担类型、迁移、画像起草与生成。</li>
+</ul>
+</section>
+
+<!-- ============================================================ 8 -->
+<section id="s8">
+<h2>8　改动与工作量</h2>
+<table>
+<tr><th style="width:8%">阶段</th><th style="width:20%">内容</th><th>主要改动</th><th class="c" style="width:7%">天</th></tr>
+<tr><td>K1</td><td>类型与格式</td><td>类型登记表（8 类的目录、ID 前缀、必填要点、模板）；<code>validate</code> 按类型校验；共用字段；画像的敏感信息拦截；cite-check 新前缀</td><td class="c">3</td></tr>
+<tr><td>K2</td><td>导入</td><td>kb-init 提议类型与按类型模板、长文档拆条；ingest / propose / review / apply 带类型与专题；画像起草；retype</td><td class="c">5</td></tr>
+<tr><td>K3</td><td>分层与读取命令</td><td>专题定义；index 生成 L0 与各专题 L1（含反例组、截断规则）；<code>overview / topic / show / evidence</code></td><td class="c">4</td></tr>
+<tr><td>K4</td><td>检索与诊断联动</td><td>索引元数据、按类型名额、适用性过滤、修正优先；知识库一节改成 L0 + L1；契约、gaussdb-kb、AGENTS.md 的读取规则</td><td class="c">4</td></tr>
+<tr><td>K5</td><td>迁移、样例库、评测</td><td><code>migrate</code>；样例库补齐 8 类（含一组反例、一条 openGauss 文档陷阱）；评测集加按类型的金丝雀与版本陷阱，统计每次回答进上下文的知识库字数与 L2 读取次数</td><td class="c">3</td></tr>
+<tr><td>K6</td><td>容器版与交付</td><td>同步到部署仓（查询 / 导入两个技能各自的命令）；交付手册与版本说明；测试环境用真实模型跑诊断与问答各一轮</td><td class="c">3</td></tr>
+<tr><td colspan="3" style="text-align:right"><b>合计</b></td><td class="c"><b>22</b></td></tr>
+</table>
+<p class="small">白名单：画像起草只复用现有技能已在白名单里的取数（版本、参数、拓扑），预计不新增白名单条目；如需新增，在 K2 结束前列出交中间件团队。</p>
+</section>
+
+<!-- ============================================================ 9 -->
+<section id="s9">
+<h2>9　风险</h2>
+<table>
+<tr><th style="width:24%">风险</th><th>应对</th></tr>
+<tr><td>模型把类型判错</td><td>人确认清单里逐条显示类型，可整批改；按类型校验必填要点，判错的条目往往缺要点，会被拦下；导入后可 retype。</td></tr>
+<tr><td>导入变慢、要填的东西变多</td><td>所有类型只有「类型、摘要、专题、出处」是硬性的；类型要点缺失多数只告警。画像由脚本起草。</td></tr>
+<tr><td>模型不按层读，直接读文件</td><td>L0/L1 由脚本附带，不依赖自觉；契约写明引用前必须 show；评测统计 L2 读取次数与知识库字数，回归时看得见。</td></tr>
+<tr><td>适用性判断出错（画像写错、版本格式不一）</td><td>只降权、不丢弃，并写明「不适用 / 未知」的理由；版本统一成可比较的格式，解析不了按「未知」。</td></tr>
+<tr><td>画像里写进敏感信息</td><td>校验拦截 IP、主机名、端口、口令样式；画像只记连接别名。</td></tr>
+<tr><td>与 v1.4.0 已交付知识库的兼容</td><td>不迁移也能用；迁移可重复执行；兼容清单保留一个版本。</td></tr>
+</table>
+</section>
+
+<!-- ============================================================ 10 -->
+<section id="s10">
+<h2>10　待确认</h2>
+<ol class="q">
+  <li><b>一个条目一个主类型，还是允许多类型？</b> <span class="rec">建议一个主类型</span>，混合内容拆条；多类型会让必填要点无法校验。</li>
+  <li><b>类型由目录决定，还是只是一个字段？</b> <span class="rec">建议目录 + 字段双写并校验一致</span>：目录便于浏览与检索范围控制，字段让条目复制到别处也能自我说明。</li>
+  <li><b>环境画像怎么来？</b> <span class="rec">建议脚本只读起草 + 管理员补全确认</span>；纯手写也可以，但版本、部署形态容易写错。</li>
+  <li><b>指标基线只并列展示，还是允许替换技能的阈值？</b> <span class="rec">建议只并列展示</span>，保持「判定以脚本为准」的契约；替换阈值另立需求。</li>
+  <li><b>专题清单</b>：<span class="rec">建议先用上面 12 个</span>，客户可增改；还是由你们先给一份？</li>
+  <li><b>旧清单 RULES.md / CASES.md</b>：<span class="rec">建议保留一个版本</span>再删，还是这一版直接下线？</li>
+  <li><b>版本号</b>：条目结构有变，<span class="rec">建议容器版 v1.5.0、主干 skills-v13</span>。</li>
+</ol>
+</section>
+
+</div>
+</body>
+</html>

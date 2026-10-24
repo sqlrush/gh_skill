@@ -1,7 +1,7 @@
 ---
 name: gaussdb-kb
-version: 2.4.0
-description: "客户知识库(原 kbimport):把客户的 GaussDB/OpenGauss 规范文档(txt/md/docx/doc/pdf)与故障工单/问题分析报告(md/docx/csv/xlsx)导入知识库——规范条款化进 rules/guides/errata,工单结构化成案例并抽成图谱关系,关键数据写入前一律生成编号选择列表交用户确认;向量进知识库目录里的 SQLite 索引(sqlite-vec,不用配)、关系写进图文件 graph/*.yaml(配了 Neo4j 再同步进图库,可选;没有图库时路径直接走图文件),各诊断 skill 按发现检索并优先引用客户先例。脚本负责转换、快照、校验、索引、检索、契约注入;你负责条款分类、案例抽取、呈现选择列表与收集确认。用户说「导入规范 / 导入工单 / 建知识库 / 把 xxx 加进知识库 / 更新规范库 / 知识库里有没有类似案例 / 让 skill 按我们的经验来」即用。"
+version: 3.0.0
+description: "客户知识库(原 kbimport):把客户的 GaussDB/OpenGauss 规范文档(txt/md/docx/doc/pdf)、故障工单/问题分析报告(md/docx/csv/xlsx)、手册 / Wiki / 产品文档 / 环境画像导入知识库——每条知识打上八类类型之一(规范、案例、画像、基线、缺陷、手册、产品文档、Wiki),规范条款化进 rules/errata,工单结构化成案例并抽成图谱关系,其余六类按模板写成类型化条目;知识库按 L0 总索引 → L1 专题导航 → L2 条目 → L3 原始证据分层,查询时逐层下钻(overview / topic / show / evidence),关键数据写入前一律生成编号选择列表交用户确认;向量进知识库目录里的 SQLite 索引(sqlite-vec,不用配)、关系写进图文件 graph/*.yaml(配了 Neo4j 再同步进图库,可选;没有图库时路径直接走图文件),各诊断 skill 按发现检索并优先引用客户先例。脚本负责转换、快照、校验、索引、检索、契约注入;你负责条款分类、案例抽取、呈现选择列表与收集确认。用户说「导入规范 / 导入工单 / 建知识库 / 把 xxx 加进知识库 / 更新规范库 / 知识库里有没有类似案例 / 让 skill 按我们的经验来」即用。"
 allowed-tools: ["exec", "read", "write"]
 compatibility: opencode
 metadata:
@@ -36,6 +36,25 @@ python3 {baseDir}/scripts/kb.py health
 然后 `kb.py setup && kb.py index`。
 **不要自己去读凭据文件**;也不要因为是文件模式就跳过导入或降低引用要求。
 
+## 0.5 先定类型(八类知识)
+
+每条入库的知识**只有一个主类型**,类型决定放哪个目录、必须记什么(`validate` 按类型校验)。详见
+`{baseDir}/references/knowledge-types.md`;判定口诀:
+
+| 这段内容在说什么 | 类型 | 怎么入库 |
+|---|---|---|
+| 必须 / 禁止 / 需审批 / 自某日起执行 | 公司内部规范 | 条款化进 `rules/`(下面第 1 节);修正与例外进 `errata/` |
+| 某一次故障从发现到恢复的经过 | 历史案例排查思路 | 工单路径(第 2 节) |
+| 某个系统是什么样:版本、拓扑、连接池、批量 | 环境与业务画像 | `kb.py profile` 起草 → `add`(第 2.5 节) |
+| 某个指标怎么算、平时多少 | 指标口径与正常基线 | `template baseline` → `add` |
+| 某版本有缺陷、打什么补丁、厂商怎么说 | 已知缺陷与版本例外 | `template defect` → `add` |
+| 遇到某情况按什么步骤做、怎么回退 | 处置与恢复手册 | `template runbook` → `add` |
+| 出自 GaussDB 官方文档 / 产品手册 | 高斯产品文档 | `template product` → `add`(**必须写产品系列与版本**) |
+| 其余经验总结、技术帖 | 存量 Wiki 经验 | `template wiki` → `add`(注明验证状态) |
+
+一篇材料里混着几类时**拆成多条**,共用同一份原文出处;不做多类型。给用户确认的清单里**每条都写类型与专题**,
+用户可以整批改(「1–8 都是 Wiki」)。建议的导入顺序:环境画像 + 现行规范 → 高频故障案例与处置手册 → 对应产品文档章节 → Wiki 持续补齐。
+
 ## 1. 规范路径(txt/md/docx/doc/pdf → 条款)
 
 1. **导入**:`python3 {baseDir}/scripts/kb.py ingest 客户规范.docx`
@@ -48,10 +67,12 @@ python3 {baseDir}/scripts/kb.py health
    脚本列出「沙箱里找到同名文件」时,先向用户确认是不是这一份再用。md/txt/csv 这类文本材料,用户明确要求时也可以直接贴进对话,
    由你写到收件目录下的同名文件再 ingest(原文以贴入内容为准,告诉用户这一点)。
 2. **条款化(你的核心工作)**:先读 `{baseDir}/references/kb-layout.md`(格式与 ID 规范),再按 `outline.md` 分段读 `source.md`:
-   能写成「看到 X 即违规」→ `rules/<域>.yaml`(拿不准 → `check: advisory`);讲设计方法/权衡 → `guides/*.md`;
-   与库内既有条款矛盾/版本特例 → `errata/`。每条带 `source` 指回原文小节,rules 条款补 3-6 个 `keywords` 同义词;
+   能写成「看到 X 即违规」→ `rules/<域>.yaml`(拿不准 → `check: advisory`);与库内既有条款矛盾/版本特例 → `errata/`;
+   讲操作步骤 / 产品行为 / 经验的,按 0.5 节的类型写成类型化条目(**不再新写 `guides/`**)。
+   每条带 `source` 指回原文小节,rules 条款补 3-6 个 `keywords` 同义词、`topics`(专题)、`approval`(审批与变更要求)、
+   `effective`(生效版本 / 日期);
    分配 ID 前 `kb.py search GS-<域>- --include-archived` 查最大号,**ID 永不复用**。
-3. **确认后再写**:条款超过 10 条时,先给用户一张「ID + 一句话 + 去向文件 + 新增/沿用/修改/废止」清单,确认后再写入;
+3. **确认后再写**:条款超过 10 条时,先给用户一张「ID + 类型 + 专题 + 一句话 + 去向文件 + 新增/沿用/修改/废止」清单,确认后再写入;
    原文模糊、前后矛盾的条款单独列出问用户,**不要替客户定规范**。
    `ingest` 打印「⚠ 换版导入」时,必须先读 `INDEX.md` 逐条比对,废止的**整条移进 `archive/<域>.yaml`** 并标
    `status: deprecated`(各 skill 用 grep 检索 rules/,留在原处只打标记照样会被命中——物理隔离才拦得住),最后递增 `VERSION`。
@@ -81,6 +102,9 @@ python3 {baseDir}/scripts/kb.py health
    - **一条案例的 `exhibits` 目标现象与它 `caused_by` 起点的现象必须是同一个名字**(写成两个就是两个节点,
      这条案例永远走不到自己的路径,`validate` 会点名;修法见 `references/graph-schema.md` 的 canonical.yaml);
    - 边只写原文能支撑的 现象→根因(`caused_by`)、根因→处置(`handled_by`),`confidence` 是你的把握(0.5–0.9);
+   - `case.topics` 写所属专题(`kb.py topic --list`);能从原文看出排查过程的,填 `候选原因 / 取证顺序 / 排除理由 / 最终验证`;
+   - **同一现象本行已有别的根因时,必须写「区分证据」**(凭什么是这个根因、不是那个)——`review` 会在案例行后面标
+     「⚠ 同现象…本行已有根因…请补区分证据」,这是「看起来相同、根因不同」的反例,不写区分证据经验越多越容易套错;
    - 每轮 5–10 单,多的下一轮 `propose --offset` 续跑。
 4. **选择列表(写库前的唯一闸门)**:`kb.py review <slug>` 生成 `review.md`——**原样呈现给用户**(格式与各类默认见
    `{baseDir}/references/selection-list.md`),收集回答。`[边]` 没有默认接受:用户不答就留候选(可检索,不进「本行历史路径」——
@@ -92,18 +116,44 @@ python3 {baseDir}/scripts/kb.py health
 
 案例格式见 `{baseDir}/references/case-format.md`,图的 kind/rel 见 `{baseDir}/references/graph-schema.md`。
 
+## 2.5 类型化条目(手册 / 缺陷 / 基线 / 产品文档 / Wiki / 画像)
+
+1. **骨架**:`python3 {baseDir}/scripts/kb.py template <runbook|defect|baseline|product|wiki|profile>` 打印 frontmatter + 小节;
+   照它在 `<kb>/inbox/drafts/` 下写草稿(一条一个 md,`id: auto`)。`## 摘要` 必填,≤200 字、结论在前——L1 专题导航只显示它。
+   画像用 `kb.py profile --system CBST --alias og5 --version-string "<登录输出里的版本串>"` 起草,**只写连接别名,不写 IP / 主机名 / 口令**
+   (校验会拦);连接池、批量窗口、关键业务依赖要管理员补。
+2. **确认**:把草稿清单(类型 · 标题 · 专题 · 适用产品与版本)给用户确认,不确认不入库。
+3. **入库**:`kb.py add <kb>/inbox/drafts --move`——脚本校验、分配 ID(WK / PD / KD / RB-域 / EP-系统 / BL-系统-指标)、放进类型目录;
+   有 `[error]` 的拒收(修完再 add),`[warn]` 逐条向用户说明。
+4. 原始证据(照片、日志、报告):`kb.py attach <文件> --to <ID>` 存进 `evidence/` 并登记到条目;类型判错了 `kb.py retype <ID> --to <类型>`
+   (旧 ID 进 aliases,历史引用仍可追溯);专题要增删改先 `kb.py taxonomy --init` 写出 `topics/_taxonomy.yaml` 再编辑。
+5. `kb.py validate && kb.py index`:index 同时重建 L0(`L0-总索引.md`)与 L1(`topics/<专题>.md`)。
+
+**存量迁移**(升级前导入的知识库):`kb.py migrate` 出清单(旧指南提议类型、条款与案例补专题)→ 原样给用户确认、按回答改清单 →
+`kb.py migrate --apply` → `validate && index`。产品文档必须补产品系列与版本才迁得过去。
+
 ## 3. 查询(用户直接问"以前有没有类似情况")
 
 ```bash
-python3 {baseDir}/scripts/kb.py query --q "<用户的问题>"
+python3 {baseDir}/scripts/kb.py query --q "<用户的问题>" [--alias <当前连接别名>]
 ```
 
-输出就是各诊断 skill 里同款的「客户知识库参照」小节:贵行规范 / 历史相似(带结论强度与处置)/ 本行历史路径
-(只含客户确认过的边,标几个案例支持)/ 原始工单。**引用必带 ID 与出处**;写着「无」就如实说「本行无先例,以下为通用做法」;
+输出就是各诊断 skill 里同款的「客户知识库参照」小节(L0 + L1):状态行下是本实例画像与八类知识各登记了多少,然后是专题、
+本行确认过的候选原因,再是贵行规范 / 历史相似(带结论强度与处置)/ 本行历史路径(只含客户确认过的边,标几个案例支持)/
+处置手册 / 已知缺陷 / 贵行基线 / 产品文档 / Wiki 经验 / 原始工单。**逐层往下读**:
+
+| 层 | 命令 | 什么时候 |
+|---|---|---|
+| L0 | `kb.py overview [--alias og5]` | 想知道库里有什么、本实例是什么环境 |
+| L1 | `kb.py topic <专题>` | 看某个专题的候选原因、区分证据、相关条目;`--list` 列专题 |
+| L2 | `kb.py show <ID> [--alias og5]` | **引用某条的步骤、审批、版本结论之前必读**;每次回答最多 5 条 |
+| L3 | `kb.py evidence <ID>` | 两条知识冲突、用户要原文、依据未验证却要给高风险建议、核对照片 / 日志里的数字 |
+
+条目带〔不适用本环境:…〕的不得作为依据;〔未知本环境…〕的引用时说明适用性未知。**引用必带 ID 与出处**;写着「无」就如实说「本行无先例,以下为通用做法」;
 绝不编案例或规范。有 findings 的 9 个诊断 skill(health / lockwait / waitevent / vacuum / wdr / memanalyze / sqltune /
 proctune / sqlreview)不用你查——它们的脚本已经把这一节写进 markdown 输出了(wdr 在 `collect` 的证据包里)。
-三种模式输出同一格式;文件模式的状态行写「模式:文件(原因)」,引用要求不变。要看案例全文时先读 `<kb>/CASES.md`
-(案例逐条清单)再读 `<kb>/cases/` 的文件,不要整目录灌进上下文。
+三种模式输出同一格式;文件模式的状态行写「模式:文件(原因)」,引用要求不变。要看全文用 `kb.py show <ID>`,
+不要整目录灌进上下文。
 
 **出自知识库的内容用蓝色标出**(对话界面靠它让用户一眼看出哪些话来自客户知识库):转述条款、案例与其处置、本行历史路径、
 原始工单、指南时,连同 ID 与出处整句包进 `<span style=color:var(--color-v2-text-text-accent,#2563eb)>…</span>`,
@@ -126,7 +176,8 @@ python3 {baseDir}/scripts/kb.py contract --apply    # 用户确认后执行
 
 - `kb.py validate`:除 schema / 出处 / ID 外,还会点名**走不到路径的现象**(只被案例 exhibits、没有 caused_by 出边)
   ——这是纯词法检索(文件模式 / 未配 embedding)下「路径:无」的头号原因,按提示在 `graph/canonical.yaml` 里归一;
-- `kb.py health`:状态行、覆盖率、待处理、**缺口清单**(近期查不到条款/案例的发现——提示该补哪类材料);
+  以及类型化条目缺的要点、没归专题的条目、**同现象不同根因却没写区分证据的案例**、没写审批 / 生效版本的条款、未迁移的旧指南;
+- `kb.py health`:状态行、覆盖率、八类知识各多少与**下一步该补什么**、待处理、**缺口清单**(近期查不到条款/案例的发现);
 - `kb.py eval`:跑 `<kb>/eval/queries.yaml` 的黄金查询与金丝雀案例(与通用做法**故意相反**的客户处置),recall 不达标退出 2;
 - `kb.py cite-check --text "<回答>"`(或 `--file`、stdin):核对回答里引用的案例 ID / 条款 ID 是否真在库里——未找到的标「疑似编造」
   并退出 2,已废止条款标 ⚠。用户要求复核时跑它;你自己作答引用了 ID,交稿前也先跑一遍,未找到的 ID 从回答里删掉;

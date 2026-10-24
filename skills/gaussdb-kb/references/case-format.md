@@ -1,6 +1,7 @@
 # 案例文件格式(`<kb>/cases/S<级>-YYYYMMDD-<系统>-<标题>.md`)
 
-一份工单 / 问题分析报告结构化之后的样子。参考现场 gaussdb-rootcause 的 S1 文件,四节 + 头部字段。
+一份工单 / 问题分析报告结构化之后的样子。参考现场 gaussdb-rootcause 的 S1 文件,现场 / 判断 / 处置三节必填 + 头部字段;
+2026-10-24 起案例记**排查思路**,可选小节:候选原因 / 取证顺序 / 排除理由 / 最终验证 / 区分证据(见下)。
 **文件名就是案例 ID**,由 `kb.py review` 按 `severity / occurred_at / system / title` 生成,永不复用。
 
 ```markdown
@@ -21,16 +22,32 @@ entered_at: 2026-09-02
 objects: [cbst.cosp_asyn_task_dtl, autovacuum_vacuum_threshold]   # 表 / GUC / 等待事件 / 错误码,原样
 signals: [单条 update 偶发秒级, autovacuum 频繁触发]                 # 复发标志:再发时能观察到什么
 rules: [GS-VAC-002]               # 引用的客户条款 ID,可空
+topics: [vacuum]                  # 所属专题(kb.py topic --list),决定进哪个 L1 专题导航
+evidence: [evidence/20250224-慢日志.png]   # 可选:照片、日志等原始证据(kb.py attach 存档)
 ---
 ## 现场
-业务偶现单条 update 走索引执行耗时 3s。
+业务偶现单条 update 走索引执行耗时 3s。(现场背景:CBST 日间联机、505.2 主备,非批量窗口)
+## 候选原因
+锁等待;计划跳变;autovacuum 干扰。
+## 取证顺序
+先看 pg_locks 有无等待 → 再看执行计划是否变化 → 最后看该表 autovacuum_count 与发生时刻是否重合。
+## 排除理由
+无锁等待记录;计划稳定走索引。
 ## 判断
 autovacuum 检测到表尾部空页时触发 page 回收,持 8 级锁;正常 DML 进来会 cancel 掉 autovacuum…
 ## 处置
 针对 cbst.cosp_asyn_task_dtl 小表,调大 autovacuum_vacuum_threshold 减少 vacuum 频率。
+## 最终验证
+调大阈值后一周内该表 autovacuum 次数下降 90%,未再出现 3s update。
 ## 复发标志
 单条 update 偶发 3s 且该表 autovacuum 次数异常高。
+## 区分证据
+与「锁等待导致 update 慢」区分:本案发生时 pg_locks 无等待、该表 autovacuum 恰在同一秒触发。
 ```
+
+小节顺序固定:现场 → 候选原因 → 取证顺序 → 排除理由 → 判断 → 处置 → 最终验证 → 复发标志 → 区分证据;
+只认这九个名字,其余小节名是 error。**区分证据**在本行同一现象有过不同根因时必须写(看起来相同、根因不同的反例):
+L1 专题导航把这些案例并排列出,诊断时模型先按区分证据取证;`validate` / `review` 会点名没写的。
 
 ## 各部分进哪个库
 

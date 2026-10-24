@@ -5,15 +5,21 @@
 ```
 <kb>/                        # 与 skills/ 同级,随 skill 一起安装,重装不丢
   VERSION                    # 如 2026.07;规范大版本更新时手工递增
-  INDEX.md                   # 文件级地图(errata/guides/archive 一览),index 生成,勿手工编辑
-  RULES.md                   # 现行条款逐条清单(L1,判定前全量读),index 生成,勿手工编辑
-  CASES.md                   # 案例逐条清单(ID/系统/时间/结论强度/复发标志/文件),index 生成,勿手工编辑
-  errata/                    # 修正与例外(最高优先级):实战纠错、版本差异
-  rules/                     # 机器可判定条款(yaml,稳定 GS-* ID)—— 全部现行有效
-  guides/                    # 语义指南(md + frontmatter)
+  L0-总索引.md               # L0:知识范围(八类各多少)、适用环境(画像)、专题入口 —— index 生成,勿手工编辑
+  topics/                    # L1:每个专题一份导航(候选原因 + 区分证据 + 条目摘要)—— index 生成
+    _taxonomy.yaml           #     专题定义(可编辑:kb.py taxonomy --init 写出默认)
+  INDEX.md                   # 文件级地图(各目录一览),index 生成,勿手工编辑
+  RULES.md                   # 现行条款逐条清单(兼容保留一个版本),index 生成,勿手工编辑
+  CASES.md                   # 案例逐条清单(兼容保留一个版本),index 生成,勿手工编辑
+  errata/                    # L2 公司内部规范 · 修正与例外(最高优先级):实战纠错、版本差异
+  rules/                     # L2 公司内部规范 · 机器可判定条款(yaml,稳定 GS-* ID)—— 全部现行有效
+  cases/                     # L2 历史案例排查思路
+  runbooks/ defects/ baselines/ product/ wiki/ profiles/   # L2 六类类型化条目,见 knowledge-types.md
+  guides/                    # 旧版语义指南(不再新写;kb.py migrate 归到上面六类)
   archive/                   # 已废止条款(yaml)—— 不在检索范围内,仅供 ID 追溯
-  sources/                   # 原始文档快照(只读存档,不进上下文)
-  inbox/<slug>/              # ingest 产物:source.md + outline.md,条款化完删除
+  sources/                   # L3 原始文档快照(只读存档,不进上下文;kb.py evidence 按出处截取)
+  evidence/                  # L3 照片、日志、报告(kb.py attach 存档)
+  inbox/<slug>/              # ingest 产物:source.md + outline.md,条款化完删除;inbox/drafts/ 放类型化条目草稿
 ```
 
 **`rules/` 里的条款一律是现行有效的。** 各 skill 用
