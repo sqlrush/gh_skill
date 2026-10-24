@@ -302,7 +302,7 @@ def cmd_health(args: argparse.Namespace) -> int:
         if not status.attached:
             print(f"[error] 知识库未接入:{status.reason}")
     # 每次覆盖 kb/health.json:大盘知识库页读它;失败只 warn,不改退出码
-    reports.archive("kb", d, name="health")
+    reports.announce("kb", reports.archive("kb", d, name="health"), "")   # 标准错误:大盘知识库页的直达链接
     if not status.attached:
         return 2
     return 2 if d["pending"] else 0

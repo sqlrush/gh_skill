@@ -60,3 +60,11 @@ def test_reports_without_a_window_index_as_before(monkeypatch, tmp_path):
     reports.archive("health", {"overall": 0}, instance="k", now="20261016T080000Z")
     idx = json.loads((tmp_path / "health" / "k" / "index.json").read_text(encoding="utf-8"))
     assert "window" not in idx[0]
+
+
+def test_kb_link_is_the_one_shared_page(capsys):
+    """知识库全体共享一份、不分实例:链接就是 /dash/kb。以前 DASH_PAGES 没有 kb,health 只存不给链接(2026-10-24)。"""
+    assert reports.dash_link("kb", pathlib.Path("/r/kb/health.json"), "") == "/dash/kb"
+    reports.announce("kb", pathlib.Path("/r/kb/health.json"), "")
+    out, err = capsys.readouterr()
+    assert out == "" and "[打开知识库大盘](/dash/kb)" in err

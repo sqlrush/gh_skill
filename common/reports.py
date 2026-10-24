@@ -260,7 +260,9 @@ def archive(skill: str, payload: Any, *, name: Optional[str] = None,
 
 
 # 有大盘页的技能 → 页面名。调优没有自己的页(出现在 Top SQL 的明细里),知识库不分实例。
-DASH_PAGES = {"health": "health", "topsql": "topsql", "wdr": "wdr"}
+# 知识库(kb)全体共享一份、不分实例,大盘上就是一个页面 /dash/kb;以前漏了它,kb.py health 只存 health.json
+# 不给链接,模型只能说「入口在大盘页」(2026-10-24 用户测试)。
+DASH_PAGES = {"health": "health", "topsql": "topsql", "wdr": "wdr", "kb": "kb"}
 
 
 def dash_link(skill: str, path: Optional[pathlib.Path], instance: str, by: str = "",
@@ -278,6 +280,8 @@ def dash_link(skill: str, path: Optional[pathlib.Path], instance: str, by: str =
     page = DASH_PAGES.get(skill)
     if path is None or page is None:
         return ""
+    if skill == "kb":                       # 不分实例、不分哪一次:页面读的就是最新那份 health.json
+        return "/dash/kb"
     q = [("inst", instance_key(instance))]
     if skill != "topsql" or path.name.count(".") >= 3:
         q.append(("run", path.name))
@@ -324,7 +328,7 @@ def announce(skill: str, path: Optional[pathlib.Path], instance: str, by: str = 
     link = dash_link(skill, path, instance, by, span)
     if not link:
         return
-    md = "[打开报告](%s)" % dash_url(link)
+    md = "[%s](%s)" % ("打开知识库大盘" if skill == "kb" else "打开报告", dash_url(link))
     print("已存入大盘:%s —— 这是给用户看的页面,**把这个 Markdown 链接原样放进回答里**"
           "(不要只写路径,裸路径用户点不开)。" % md, file=sys.stderr)
 

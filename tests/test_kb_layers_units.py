@@ -327,3 +327,10 @@ def test_current_alias_maps_the_api_connection_back_to_the_login_alias(monkeypat
     assert kbquery.current_alias() == "og", "gsql 模式:连接名就是配置里的名字"
     monkeypatch.setattr(gsession, "current", lambda: None)
     assert kbquery.current_alias() == ""
+
+
+def test_kb_health_gives_the_dashboard_link_when_archived(kb, capsys, monkeypatch, tmp_path):
+    monkeypatch.setenv("GSDB_REPORTS_DIR", str(tmp_path / "reports"))
+    rc, out = run(capsys, "health", "--kb", str(kb))
+    assert (tmp_path / "reports" / "kb" / "health.json").is_file()
+    assert "[打开知识库大盘](/dash/kb)" in out, "health 存档后要给大盘知识库页的直达链接"
