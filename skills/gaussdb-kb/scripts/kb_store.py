@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from common import reports
+from common.kb import catalog as kbcat
 from common.kb import config as kbconfig
 from common.kb import indexer, query as kbquery, render
 from common.kb import store_graph as sg
@@ -253,44 +254,10 @@ def health_dict(kb: pathlib.Path, status, file_warnings: list, readonly: bool) -
         "index_state": indexer.read_state(kb) or {},
         "pending": _pending(kb),
         "misses": [{"code": code, "n": n} for code, n in _misses_top(kb)],
-        "types": type_counts(kb),
+        "types": kbcat.coverage(kb),
     }
 
 
-# 八类知识的计数口径与建议的导入顺序(2026-10-24):最小环境画像和现行规范 → 高频故障案例及排查步骤 → 对应产品章节 → Wiki
-TYPE_ROWS = (("norm", "规范"), ("case", "案例"), ("profile", "画像"), ("baseline", "基线"), ("defect", "缺陷"),
-             ("runbook", "手册"), ("product", "产品文档"), ("wiki", "Wiki"), ("guide", "指南(待归类)"))
-
-
-def type_counts(kb: pathlib.Path) -> dict:
-    from common.kb import catalog as kbcat
-    try:
-        c = kbcat.type_counts(kbcat.load(kb))
-    except Exception:                                     # noqa: BLE001  大盘数据,读不了就空
-        return {}
-    c["norm"] = c.get("norm", 0) + c.pop("errata", 0)
-    return {k: c.get(k, 0) for k, _ in TYPE_ROWS}
-
-
-def next_step(types: dict) -> str:
-    """按建议的导入顺序,说下一步最该补什么。"""
-    if not types:
-        return ""
-    if not types.get("profile"):
-        return "先登记环境画像(kb.py profile 起草):没有画像,条目对本环境适不适用无法判断"
-    if not types.get("norm"):
-        return "导入现行规范(公司内部规范)"
-    if types.get("case", 0) < 5:
-        return "导入高频故障案例(带排查思路:候选原因、取证顺序、排除理由、区分证据)"
-    if not types.get("runbook"):
-        return "补处置与恢复手册(执行前提、影响、验证、回退)"
-    if not types.get("product"):
-        return "补对应的产品文档章节(写清产品系列与版本)"
-    if types.get("guide"):
-        return "旧指南还没归类型:kb.py migrate"
-    if not types.get("wiki"):
-        return "存量 Wiki 经验持续补齐(注明验证状态)"
-    return "覆盖齐了:按缺口清单补材料"
 
 
 def cmd_health(args: argparse.Namespace) -> int:
@@ -323,9 +290,9 @@ def cmd_health(args: argparse.Namespace) -> int:
             print(f"上次索引  : {state.get('indexed_at', '?')} · 文档新写 {state.get('docs_indexed', '?')} · "
                   f"覆盖 {state.get('chunk_embedded', '?')}/{state.get('chunk_total', '?')} · 图 {state.get('graph', '?')}")
         if d.get("types"):
-            print("知识类型  : " + " · ".join(f"{name} {d['types'].get(k, 0)}" for k, name in TYPE_ROWS
+            print("知识类型  : " + " · ".join(f"{name} {d['types'].get(k, 0)}" for k, name in kbcat.COVERAGE_ROWS
                                               if k != "guide" or d["types"].get(k)))
-            print(f"下一步    : {next_step(d['types'])}")
+            print(f"下一步    : {kbcat.next_step(d['types'])}")
         print("待处理    : " + ("; ".join(d["pending"]) if d["pending"] else "无"))
         if d["misses"]:
             print("缺口清单  : 近期查不到条款/案例的发现 Top —— " +

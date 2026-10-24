@@ -208,3 +208,41 @@ def type_counts(cat: Catalog) -> Dict[str, int]:
 
 def entries_text(entries: Iterable[Entry]) -> str:
     return " ".join(f"{e.id} {e.title} {e.summary}" for e in entries)
+
+
+# ---------------------------------------------------------------- 覆盖度(kb.py health 与大盘)
+
+# 八类知识的计数口径与建议的导入顺序(2026-10-24):最小环境画像和现行规范 → 高频故障案例及排查步骤 → 对应产品章节 → Wiki
+COVERAGE_ROWS = (("norm", "规范"), ("case", "案例"), ("profile", "画像"), ("baseline", "基线"), ("defect", "缺陷"),
+                 ("runbook", "手册"), ("product", "产品文档"), ("wiki", "Wiki"), ("guide", "指南(待归类)"))
+
+
+def coverage(kb: pathlib.Path) -> Dict[str, int]:
+    """八类各登记了多少(修正并入规范);读不了就空,大盘与 health 照常。"""
+    try:
+        c = type_counts(load(kb))
+    except Exception:                                     # noqa: BLE001
+        return {}
+    c["norm"] = c.get("norm", 0) + c.pop("errata", 0)
+    return {k: c.get(k, 0) for k, _ in COVERAGE_ROWS}
+
+
+def next_step(types: Dict[str, int]) -> str:
+    """按建议的导入顺序,说下一步最该补什么。"""
+    if not types:
+        return ""
+    if not types.get("profile"):
+        return "先登记环境画像(kb.py profile 起草):没有画像,条目对本环境适不适用无法判断"
+    if not types.get("norm"):
+        return "导入现行规范(公司内部规范)"
+    if types.get("case", 0) < 5:
+        return "导入高频故障案例(带排查思路:候选原因、取证顺序、排除理由、区分证据)"
+    if not types.get("runbook"):
+        return "补处置与恢复手册(执行前提、影响、验证、回退)"
+    if not types.get("product"):
+        return "补对应的产品文档章节(写清产品系列与版本)"
+    if types.get("guide"):
+        return "旧指南还没归类型:kb.py migrate"
+    if not types.get("wiki"):
+        return "存量 Wiki 经验持续补齐(注明验证状态)"
+    return "覆盖齐了:按缺口清单补材料"
