@@ -98,7 +98,7 @@ SELECT checkpoints_timed, checkpoints_req FROM pg_stat_bgwriter;
 ```sql
 SELECT COALESCE(query,'') q, count(*) c, sum(count(*)) OVER () AS total
 FROM pg_stat_activity
-WHERE state='active' AND COALESCE(query,'')<>'' AND COALESCE(connection_info,'')<>''
+WHERE state='active' AND COALESCE(query,'')<>'' AND client_port IS NOT NULL
 GROUP BY query ORDER BY c DESC LIMIT 1;
 ```
 
@@ -111,6 +111,7 @@ GROUP BY query ORDER BY c DESC LIMIT 1;
 ```sql
 SELECT COALESCE(state,'<null>') AS state, count(*) AS cnt
 FROM pg_stat_activity
+WHERE sessionid <> 0
 GROUP BY state
 ORDER BY cnt DESC;
 ```
@@ -160,12 +161,14 @@ SELECT count(*) AS cnt FROM pg_index WHERE NOT indisvalid;
 SELECT pid,
        COALESCE(usename,'') AS usename,
        state,
+       waiting,
        EXTRACT(EPOCH FROM (now()-xact_start))   AS xact_age_s,
        EXTRACT(EPOCH FROM (now()-state_change)) AS state_age_s,
        COALESCE(query,'') AS query
 FROM pg_stat_activity
 WHERE state IN ('active','idle in transaction') AND xact_start IS NOT NULL
-  AND COALESCE(connection_info,'') <> ''
+  AND client_port IS NOT NULL
+  AND pid <> pg_backend_pid()
 ORDER BY xact_start
 LIMIT {{limit}};
 ```
@@ -186,7 +189,7 @@ SELECT
   (SELECT COALESCE(EXTRACT(EPOCH FROM now()-min(xact_start)),0)::bigint
    FROM pg_stat_activity
    WHERE state IN ('active','idle in transaction') AND xact_start IS NOT NULL
-     AND COALESCE(connection_info,'')<>'') AS oldest_xact_s
+     AND client_port IS NOT NULL) AS oldest_xact_s
 FROM pg_stat_database;
 ```
 
@@ -246,25 +249,36 @@ LIMIT {{limit}};
 | 参数 | 类型 |
 |---|---|
 | `min_rows` | INTEGER |
+| `min_pages` | INTEGER |
 | `schema_filter` | STRING |
 | `limit` | INTEGER |
 
 ```sql
-SELECT n.nspname || '.' || c.relname AS tbl_name,
-       c.relpages AS frozen_pages,
-       pg_relation_size(c.oid) / current_setting('block_size')::bigint AS cur_pages,
-       c.reltuples::bigint AS frozen_tuples,
-       COALESCE(t.n_live_tup, 0) AS live_tuples,
-       (SELECT count(*) FROM pg_stats s
-         WHERE s.schemaname = n.nspname AND s.tablename = c.relname) AS stat_columns,
-       COALESCE(to_char(t.last_analyze, 'YYYY-MM-DD HH24:MI:SS'), 'never') AS last_analyze,
-       COALESCE(to_char(t.last_autoanalyze, 'YYYY-MM-DD HH24:MI:SS'), 'never') AS last_autoanalyze
-FROM pg_class c
-JOIN pg_namespace n ON n.oid = c.relnamespace
-LEFT JOIN pg_stat_user_tables t ON t.relid = c.oid
-WHERE c.relkind = 'r' AND n.nspname NOT IN {{schema_filter}}
-  AND c.reltuples > {{min_rows}}
-ORDER BY c.relpages DESC LIMIT {{limit}};
+SELECT tbl_name, frozen_pages, cur_pages, frozen_tuples, live_tuples,
+       stat_columns, last_analyze, last_autoanalyze
+FROM (
+  SELECT n.nspname || '.' || c.relname AS tbl_name,
+         c.relpages AS frozen_pages,
+         pg_relation_size(c.oid) / current_setting('block_size')::bigint AS cur_pages,
+         c.reltuples::bigint AS frozen_tuples,
+         COALESCE(t.n_live_tup, 0) AS live_tuples,
+         (SELECT count(*) FROM pg_stats s
+           WHERE s.schemaname = n.nspname AND s.tablename = c.relname) AS stat_columns,
+         COALESCE(to_char(t.last_analyze, 'YYYY-MM-DD HH24:MI:SS'), 'never') AS last_analyze,
+         COALESCE(to_char(t.last_autoanalyze, 'YYYY-MM-DD HH24:MI:SS'), 'never') AS last_autoanalyze
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  LEFT JOIN pg_stat_user_tables t ON t.relid = c.oid
+  WHERE c.relkind = 'r' AND n.nspname NOT IN {{schema_filter}}
+    AND (c.reltuples > {{min_rows}}
+         OR pg_relation_size(c.oid) / current_setting('block_size')::bigint > {{min_pages}})
+) x
+ORDER BY (stat_columns = 0 OR frozen_pages = 0) DESC,
+         CASE WHEN frozen_pages > 0
+              THEN CAST(abs(cur_pages - frozen_pages) AS float8) / frozen_pages
+              ELSE 0 END DESC,
+         cur_pages DESC
+LIMIT {{limit}};
 ```
 
 ### `health.unused_index`
@@ -374,7 +388,7 @@ WHERE name IN (
   'max_process_memory', 'shared_buffers', 'work_mem', 'maintenance_work_mem',
   'max_connections', 'enable_memory_limit', 'memory_tracking_mode',
   'use_workload_manager', 'enable_resource_track', 'resource_track_level',
-  'resource_track_cost', 'resource_track_duration',
+  'resource_track_cost', 'resource_track_duration', 'enable_resource_record',
   'enable_dynamic_workload', 'query_max_mem', 'query_mem')
 ORDER BY name;
 ```
@@ -1225,14 +1239,18 @@ SELECT
   n_calls AS calls,
   ROUND(total_elapse_time/1000000::numeric, 2) AS total_sec,
   ROUND((total_elapse_time/NULLIF(n_calls,0))/1000::numeric, 2) AS avg_ms,
-  n_returned_rows AS rows
+  n_returned_rows AS rows,
+  ROUND(cpu_time/1000000::numeric, 2) AS cpu_sec,
+  ROUND(data_io_time/1000000::numeric, 2) AS io_sec
 FROM (SELECT unique_sql_id,
              max(query)             AS query,
              sum(n_calls)           AS n_calls,
              sum(total_elapse_time) AS total_elapse_time,
              sum(n_returned_rows)   AS n_returned_rows,
              sum(n_blocks_hit)      AS n_blocks_hit,
-             sum(n_blocks_fetched)  AS n_blocks_fetched
+             sum(n_blocks_fetched)  AS n_blocks_fetched,
+             sum(cpu_time)          AS cpu_time,
+             sum(data_io_time)      AS data_io_time
         FROM dbe_perf.statement
        GROUP BY unique_sql_id) s
 WHERE n_calls > 0
@@ -1704,7 +1722,7 @@ SELECT 'long_xact' AS source,
   FROM pg_stat_activity
  WHERE xact_start IS NOT NULL
    AND state IN ('active','idle in transaction')
-   AND COALESCE(connection_info,'') <> ''
+   AND client_port IS NOT NULL
    AND pid <> pg_backend_pid()
 UNION ALL
 SELECT 'prepared_xact' AS source,
@@ -2385,7 +2403,9 @@ SELECT
   sum(snap_n_calls) AS calls,
   ROUND(sum(snap_total_elapse_time)/1000000::numeric, 2) AS total_sec,
   ROUND((sum(snap_total_elapse_time)/NULLIF(sum(snap_n_calls),0))/1000::numeric, 2) AS avg_ms,
-  sum(snap_n_returned_rows) AS rows
+  sum(snap_n_returned_rows) AS rows,
+  ROUND(sum(snap_cpu_time)/1000000::numeric, 2) AS cpu_sec,
+  ROUND(sum(snap_data_io_time)/1000000::numeric, 2) AS io_sec
 FROM snapshot.snap_summary_statement
 WHERE snapshot_id = {{snap}}
 GROUP BY snap_unique_sql_id
@@ -2426,13 +2446,24 @@ SELECT schema_name,
 | `limit` | INTEGER |
 
 ```sql
-WITH s AS (
+WITH t AS (
   SELECT a.sessionid, a.block_sessionid, a.event, a.lockmode, a.locktag,
          a.unique_query_id, a.unique_query, a.sample_time
     FROM gs_asp a
    WHERE a.sample_time >= CAST('{{begin_time}}' AS TIMESTAMP)
      AND a.sample_time <= CAST('{{end_time}}' AS TIMESTAMP)
-     AND a.block_sessionid IS NOT NULL AND a.block_sessionid <> 0
+), s AS (
+  SELECT * FROM t
+   WHERE t.block_sessionid IS NOT NULL AND t.block_sessionid <> 0
+  UNION ALL
+  SELECT m.sessionid, m.block_sessionid, m.event, m.lockmode, m.locktag,
+         m.unique_query_id, m.unique_query, m.sample_time
+    FROM dbe_perf.local_active_session m
+   WHERE m.need_flush_sample
+     AND m.sample_time >= CAST('{{begin_time}}' AS TIMESTAMP)
+     AND m.sample_time <= CAST('{{end_time}}' AS TIMESTAMP)
+     AND m.sample_time > (SELECT COALESCE(max(t.sample_time), CAST('1970-01-01' AS TIMESTAMP)) FROM t)
+     AND m.block_sessionid IS NOT NULL AND m.block_sessionid <> 0
 ), g AS (
   SELECT sessionid, block_sessionid,
          COALESCE(event, '') AS event, COALESCE(lockmode, '') AS lockmode,
@@ -2478,12 +2509,25 @@ SELECT d.sessionid AS waiter_sessionid,
 | `limit` | INTEGER |
 
 ```sql
-WITH w AS (
-  SELECT sessionid, block_sessionid
-    FROM gs_asp
-   WHERE sample_time >= CAST('{{begin_time}}' AS TIMESTAMP)
-     AND sample_time <= CAST('{{end_time}}' AS TIMESTAMP)
-     AND block_sessionid IS NOT NULL AND block_sessionid <> 0
+WITH t AS (
+  SELECT a.sessionid, a.block_sessionid, a.state, a.event, a.unique_query_id, a.unique_query,
+         a.application_name, a.client_addr, a.xact_start_time, a.sample_time
+    FROM gs_asp a
+   WHERE a.sample_time >= CAST('{{begin_time}}' AS TIMESTAMP)
+     AND a.sample_time <= CAST('{{end_time}}' AS TIMESTAMP)
+), a AS (
+  SELECT * FROM t
+  UNION ALL
+  SELECT m.sessionid, m.block_sessionid, m.state, m.event, m.unique_query_id, m.unique_query,
+         m.application_name, m.client_addr, m.xact_start_time, m.sample_time
+    FROM dbe_perf.local_active_session m
+   WHERE m.need_flush_sample
+     AND m.sample_time >= CAST('{{begin_time}}' AS TIMESTAMP)
+     AND m.sample_time <= CAST('{{end_time}}' AS TIMESTAMP)
+     AND m.sample_time > (SELECT COALESCE(max(t.sample_time), CAST('1970-01-01' AS TIMESTAMP)) FROM t)
+), w AS (
+  SELECT sessionid, block_sessionid FROM a
+   WHERE block_sessionid IS NOT NULL AND block_sessionid <> 0
 ), ids AS (
   SELECT sessionid AS sid FROM w UNION SELECT block_sessionid FROM w
 ), r AS (
@@ -2491,10 +2535,8 @@ WITH w AS (
          a.application_name, a.client_addr, a.xact_start_time, a.sample_time,
          row_number() OVER (PARTITION BY a.sessionid ORDER BY a.sample_time DESC) AS rn,
          count(*) OVER (PARTITION BY a.sessionid) AS samples
-    FROM gs_asp a
-   WHERE a.sample_time >= CAST('{{begin_time}}' AS TIMESTAMP)
-     AND a.sample_time <= CAST('{{end_time}}' AS TIMESTAMP)
-     AND a.sessionid IN (SELECT sid FROM ids)
+    FROM a
+   WHERE a.sessionid IN (SELECT sid FROM ids)
 )
 SELECT r.sessionid AS sessionid,
        COALESCE(r.state, '') AS state,
@@ -2523,12 +2565,32 @@ SELECT r.sessionid AS sessionid,
 ```sql
 SELECT name AS item, setting AS value
   FROM pg_settings
- WHERE name IN ('enable_asp', 'asp_sample_interval', 'asp_flush_rate', 'asp_retention_days')
+ WHERE name IN ('enable_asp', 'asp_sample_interval', 'asp_flush_rate', 'asp_retention_days',
+                'asp_flush_mode', 'asp_sample_num')
 UNION ALL
 SELECT 'samples_in_window', CAST(count(*) AS text)
   FROM gs_asp
  WHERE sample_time >= CAST('{{begin_time}}' AS TIMESTAMP)
    AND sample_time <= CAST('{{end_time}}' AS TIMESTAMP)
+UNION ALL
+SELECT 'memory_samples_in_window', CAST(count(*) AS text)
+  FROM dbe_perf.local_active_session m
+ WHERE m.need_flush_sample
+   AND m.sample_time >= CAST('{{begin_time}}' AS TIMESTAMP)
+   AND m.sample_time <= CAST('{{end_time}}' AS TIMESTAMP)
+   AND m.sample_time > (SELECT COALESCE(max(t.sample_time), CAST('1970-01-01' AS TIMESTAMP))
+                          FROM gs_asp t
+                         WHERE t.sample_time >= CAST('{{begin_time}}' AS TIMESTAMP)
+                           AND t.sample_time <= CAST('{{end_time}}' AS TIMESTAMP))
+UNION ALL
+SELECT 'memory_first', COALESCE(to_char(min(sample_time), 'YYYY-MM-DD HH24:MI:SS'), '')
+  FROM dbe_perf.local_active_session
+UNION ALL
+SELECT 'memory_last', COALESCE(to_char(max(sample_time), 'YYYY-MM-DD HH24:MI:SS'), '')
+  FROM dbe_perf.local_active_session
+UNION ALL
+SELECT 'table_last', COALESCE(to_char(max(sample_time), 'YYYY-MM-DD HH24:MI:SS'), '')
+  FROM gs_asp
 UNION ALL
 SELECT 'now', to_char(now(), 'YYYY-MM-DD HH24:MI:SS');
 ```

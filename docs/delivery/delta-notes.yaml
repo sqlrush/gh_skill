@@ -86,11 +86,9 @@ added:
 
 changed:
   topsql.top_sql: >-
-    **修正取数错误 + 显示修正**：① `dbe_perf.statement` 里同一条语句按执行用户拆成多行
-    （实测 217 行里 29 行重复），原 SQL 不聚合，同一个 sql_id 在榜上重复出现、两次取数相减时
-    还会拿到不同用户的那一行，算出凭空的增量。改为先按 unique_sql_id 聚合再排序（输出列名不变）。
-    ② SQL 文本开头的注释（如 `/* app=… */`、`-- …`）会占满 80 字的显示宽度、看不到真正的语句，
-    改为显示前剥掉**开头的**注释（中间的注释可能是 hint，不动；整条都是注释时显示原文）。
+    **只加列**：只读 dbe_perf.statement，输出新增 CPU 与数据 IO 耗时两列（cpu_sec / io_sec），
+    用于区分「等锁 / 排队的语句」和「自身慢的语句」——实测窗口里两张榜的榜首都是被锁挡住的语句，
+    真正自身慢的排在后面。筛选条件、原有列和排序参数都不变。
   wdr.snapshots: >-
     **精度修正**：快照开始 / 结束时间从「到分钟」改为「到秒」。时段体检与时段 Top SQL 要按用户给的
     时间挑快照，到分钟时同一分钟内的两个快照分不出先后。原有调用方只取前 16 位，不受影响。
@@ -115,3 +113,37 @@ changed:
     **修正拼写错误**：`BUFFERS fasle` → `BUFFERS false`。`fasle` 不是合法布尔值，该脚本执行会直接报错。
   proctune.plan_text_analyze: >-
     **修正拼写错误**：同上（`BUFFERS fasle` → `BUFFERS false`）。
+  health.long_xact: >-
+    **修正漏报**：「客户端会话」的认法由 connection_info 非空改为 client_port 非空。connection_info
+    只有 openGauss 自带的 libpq 会填，psycopg2 这类客户端是空串，原条件把它们的长事务、空闲事务整类漏掉；
+    内核后台线程的 client_port 都是空，照样排除。另排除执行本查询的会话自身，多返回一列 waiting
+    （是否在等锁，供「执行中的长 SQL」区分等锁的语句）。只读。
+  health.overview: >-
+    **修正漏报**：「最老事务」子查询认客户端会话的条件改法同 health.long_xact，其余列不变。只读。
+  health.conn_concentration: >-
+    **修正漏报**：活跃连接集中度认客户端会话的条件改法同 health.long_xact，其余不变。只读。
+  health.conn_states: >-
+    **修正计数**：只数 sessionid <> 0 的会话。开了线程池时有一批空闲工作线程的条目（无客户端、不持锁），
+    原 SQL 把它们算进总数与 idle（实测 61 个真实会话报成 65）。与 health.thread_pool 同一口径。只读。
+  health.stale_stats: >-
+    **修正漏报**：从没 ANALYZE 过的表 reltuples 与 relpages 都是 0，原门槛与排序把它们截掉了——
+    恰恰是统计信息最该更新的那批。新增参数 min_pages（默认 128 页），候选门槛加上按文件大小算的实时页数；
+    排序改为未分析的在前 → 页数偏离比例 → 体积。只读，判定规则不变。
+  vacuum.oldest_xmin: >-
+    **修正漏报**：长事务分支认客户端会话的条件改法同 health.long_xact，卡住回收水位的
+    psycopg2 等客户端事务不再漏掉。只读。
+  lockwait.asp_status: >-
+    **补充覆盖范围**：时段锁回溯原来只数落表（gs_asp）的样本；最近几小时的活跃会话样本只在内存视图
+    dbe_perf.local_active_session 里，内存写满才按比例落表。多查 asp_flush_mode、asp_sample_num 两个参数
+    与内存样本的数量和起止时间，用来如实说明能回看到哪一段。只读。
+  lockwait.asp_pairs: >-
+    **修正回看不了**：样本来源由 gs_asp 改为 gs_asp ∪ dbe_perf.local_active_session（内存侧只取将来会落表的
+    那批、且晚于最后一条落表样本，不重复计数），输出列不变。原来最近几小时的锁等待一律「回看不了」。只读。
+  lockwait.asp_sessions: >-
+    **修正回看不了**：样本来源改法同 lockwait.asp_pairs，输出列不变。只读。
+  memanalyze.gucs: >-
+    **修正误报**：pg_settings 的参数清单补上 enable_resource_record。history 子命令要靠它判断 WLM 历史表
+    能不能用，原清单漏了它，读不到被当成 off，报告误写「参数没开」。只读。
+  topsql.snap_statement: >-
+    **只加列**：只读 snapshot.snap_summary_statement，输出新增 CPU 与数据 IO 耗时两列，
+    供时间段 Top SQL 计算等待占比；筛选与排序不变。

@@ -7,44 +7,10 @@ INSERT INTO grmp.script_config (id, script_type, script_name, database_type, ref
 ', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.bgwriter', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT checkpoints_timed, checkpoints_req FROM pg_stat_bgwriter;
 ', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
-INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.conn_concentration', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT COALESCE(query,'''') q, count(*) c, sum(count(*)) OVER () AS total
-FROM pg_stat_activity
-WHERE state=''active'' AND COALESCE(query,'''')<>'''' AND COALESCE(connection_info,'''')<>''''
-GROUP BY query ORDER BY c DESC LIMIT 1;
-', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
-INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.conn_states', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT COALESCE(state,''<null>'') AS state, count(*) AS cnt
-FROM pg_stat_activity
-GROUP BY state
-ORDER BY cnt DESC;
-', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.db_concurrency', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT deadlocks, xact_commit, xact_rollback
 FROM pg_stat_database WHERE datname=current_database();
 ', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.invalid_index', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT count(*) AS cnt FROM pg_index WHERE NOT indisvalid;
-', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
-INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.long_xact', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT pid,
-       COALESCE(usename,'''') AS usename,
-       state,
-       EXTRACT(EPOCH FROM (now()-xact_start))   AS xact_age_s,
-       EXTRACT(EPOCH FROM (now()-state_change)) AS state_age_s,
-       COALESCE(query,'''') AS query
-FROM pg_stat_activity
-WHERE state IN (''active'',''idle in transaction'') AND xact_start IS NOT NULL
-  AND COALESCE(connection_info,'''') <> ''''
-ORDER BY xact_start
-LIMIT {{limit}};
-', '[{"key":"limit","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
-INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.overview', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT
-  CASE WHEN sum(blks_hit)+sum(blks_read)=0 THEN 100
-       ELSE round(100.0*sum(blks_hit)/(sum(blks_hit)+sum(blks_read)),2) END AS cache_hit_pct,
-  sum(numbackends)::bigint AS numbackends,
-  (SELECT setting::bigint FROM pg_settings WHERE name=''max_connections'') AS max_conn,
-  pg_is_in_recovery() AS in_recovery,
-  (SELECT COALESCE(EXTRACT(EPOCH FROM now()-min(xact_start)),0)::bigint
-   FROM pg_stat_activity
-   WHERE state IN (''active'',''idle in transaction'') AND xact_start IS NOT NULL
-     AND COALESCE(connection_info,'''')<>'''') AS oldest_xact_s
-FROM pg_stat_database;
 ', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.prepared_xacts', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT count(*) AS cnt FROM pg_prepared_xacts;
 ', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
@@ -68,22 +34,6 @@ WHERE (total_elapse_time/NULLIF(n_calls,0))/1000 > {{threshold_ms}}
 ORDER BY total_elapse_time/NULLIF(n_calls,0) DESC
 LIMIT {{limit}};
 ', '[{"key":"threshold_ms","value":"","type":"INTEGER","autoAcquire":false},{"key":"limit","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
-INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.stale_stats', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT n.nspname || ''.'' || c.relname AS tbl_name,
-       c.relpages AS frozen_pages,
-       pg_relation_size(c.oid) / current_setting(''block_size'')::bigint AS cur_pages,
-       c.reltuples::bigint AS frozen_tuples,
-       COALESCE(t.n_live_tup, 0) AS live_tuples,
-       (SELECT count(*) FROM pg_stats s
-         WHERE s.schemaname = n.nspname AND s.tablename = c.relname) AS stat_columns,
-       COALESCE(to_char(t.last_analyze, ''YYYY-MM-DD HH24:MI:SS''), ''never'') AS last_analyze,
-       COALESCE(to_char(t.last_autoanalyze, ''YYYY-MM-DD HH24:MI:SS''), ''never'') AS last_autoanalyze
-FROM pg_class c
-JOIN pg_namespace n ON n.oid = c.relnamespace
-LEFT JOIN pg_stat_user_tables t ON t.relid = c.oid
-WHERE c.relkind = ''r'' AND n.nspname NOT IN {{schema_filter}}
-  AND c.reltuples > {{min_rows}}
-ORDER BY c.relpages DESC LIMIT {{limit}};
-', '[{"key":"min_rows","value":"","type":"INTEGER","autoAcquire":false},{"key":"schema_filter","value":"","type":"STRING","autoAcquire":false},{"key":"limit","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.stats_window', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT COALESCE(to_char(stats_reset, ''YYYY-MM-DD HH24:MI:SS''), ''never'') AS stats_reset,
        COALESCE(EXTRACT(EPOCH FROM (now() - stats_reset)), -1) AS window_seconds
 FROM pg_stat_database
@@ -131,16 +81,6 @@ FROM (SELECT contextname, totalsize, freesize, usedsize FROM gs_session_memory_d
 GROUP BY contextname ORDER BY 4 DESC NULLS LAST
 LIMIT {{limit}};
 ', '[{"key":"limit","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
-INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'memanalyze.gucs', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT name, setting
-FROM pg_settings
-WHERE name IN (
-  ''max_process_memory'', ''shared_buffers'', ''work_mem'', ''maintenance_work_mem'',
-  ''max_connections'', ''enable_memory_limit'', ''memory_tracking_mode'',
-  ''use_workload_manager'', ''enable_resource_track'', ''resource_track_level'',
-  ''resource_track_cost'', ''resource_track_duration'',
-  ''enable_dynamic_workload'', ''query_max_mem'', ''query_mem'')
-ORDER BY name;
-', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'memanalyze.instance', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT memorytype, memorymbytes FROM gs_total_memory_detail;
 ', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'memanalyze.session', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT sessid, init_mem, used_mem, peak_mem FROM dbe_perf.session_memory
@@ -335,27 +275,6 @@ JOIN pg_namespace n ON n.oid = p.pronamespace
 ORDER BY {{order}} NULLS LAST
 LIMIT {{limit}};
 ', '[{"key":"order","value":"","type":"STRING","autoAcquire":false},{"key":"limit","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
-INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'topsql.top_sql', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT
-  unique_sql_id::text,
-  LEFT(REGEXP_REPLACE(COALESCE(NULLIF(REGEXP_REPLACE(query, ''^(\s*(--[^\n]*(\n|$)|/\*([^*]|\*+[^*/])*\*+/))+\s*'', ''''), ''''), query),
-                     ''\s+'', '' '', ''g''), 80) AS query,
-  n_calls AS calls,
-  ROUND(total_elapse_time/1000000::numeric, 2) AS total_sec,
-  ROUND((total_elapse_time/NULLIF(n_calls,0))/1000::numeric, 2) AS avg_ms,
-  n_returned_rows AS rows
-FROM (SELECT unique_sql_id,
-             max(query)             AS query,
-             sum(n_calls)           AS n_calls,
-             sum(total_elapse_time) AS total_elapse_time,
-             sum(n_returned_rows)   AS n_returned_rows,
-             sum(n_blocks_hit)      AS n_blocks_hit,
-             sum(n_blocks_fetched)  AS n_blocks_fetched
-        FROM dbe_perf.statement
-       GROUP BY unique_sql_id) s
-WHERE n_calls > 0
-ORDER BY {{order}}
-LIMIT {{limit}};
-', '[{"key":"order","value":"","type":"STRING","autoAcquire":false},{"key":"limit","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'wdr.cache', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'WITH b AS (SELECT db_name, snap_schemaname, snap_relname,
                   (COALESCE(snap_heap_blks_read,0)+COALESCE(snap_idx_blks_read,0)) AS phys,
                   (COALESCE(snap_heap_blks_hit,0)+COALESCE(snap_idx_blks_hit,0))   AS logi
@@ -540,33 +459,6 @@ INSERT INTO grmp.script_config (id, script_type, script_name, database_type, ref
  ORDER BY t.n_dead_tup DESC
  LIMIT {{limit}};
 ', '[{"key":"limit","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
-INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'vacuum.oldest_xmin', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT ''long_xact'' AS source,
-       CAST(pid AS text) AS identifier,
-       EXTRACT(EPOCH FROM (now()-xact_start)) AS xmin_age_s,
-       ''usename='' || COALESCE(usename,'''') || '' state='' || COALESCE(state,'''') ||
-         '' query='' || COALESCE(substr(query,1,200),'''') AS detail
-  FROM pg_stat_activity
- WHERE xact_start IS NOT NULL
-   AND state IN (''active'',''idle in transaction'')
-   AND COALESCE(connection_info,'''') <> ''''
-   AND pid <> pg_backend_pid()
-UNION ALL
-SELECT ''prepared_xact'' AS source,
-       gid AS identifier,
-       EXTRACT(EPOCH FROM (now()-prepared)) AS xmin_age_s,
-       ''owner='' || COALESCE(owner,'''') || '' database='' || COALESCE(database,'''') AS detail
-  FROM pg_prepared_xacts
-UNION ALL
-SELECT ''replication_slot'' AS source,
-       slot_name AS identifier,
-       CAST(NULL AS double precision) AS xmin_age_s,
-       ''xmin='' || COALESCE(CAST(xmin AS text),'''') ||
-         '' catalog_xmin='' || COALESCE(CAST(catalog_xmin AS text),'''') ||
-         '' active='' || CAST(active AS text) AS detail
-  FROM pg_replication_slots
- WHERE xmin IS NOT NULL OR catalog_xmin IS NOT NULL
-ORDER BY xmin_age_s DESC NULLS FIRST;
-', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'waitevent.events', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'WITH b AS (SELECT snap_type AS wait_class, snap_event AS event, sum(snap_wait) AS waits, sum(snap_total_wait_time) AS wt
              FROM snapshot.snap_global_wait_events WHERE snapshot_id={{b}} GROUP BY snap_type, snap_event),
      e AS (SELECT snap_type AS wait_class, snap_event AS event, sum(snap_wait) AS waits, sum(snap_total_wait_time) AS wt
@@ -980,21 +872,6 @@ INSERT INTO grmp.script_config (id, script_type, script_name, database_type, ref
  GROUP BY type, event
 HAVING sum(wait) > 0;
 ', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
-INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'topsql.snap_statement', 'appbusiness', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT
-  snap_unique_sql_id::text AS unique_sql_id,
-  LEFT(REGEXP_REPLACE(COALESCE(NULLIF(REGEXP_REPLACE(max(snap_query), ''^(\s*(--[^\n]*(\n|$)|/\*([^*]|\*+[^*/])*\*+/))+\s*'', ''''), ''''), max(snap_query)),
-                     ''\s+'', '' '', ''g''), 80) AS query,
-  sum(snap_n_calls) AS calls,
-  ROUND(sum(snap_total_elapse_time)/1000000::numeric, 2) AS total_sec,
-  ROUND((sum(snap_total_elapse_time)/NULLIF(sum(snap_n_calls),0))/1000::numeric, 2) AS avg_ms,
-  sum(snap_n_returned_rows) AS rows
-FROM snapshot.snap_summary_statement
-WHERE snapshot_id = {{snap}}
-GROUP BY snap_unique_sql_id
-HAVING sum(snap_n_calls) > 0
-ORDER BY sum(snap_total_elapse_time) DESC
-LIMIT {{limit}};
-', '[{"key":"snap","value":"","type":"INTEGER","autoAcquire":false},{"key":"limit","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
 INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'explain.plan_from_history', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT schema_name,
        to_char(start_time, ''YYYY-MM-DD HH24:MI:SS'') AS start_time,
        round(db_time / 1000.0, 1) AS db_time_ms,
@@ -1006,13 +883,157 @@ INSERT INTO grmp.script_config (id, script_type, script_name, database_type, ref
  ORDER BY start_time DESC
  LIMIT 1;
 ', '[{"key":"sid","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
-INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'lockwait.asp_pairs', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'WITH s AS (
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'wdr.plan_in_window', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT to_char(start_time, ''YYYY-MM-DD HH24:MI:SS'') AS start_time,
+       round(db_time / 1000.0, 1) AS db_time_ms,
+       n_returned_rows,
+       query_plan
+  FROM dbe_perf.statement_history
+ WHERE unique_query_id = {{sid}}
+   AND start_time >= CAST(''{{begin_time}}'' AS TIMESTAMP)
+   AND start_time <= CAST(''{{end_time}}'' AS TIMESTAMP)
+   AND query_plan IS NOT NULL AND query_plan <> ''''
+ ORDER BY start_time DESC
+ LIMIT 1;
+', '[{"key":"sid","value":"","type":"INTEGER","autoAcquire":false},{"key":"begin_time","value":"","type":"DATETIME","autoAcquire":false},{"key":"end_time","value":"","type":"DATETIME","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.long_xact', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT pid,
+       COALESCE(usename,'''') AS usename,
+       state,
+       waiting,
+       EXTRACT(EPOCH FROM (now()-xact_start))   AS xact_age_s,
+       EXTRACT(EPOCH FROM (now()-state_change)) AS state_age_s,
+       COALESCE(query,'''') AS query
+FROM pg_stat_activity
+WHERE state IN (''active'',''idle in transaction'') AND xact_start IS NOT NULL
+  AND client_port IS NOT NULL
+  AND pid <> pg_backend_pid()
+ORDER BY xact_start
+LIMIT {{limit}};
+', '[{"key":"limit","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.overview', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT
+  CASE WHEN sum(blks_hit)+sum(blks_read)=0 THEN 100
+       ELSE round(100.0*sum(blks_hit)/(sum(blks_hit)+sum(blks_read)),2) END AS cache_hit_pct,
+  sum(numbackends)::bigint AS numbackends,
+  (SELECT setting::bigint FROM pg_settings WHERE name=''max_connections'') AS max_conn,
+  pg_is_in_recovery() AS in_recovery,
+  (SELECT COALESCE(EXTRACT(EPOCH FROM now()-min(xact_start)),0)::bigint
+   FROM pg_stat_activity
+   WHERE state IN (''active'',''idle in transaction'') AND xact_start IS NOT NULL
+     AND client_port IS NOT NULL) AS oldest_xact_s
+FROM pg_stat_database;
+', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.conn_concentration', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT COALESCE(query,'''') q, count(*) c, sum(count(*)) OVER () AS total
+FROM pg_stat_activity
+WHERE state=''active'' AND COALESCE(query,'''')<>'''' AND client_port IS NOT NULL
+GROUP BY query ORDER BY c DESC LIMIT 1;
+', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.conn_states', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT COALESCE(state,''<null>'') AS state, count(*) AS cnt
+FROM pg_stat_activity
+WHERE sessionid <> 0
+GROUP BY state
+ORDER BY cnt DESC;
+', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'health.stale_stats', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT tbl_name, frozen_pages, cur_pages, frozen_tuples, live_tuples,
+       stat_columns, last_analyze, last_autoanalyze
+FROM (
+  SELECT n.nspname || ''.'' || c.relname AS tbl_name,
+         c.relpages AS frozen_pages,
+         pg_relation_size(c.oid) / current_setting(''block_size'')::bigint AS cur_pages,
+         c.reltuples::bigint AS frozen_tuples,
+         COALESCE(t.n_live_tup, 0) AS live_tuples,
+         (SELECT count(*) FROM pg_stats s
+           WHERE s.schemaname = n.nspname AND s.tablename = c.relname) AS stat_columns,
+         COALESCE(to_char(t.last_analyze, ''YYYY-MM-DD HH24:MI:SS''), ''never'') AS last_analyze,
+         COALESCE(to_char(t.last_autoanalyze, ''YYYY-MM-DD HH24:MI:SS''), ''never'') AS last_autoanalyze
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  LEFT JOIN pg_stat_user_tables t ON t.relid = c.oid
+  WHERE c.relkind = ''r'' AND n.nspname NOT IN {{schema_filter}}
+    AND (c.reltuples > {{min_rows}}
+         OR pg_relation_size(c.oid) / current_setting(''block_size'')::bigint > {{min_pages}})
+) x
+ORDER BY (stat_columns = 0 OR frozen_pages = 0) DESC,
+         CASE WHEN frozen_pages > 0
+              THEN CAST(abs(cur_pages - frozen_pages) AS float8) / frozen_pages
+              ELSE 0 END DESC,
+         cur_pages DESC
+LIMIT {{limit}};
+', '[{"key":"min_rows","value":"","type":"INTEGER","autoAcquire":false},{"key":"min_pages","value":"","type":"INTEGER","autoAcquire":false},{"key":"schema_filter","value":"","type":"STRING","autoAcquire":false},{"key":"limit","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'vacuum.oldest_xmin', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT ''long_xact'' AS source,
+       CAST(pid AS text) AS identifier,
+       EXTRACT(EPOCH FROM (now()-xact_start)) AS xmin_age_s,
+       ''usename='' || COALESCE(usename,'''') || '' state='' || COALESCE(state,'''') ||
+         '' query='' || COALESCE(substr(query,1,200),'''') AS detail
+  FROM pg_stat_activity
+ WHERE xact_start IS NOT NULL
+   AND state IN (''active'',''idle in transaction'')
+   AND client_port IS NOT NULL
+   AND pid <> pg_backend_pid()
+UNION ALL
+SELECT ''prepared_xact'' AS source,
+       gid AS identifier,
+       EXTRACT(EPOCH FROM (now()-prepared)) AS xmin_age_s,
+       ''owner='' || COALESCE(owner,'''') || '' database='' || COALESCE(database,'''') AS detail
+  FROM pg_prepared_xacts
+UNION ALL
+SELECT ''replication_slot'' AS source,
+       slot_name AS identifier,
+       CAST(NULL AS double precision) AS xmin_age_s,
+       ''xmin='' || COALESCE(CAST(xmin AS text),'''') ||
+         '' catalog_xmin='' || COALESCE(CAST(catalog_xmin AS text),'''') ||
+         '' active='' || CAST(active AS text) AS detail
+  FROM pg_replication_slots
+ WHERE xmin IS NOT NULL OR catalog_xmin IS NOT NULL
+ORDER BY xmin_age_s DESC NULLS FIRST;
+', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'lockwait.asp_status', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT name AS item, setting AS value
+  FROM pg_settings
+ WHERE name IN (''enable_asp'', ''asp_sample_interval'', ''asp_flush_rate'', ''asp_retention_days'',
+                ''asp_flush_mode'', ''asp_sample_num'')
+UNION ALL
+SELECT ''samples_in_window'', CAST(count(*) AS text)
+  FROM gs_asp
+ WHERE sample_time >= CAST(''{{begin_time}}'' AS TIMESTAMP)
+   AND sample_time <= CAST(''{{end_time}}'' AS TIMESTAMP)
+UNION ALL
+SELECT ''memory_samples_in_window'', CAST(count(*) AS text)
+  FROM dbe_perf.local_active_session m
+ WHERE m.need_flush_sample
+   AND m.sample_time >= CAST(''{{begin_time}}'' AS TIMESTAMP)
+   AND m.sample_time <= CAST(''{{end_time}}'' AS TIMESTAMP)
+   AND m.sample_time > (SELECT COALESCE(max(t.sample_time), CAST(''1970-01-01'' AS TIMESTAMP))
+                          FROM gs_asp t
+                         WHERE t.sample_time >= CAST(''{{begin_time}}'' AS TIMESTAMP)
+                           AND t.sample_time <= CAST(''{{end_time}}'' AS TIMESTAMP))
+UNION ALL
+SELECT ''memory_first'', COALESCE(to_char(min(sample_time), ''YYYY-MM-DD HH24:MI:SS''), '''')
+  FROM dbe_perf.local_active_session
+UNION ALL
+SELECT ''memory_last'', COALESCE(to_char(max(sample_time), ''YYYY-MM-DD HH24:MI:SS''), '''')
+  FROM dbe_perf.local_active_session
+UNION ALL
+SELECT ''table_last'', COALESCE(to_char(max(sample_time), ''YYYY-MM-DD HH24:MI:SS''), '''')
+  FROM gs_asp
+UNION ALL
+SELECT ''now'', to_char(now(), ''YYYY-MM-DD HH24:MI:SS'');
+', '[{"key":"begin_time","value":"","type":"DATETIME","autoAcquire":false},{"key":"end_time","value":"","type":"DATETIME","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'lockwait.asp_pairs', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'WITH t AS (
   SELECT a.sessionid, a.block_sessionid, a.event, a.lockmode, a.locktag,
          a.unique_query_id, a.unique_query, a.sample_time
     FROM gs_asp a
    WHERE a.sample_time >= CAST(''{{begin_time}}'' AS TIMESTAMP)
      AND a.sample_time <= CAST(''{{end_time}}'' AS TIMESTAMP)
-     AND a.block_sessionid IS NOT NULL AND a.block_sessionid <> 0
+), s AS (
+  SELECT * FROM t
+   WHERE t.block_sessionid IS NOT NULL AND t.block_sessionid <> 0
+  UNION ALL
+  SELECT m.sessionid, m.block_sessionid, m.event, m.lockmode, m.locktag,
+         m.unique_query_id, m.unique_query, m.sample_time
+    FROM dbe_perf.local_active_session m
+   WHERE m.need_flush_sample
+     AND m.sample_time >= CAST(''{{begin_time}}'' AS TIMESTAMP)
+     AND m.sample_time <= CAST(''{{end_time}}'' AS TIMESTAMP)
+     AND m.sample_time > (SELECT COALESCE(max(t.sample_time), CAST(''1970-01-01'' AS TIMESTAMP)) FROM t)
+     AND m.block_sessionid IS NOT NULL AND m.block_sessionid <> 0
 ), g AS (
   SELECT sessionid, block_sessionid,
          COALESCE(event, '''') AS event, COALESCE(lockmode, '''') AS lockmode,
@@ -1046,12 +1067,25 @@ SELECT d.sessionid AS waiter_sessionid,
  ORDER BY d.samples DESC, d.sessionid
  LIMIT {{limit}};
 ', '[{"key":"begin_time","value":"","type":"DATETIME","autoAcquire":false},{"key":"end_time","value":"","type":"DATETIME","autoAcquire":false},{"key":"limit","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
-INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'lockwait.asp_sessions', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'WITH w AS (
-  SELECT sessionid, block_sessionid
-    FROM gs_asp
-   WHERE sample_time >= CAST(''{{begin_time}}'' AS TIMESTAMP)
-     AND sample_time <= CAST(''{{end_time}}'' AS TIMESTAMP)
-     AND block_sessionid IS NOT NULL AND block_sessionid <> 0
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'lockwait.asp_sessions', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'WITH t AS (
+  SELECT a.sessionid, a.block_sessionid, a.state, a.event, a.unique_query_id, a.unique_query,
+         a.application_name, a.client_addr, a.xact_start_time, a.sample_time
+    FROM gs_asp a
+   WHERE a.sample_time >= CAST(''{{begin_time}}'' AS TIMESTAMP)
+     AND a.sample_time <= CAST(''{{end_time}}'' AS TIMESTAMP)
+), a AS (
+  SELECT * FROM t
+  UNION ALL
+  SELECT m.sessionid, m.block_sessionid, m.state, m.event, m.unique_query_id, m.unique_query,
+         m.application_name, m.client_addr, m.xact_start_time, m.sample_time
+    FROM dbe_perf.local_active_session m
+   WHERE m.need_flush_sample
+     AND m.sample_time >= CAST(''{{begin_time}}'' AS TIMESTAMP)
+     AND m.sample_time <= CAST(''{{end_time}}'' AS TIMESTAMP)
+     AND m.sample_time > (SELECT COALESCE(max(t.sample_time), CAST(''1970-01-01'' AS TIMESTAMP)) FROM t)
+), w AS (
+  SELECT sessionid, block_sessionid FROM a
+   WHERE block_sessionid IS NOT NULL AND block_sessionid <> 0
 ), ids AS (
   SELECT sessionid AS sid FROM w UNION SELECT block_sessionid FROM w
 ), r AS (
@@ -1059,10 +1093,8 @@ INSERT INTO grmp.script_config (id, script_type, script_name, database_type, ref
          a.application_name, a.client_addr, a.xact_start_time, a.sample_time,
          row_number() OVER (PARTITION BY a.sessionid ORDER BY a.sample_time DESC) AS rn,
          count(*) OVER (PARTITION BY a.sessionid) AS samples
-    FROM gs_asp a
-   WHERE a.sample_time >= CAST(''{{begin_time}}'' AS TIMESTAMP)
-     AND a.sample_time <= CAST(''{{end_time}}'' AS TIMESTAMP)
-     AND a.sessionid IN (SELECT sid FROM ids)
+    FROM a
+   WHERE a.sessionid IN (SELECT sid FROM ids)
 )
 SELECT r.sessionid AS sessionid,
        COALESCE(r.state, '''') AS state,
@@ -1078,26 +1110,55 @@ SELECT r.sessionid AS sessionid,
  ORDER BY r.sessionid
  LIMIT {{limit}};
 ', '[{"key":"begin_time","value":"","type":"DATETIME","autoAcquire":false},{"key":"end_time","value":"","type":"DATETIME","autoAcquire":false},{"key":"limit","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
-INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'lockwait.asp_status', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT name AS item, setting AS value
-  FROM pg_settings
- WHERE name IN (''enable_asp'', ''asp_sample_interval'', ''asp_flush_rate'', ''asp_retention_days'')
-UNION ALL
-SELECT ''samples_in_window'', CAST(count(*) AS text)
-  FROM gs_asp
- WHERE sample_time >= CAST(''{{begin_time}}'' AS TIMESTAMP)
-   AND sample_time <= CAST(''{{end_time}}'' AS TIMESTAMP)
-UNION ALL
-SELECT ''now'', to_char(now(), ''YYYY-MM-DD HH24:MI:SS'');
-', '[{"key":"begin_time","value":"","type":"DATETIME","autoAcquire":false},{"key":"end_time","value":"","type":"DATETIME","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
-INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'wdr.plan_in_window', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT to_char(start_time, ''YYYY-MM-DD HH24:MI:SS'') AS start_time,
-       round(db_time / 1000.0, 1) AS db_time_ms,
-       n_returned_rows,
-       query_plan
-  FROM dbe_perf.statement_history
- WHERE unique_query_id = {{sid}}
-   AND start_time >= CAST(''{{begin_time}}'' AS TIMESTAMP)
-   AND start_time <= CAST(''{{end_time}}'' AS TIMESTAMP)
-   AND query_plan IS NOT NULL AND query_plan <> ''''
- ORDER BY start_time DESC
- LIMIT 1;
-', '[{"key":"sid","value":"","type":"INTEGER","autoAcquire":false},{"key":"begin_time","value":"","type":"DATETIME","autoAcquire":false},{"key":"end_time","value":"","type":"DATETIME","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'memanalyze.gucs', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT name, setting
+FROM pg_settings
+WHERE name IN (
+  ''max_process_memory'', ''shared_buffers'', ''work_mem'', ''maintenance_work_mem'',
+  ''max_connections'', ''enable_memory_limit'', ''memory_tracking_mode'',
+  ''use_workload_manager'', ''enable_resource_track'', ''resource_track_level'',
+  ''resource_track_cost'', ''resource_track_duration'', ''enable_resource_record'',
+  ''enable_dynamic_workload'', ''query_max_mem'', ''query_mem'')
+ORDER BY name;
+', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'topsql.top_sql', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT
+  unique_sql_id::text,
+  LEFT(REGEXP_REPLACE(COALESCE(NULLIF(REGEXP_REPLACE(query, ''^(\s*(--[^\n]*(\n|$)|/\*([^*]|\*+[^*/])*\*+/))+\s*'', ''''), ''''), query),
+                     ''\s+'', '' '', ''g''), 80) AS query,
+  n_calls AS calls,
+  ROUND(total_elapse_time/1000000::numeric, 2) AS total_sec,
+  ROUND((total_elapse_time/NULLIF(n_calls,0))/1000::numeric, 2) AS avg_ms,
+  n_returned_rows AS rows,
+  ROUND(cpu_time/1000000::numeric, 2) AS cpu_sec,
+  ROUND(data_io_time/1000000::numeric, 2) AS io_sec
+FROM (SELECT unique_sql_id,
+             max(query)             AS query,
+             sum(n_calls)           AS n_calls,
+             sum(total_elapse_time) AS total_elapse_time,
+             sum(n_returned_rows)   AS n_returned_rows,
+             sum(n_blocks_hit)      AS n_blocks_hit,
+             sum(n_blocks_fetched)  AS n_blocks_fetched,
+             sum(cpu_time)          AS cpu_time,
+             sum(data_io_time)      AS data_io_time
+        FROM dbe_perf.statement
+       GROUP BY unique_sql_id) s
+WHERE n_calls > 0
+ORDER BY {{order}}
+LIMIT {{limit}};
+', '[{"key":"order","value":"","type":"STRING","autoAcquire":false},{"key":"limit","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'topsql.snap_statement', 'appbusiness', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT
+  snap_unique_sql_id::text AS unique_sql_id,
+  LEFT(REGEXP_REPLACE(COALESCE(NULLIF(REGEXP_REPLACE(max(snap_query), ''^(\s*(--[^\n]*(\n|$)|/\*([^*]|\*+[^*/])*\*+/))+\s*'', ''''), ''''), max(snap_query)),
+                     ''\s+'', '' '', ''g''), 80) AS query,
+  sum(snap_n_calls) AS calls,
+  ROUND(sum(snap_total_elapse_time)/1000000::numeric, 2) AS total_sec,
+  ROUND((sum(snap_total_elapse_time)/NULLIF(sum(snap_n_calls),0))/1000::numeric, 2) AS avg_ms,
+  sum(snap_n_returned_rows) AS rows,
+  ROUND(sum(snap_cpu_time)/1000000::numeric, 2) AS cpu_sec,
+  ROUND(sum(snap_data_io_time)/1000000::numeric, 2) AS io_sec
+FROM snapshot.snap_summary_statement
+WHERE snapshot_id = {{snap}}
+GROUP BY snap_unique_sql_id
+HAVING sum(snap_n_calls) > 0
+ORDER BY sum(snap_total_elapse_time) DESC
+LIMIT {{limit}};
+', '[{"key":"snap","value":"","type":"INTEGER","autoAcquire":false},{"key":"limit","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());

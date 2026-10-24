@@ -39,6 +39,44 @@ def test_bodies_parse_every_statement():
     assert set(DD.bodies(text)) == {"a.one", "a.two"}
 
 
+def _ins_p(name, body, params):
+    return ("INSERT INTO grmp.script_config (id, script_type, script_name) VALUES "
+            "(grmp.script_config_seq.nextval, 'SQL', '%s', 'appbusiness', 1, 'ALL', "
+            "NULL, NULL, NULL, 'centralization', '%s', '%s', 'AGENT');\n"
+            % (name, body.replace("'", "''"), params))
+
+
+class _Rec:
+    def __init__(self, body, params):
+        self.script_content, self.parameter_config = body, params
+
+
+def test_a_parameter_change_is_a_change_and_the_update_carries_it(monkeypatch):
+    """2026-10-24:health.stale_stats 加了参数 min_pages,第一版增量包只 UPDATE 了正文 ——
+    客户的中间件不认新参数,导进去健康检查一调就被拒。参数定义变了也算变更,UPDATE 要一并带上。"""
+    old_p = '[{"key":"limit","value":"","type":"INTEGER","autoAcquire":false}]'
+    new_p = ('[{"key":"limit","value":"","type":"INTEGER","autoAcquire":false},'
+             '{"key":"min_pages","value":"","type":"INTEGER","autoAcquire":false}]')
+    base = _ins_p("x.p", "SELECT {{limit}}", old_p) + _ins_p("x.same", "SELECT 1", "[]")
+    reg = {"x.p": _Rec("SELECT {{limit}}", new_p), "x.same": _Rec("SELECT 1", "[]")}
+    monkeypatch.setattr(DD, "_base_dml", lambda ref: base)
+    monkeypatch.setattr(DD, "registry", lambda: reg)
+    assert DD.params_changed("b", ["x.p", "x.same"]) == {"x.p"}
+    out = DD.render([], ["x.p"], {"changed": {"x.p": "加参数"}}, 2, 2, "d", {"x.p"})
+    assert "parameter_config = '%s'" % new_p in out and "WHERE script_name = 'x.p';" in out
+
+
+def test_the_self_check_is_computed_for_this_package(monkeypatch):
+    """自检按这次的包现算:每条更新后正文的 md5(以前写死的是 10-18 那一包的特征串)。"""
+    import hashlib
+    reg = {"x.a": _Rec("SELECT 'a'", "[]")}
+    monkeypatch.setattr(DD, "registry", lambda: reg)
+    out = DD.render([], ["x.a"], {"changed": {"x.a": "改"}}, 1, 1, "d")
+    want = hashlib.md5("SELECT 'a'\n".encode("utf-8")).hexdigest()
+    assert "('x.a', '%s')" % want in out and "md5(c.script_content) <> v.sum" in out
+    assert "plan_text_analyze" not in out and "wdr.file_io" not in out
+
+
 def test_a_missing_note_refuses_to_produce_a_package(monkeypatch, tmp_path, capsys):
     """**本组最重要的一条。** 某条有变更却没写说明 → 直接报错退出,不许出一个缺条目的包。"""
     monkeypatch.setattr(DD, "diff", lambda base: (["x.new"], ["x.old", "x.undocumented"], [], 1, 2))
