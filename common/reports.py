@@ -151,6 +151,23 @@ def _load_index(path: pathlib.Path) -> List[Dict[str, Any]]:
         return []
 
 
+def _file_gone(d: pathlib.Path, entry: Dict[str, Any]) -> bool:
+    """index 里登记的这份文件确实不在了。
+
+    2026-10-24 测试环境:NAS 放在 Mac 的 /tmp 下,macOS 每天 0 点的 tmp_cleaner 删掉三天没碰过的文件 ——
+    报告写一次就不再动,被删了;index.json 每次存档都重写,留了下来。大盘按索引取最新一份,整页 404。
+    文件被人手删、备份恢复不全也是同一个样子,所以存档时顺手把这种条目清掉。
+    **只认「文件不存在」**:权限、NFS 抖动这类读不准的,当它还在 —— 宁可索引里多一条,也不能误删登记。
+    """
+    try:
+        os.stat(d / str(entry.get("file")))
+        return False
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
 def describe_instance(conn: str) -> Dict[str, str]:
     """侧栏显示的实例名与深挖首句里的登录说法。
 
@@ -200,6 +217,7 @@ def archive(skill: str, payload: Any, *, name: Optional[str] = None,
 
     instance 给了就分实例目录并维护 <skill>/targets.json;不给(知识库,全体共享一份)则落在技能根目录。
     index 只登记本函数写过的文件,超过 keep 份时也只删登记过的 —— 目录里别的东西不动。
+    登记着、文件却已不在的条目(见 _file_gone)这次一并从 index 清掉,并在标准错误说一句。
     """
     base = reports_dir()
     if base is None:
@@ -216,7 +234,11 @@ def archive(skill: str, payload: Any, *, name: Optional[str] = None,
         _write_atomic(d / fname, text)
         if latest:
             _write_atomic(d / LATEST, text)
-        idx = [e for e in _load_index(d / INDEX) if e.get("file") != fname]
+        before = [e for e in _load_index(d / INDEX) if e.get("file") != fname]
+        idx = [e for e in before if not _file_gone(d, e)]
+        if len(idx) < len(before):
+            print("[注意] %s:索引里有 %d 份报告的文件已不在(可能被清理过),已从大盘索引移除。"
+                  % (skill, len(before) - len(idx)), file=sys.stderr)
         idx.append({"at": stamp, "file": fname,
                     "overall": payload.get("overall") if isinstance(payload, dict) else None,
                     "counts": _counts(payload), **_dims_summary(payload), **_window_summary(payload),

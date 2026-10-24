@@ -192,3 +192,70 @@ def test_archive_without_instance_is_unchanged(monkeypatch, tmp_path):
     monkeypatch.setenv("GSDB_REPORTS_DIR", str(tmp_path))
     reports.archive("kb", {"a": 1}, name="health")
     assert (tmp_path / "kb" / "health.json").is_file() and not (tmp_path / "kb" / "targets.json").exists()
+
+
+# ---- 索引里登记着、文件却已不在 ---------------------------------------------------------
+# 2026-10-24 测试环境:NAS 放在 Mac 的 /tmp 下,macOS 每天 0 点的 tmp_cleaner 删掉三天没碰过的文件。
+# 报告写一次就不再动 → 被删;index.json 每次存档都重写 → 留下。大盘按索引取最新一份,整页 404。
+
+def _three_reports(monkeypatch, tmp_path):
+    from common import config
+
+    def _no_conn(name=None):
+        raise config.ConfigError("未登录")
+    monkeypatch.setattr(config, "resolve", _no_conn)
+    monkeypatch.setenv("GSDB_REPORTS_DIR", str(tmp_path))
+    for i in range(3):
+        reports.archive("topsql", {"rows": []}, name="2026101%dT000000Z.time" % i, instance="og5", now="2026101%dT000000Z" % i)
+    return tmp_path / "topsql" / "og5"
+
+
+def test_index_outlives_files_removed_behind_its_back(monkeypatch, tmp_path):
+    """复现那个现象本身:文件被外部删掉之后,下一次存档之前索引仍登记着它们 —— 大盘照着索引去取就是 404。"""
+    d = _three_reports(monkeypatch, tmp_path)
+    for i in range(2):                                   # tmp_cleaner 的样子:最老的那几份被删,index.json 不动
+        (d / ("2026101%dT000000Z.time.json" % i)).unlink()
+    idx = json.loads((d / "index.json").read_text(encoding="utf-8"))
+    assert len(idx) == 3 and not (d / idx[0]["file"]).exists()
+
+
+def test_next_archive_drops_index_entries_whose_file_is_gone(monkeypatch, tmp_path, capsys):
+    d = _three_reports(monkeypatch, tmp_path)
+    for i in range(2):
+        (d / ("2026101%dT000000Z.time.json" % i)).unlink()
+    capsys.readouterr()
+    reports.archive("topsql", {"rows": []}, name="20261013T000000Z.time", instance="og5", now="20261013T000000Z")
+    idx = json.loads((d / "index.json").read_text(encoding="utf-8"))
+    assert [e["file"] for e in idx] == ["20261012T000000Z.time.json", "20261013T000000Z.time.json"]
+    assert all((d / e["file"]).is_file() for e in idx), "索引里只留文件还在的"
+    t = json.loads((tmp_path / "topsql" / "targets.json").read_text(encoding="utf-8"))
+    assert t[0]["count"] == 2, "侧栏的份数跟着改"
+    assert "索引里有 2 份报告的文件已不在" in capsys.readouterr().err, "不能悄悄清:标准错误说一句"
+
+
+def test_unreadable_file_is_not_treated_as_gone(monkeypatch, tmp_path, capsys):
+    """权限、NFS 抖动这类读不准的,当它还在 —— 宁可索引里多一条,也不能误删登记。"""
+    d = _three_reports(monkeypatch, tmp_path)
+    real = reports.os.stat
+    flaky = str(d / "20261010T000000Z.time.json")
+
+    def _stat(p, *a, **kw):
+        if str(p) == flaky:
+            raise PermissionError(13, "Permission denied", flaky)
+        return real(p, *a, **kw)
+    monkeypatch.setattr(reports.os, "stat", _stat)
+    capsys.readouterr()
+    assert reports.archive("topsql", {"rows": []}, name="20261013T000000Z.time", instance="og5", now="20261013T000000Z") is not None
+    monkeypatch.setattr(reports.os, "stat", real)
+    idx = json.loads((d / "index.json").read_text(encoding="utf-8"))
+    assert [e["file"] for e in idx][0] == "20261010T000000Z.time.json" and len(idx) == 4
+    assert "已不在" not in capsys.readouterr().err
+
+
+def test_gone_entries_do_not_count_toward_keep(monkeypatch, tmp_path):
+    """清掉的条目不占 keep 的名额:否则 50 份里 28 份是空登记,轮换会把还在的老报告先删掉。"""
+    d = _three_reports(monkeypatch, tmp_path)
+    (d / "20261011T000000Z.time.json").unlink()          # 中间那份没了;不清掉它的空登记,轮换就会把 10 号那份删掉
+    reports.archive("topsql", {"rows": []}, name="20261013T000000Z.time", instance="og5", now="20261013T000000Z", keep=3)
+    names = sorted(p.name for p in d.glob("2026*.json"))
+    assert names == ["20261010T000000Z.time.json", "20261012T000000Z.time.json", "20261013T000000Z.time.json"]
