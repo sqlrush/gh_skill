@@ -48,9 +48,9 @@ def test_extract_ids_stops_at_fullwidth_punctuation_and_markdown():
 
 
 def test_extract_ids_ignores_the_blue_marking_tag():
-    """出自知识库的内容按契约包进蓝色 span:标签不能粘进 ID,否则核对时整条变「疑似编造」。"""
-    text = (f'<span style=color:var(--color-v2-text-text-accent,#2563eb)>案例 {CID}(已确认):处置 = 杀会话</span>;'
-            '<span style=color:var(--color-v2-text-text-accent,#2563eb)>依据 GS-GUC-001</span>')
+    """出自知识库的内容按契约包进蓝色标签:标签不能粘进 ID,否则核对时整条变「疑似编造」。"""
+    text = (f'<font color=#2f6fdb>案例 {CID}(已确认):处置 = 杀会话</font>;'
+            '<font color=#2f6fdb>依据 GS-GUC-001</font>')
     assert kb_cite.extract_ids(text) == [("case", CID), ("clause", "GS-GUC-001")]
 
 

@@ -287,3 +287,33 @@ def test_without_alias_applicability_is_unknown(kb):
     out = kbrender.render_section(kbquery.from_text("锁等待超过 30 秒 openGauss", kb_dir=kb))
     assert "本实例(" not in out
     assert any("未知本环境" in ln for ln in out.splitlines() if ln.startswith("- **产品文档**"))
+
+
+def test_inbox_clean_removes_only_finished_batches(kb, capsys, tmp_path):
+    """导入环境的命令行不放行 rm(2026-10-24 测试环境:模型删不掉处理完的中间目录),删批次目录走脚本。"""
+    src = tmp_path / "手册.md"
+    src.write_text("# 手册\n步骤一\n", encoding="utf-8")
+    rc, _ = run(capsys, "ingest", str(src), "--kb", str(kb))
+    assert rc == 0 and (kb / "inbox" / "手册" / "source.md").is_file()
+    (kb / "inbox" / "uploads").mkdir(parents=True, exist_ok=True)
+    (kb / "inbox" / "t1" / "items").mkdir(parents=True)
+    (kb / "inbox" / "t1" / "manifest.json").write_text("{}", encoding="utf-8")
+    (kb / "inbox" / "t1" / "items" / "a.md").write_text("x", encoding="utf-8")
+    rc, out = run(capsys, "inbox-clean", "手册", "uploads", "t1", "../rules", "--kb", str(kb))
+    assert rc == 2 and "[已清理] inbox/手册" in out and not (kb / "inbox" / "手册").exists()
+    assert (kb / "inbox" / "uploads").is_dir() and (kb / "inbox" / "t1" / "items" / "a.md").is_file()
+    assert "还有 1 单工单没处理" in out and (kb / "rules").is_dir()
+
+
+def test_current_alias_maps_the_api_connection_back_to_the_login_alias(monkeypatch):
+    """api(中间件)模式的会话连接名是 10-0-0-9-postgres,画像认的是登录别名 og5(2026-10-24 测试环境没匹配上)。"""
+    from types import SimpleNamespace
+    from common import config as gconfig
+    from common import session as gsession
+    monkeypatch.setattr(gsession, "current", lambda: SimpleNamespace(name="10-0-0-9-postgres", data_ip="10.0.0.9", database="postgres"))
+    monkeypatch.setattr(gconfig, "instance_aliases", lambda: [gconfig.InstanceAlias("og5", "10.0.0.9", "postgres")])
+    assert kbquery.current_alias() == "og5"
+    monkeypatch.setattr(gsession, "current", lambda: SimpleNamespace(name="og", data_ip="", database="x"))
+    assert kbquery.current_alias() == "og", "gsql 模式:连接名就是配置里的名字"
+    monkeypatch.setattr(gsession, "current", lambda: None)
+    assert kbquery.current_alias() == ""

@@ -864,7 +864,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
             if items:
                 findings.append(("warn", f"inbox/{sub.name} 还有 {len(items)} 单工单未处理(propose → review → apply)"))
             continue
-        findings.append(("warn", f"inbox/{sub.name} 尚未条款化(处理完后删除该目录)"))
+        findings.append(("warn", f"inbox/{sub.name} 尚未条款化(处理完后 kb.py inbox-clean {sub.name})"))
 
     errors = [m for lvl, m in findings if lvl == "error"]
     warns = [m for lvl, m in findings if lvl == "warn"]

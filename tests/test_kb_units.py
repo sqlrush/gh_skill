@@ -309,9 +309,10 @@ def test_every_contracted_skill_carries_the_current_block():
             assert kb.contract_status(md, _template()) == "current", f"{name}: 契约块不是最新,跑 kb.py contract --apply"
 
 
-# 2026-10-24:对话界面里出自知识库的内容显示成蓝色。opencode 网页渲染行内 HTML(DOMPurify 保留 style),
-# 颜色取 opencode 主题里随明暗切换的强调色,取不到时退回固定蓝。三处写法必须一字不差,模型照抄。
-KB_MARK = '<span style=color:var(--color-v2-text-text-accent,#2563eb)>'
+# 2026-10-24:对话界面里出自知识库的内容显示成蓝色。opencode 网页渲染行内 HTML(DOMPurify 保留 font 的 color)。
+# 用最简单的 <font color=#2f6fdb>:测试环境里模型把 style="…" 的引号写成中文引号、把 color: 写成 color=,都不变色。
+# 固定中蓝,浅色 / 深色主题对比度都在 4 以上。三处写法必须一字不差,模型照抄。
+KB_MARK = '<font color=#2f6fdb>'
 
 
 def test_contract_tells_the_model_to_mark_kb_content_blue():

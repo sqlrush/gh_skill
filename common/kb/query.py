@@ -690,7 +690,16 @@ def current_alias() -> str:
     try:
         from .. import session as gsession
         conn = gsession.current()
-        return str(getattr(conn, "name", "") or "") if conn is not None else ""
+        if conn is None:
+            return ""
+        # api(中间件)模式下会话里的连接名是按实例地址生成的(10-0-0-9-postgres),用户、画像认的是登录时的
+        # 别名(og5)——按部署时登记的别名表反查回去(2026-10-24 测试环境:画像登记了 og5,诊断时没匹配上)
+        if getattr(conn, "data_ip", ""):
+            from .. import config as gconfig
+            for a in gconfig.instance_aliases():
+                if a.ip == conn.data_ip and (not conn.database or a.database == conn.database):
+                    return a.name
+        return str(getattr(conn, "name", "") or "")
     except Exception:                                  # noqa: BLE001  没登录、旧安装都不影响知识库
         return ""
 

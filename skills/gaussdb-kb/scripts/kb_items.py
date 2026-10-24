@@ -6,6 +6,7 @@
     migrate [--apply]          存量迁移:旧指南提议类型、条款 / 案例补专题;先出清单给人确认,再 --apply
     profile --system X ...     起草一份环境画像(连接别名、登录输出的版本串),管理员补全后 add
     taxonomy --init            写出可编辑的专题定义 topics/_taxonomy.yaml
+    inbox-clean <批次>...      删掉处理完的 inbox/<批次>/(导入环境的命令行不放行 rm,删目录走这里)
 
 分工与案例导入一致:模型起草、人确认、脚本校验落盘。所有写操作持知识库写锁。
 """
@@ -430,6 +431,40 @@ def cmd_taxonomy(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- inbox-clean
+
+_KEEP_INBOX = ("uploads", "drafts")
+
+
+def clean_inbox(kb: pathlib.Path, slug: str) -> str:
+    """只删 inbox/ 下一层的批次目录:规范批次(source.md / outline.md)直接删;工单批次要 items/ 已清空
+    (apply 会把处理完的单子移走),还有没处理的单子就拒绝——删了就是丢原文。收件目录与草稿目录不删。"""
+    root = (kb / "inbox").resolve()
+    target = (kb / "inbox" / slug).resolve()
+    if target.parent != root or slug in _KEEP_INBOX or not target.is_dir():
+        raise ItemCmdError(f"inbox/{slug} 不是可清理的批次目录(只认 inbox/ 下一层,uploads / drafts 不删)")
+    items = list((target / "items").glob("*.md")) if (target / "items").is_dir() else []
+    if items:
+        raise ItemCmdError(f"inbox/{slug} 还有 {len(items)} 单工单没处理(propose → review → apply 之后再清)")
+    if not any((target / f).exists() for f in ("source.md", "outline.md", "manifest.json")):
+        raise ItemCmdError(f"inbox/{slug} 不像 ingest 产生的批次目录(没有 source.md / manifest.json),不删")
+    shutil.rmtree(target)
+    return f"inbox/{slug}"
+
+
+def cmd_inbox_clean(args: argparse.Namespace) -> int:
+    kb = _kb(args)
+    bad = 0
+    with kblock.hold(kb):
+        for slug in args.slugs:
+            try:
+                print(f"[已清理] {clean_inbox(kb, slug.strip().strip('/').split('/')[-1])}")
+            except ItemCmdError as exc:
+                bad += 1
+                print(f"[跳过 ] {exc}")
+    return 2 if bad else 0
+
+
 # ---------------------------------------------------------------- wiring
 
 def add_subcommands(sub: "argparse._SubParsersAction") -> None:
@@ -462,6 +497,10 @@ def add_subcommands(sub: "argparse._SubParsersAction") -> None:
     p.add_argument("--deployment", help="部署形态,如 一主两备")
     p.add_argument("--kb")
     p.set_defaults(func=cmd_profile)
+    p = sub.add_parser("inbox-clean", help="删掉处理完的 inbox/<批次>/(规范批次条款化完、工单批次全部 apply 后)")
+    p.add_argument("slugs", nargs="+", help="批次名(inbox/ 下的目录名)")
+    p.add_argument("--kb")
+    p.set_defaults(func=cmd_inbox_clean)
     p = sub.add_parser("taxonomy", help="写出可编辑的专题定义 topics/_taxonomy.yaml")
     p.add_argument("--init", action="store_true", required=True)
     p.add_argument("--force", action="store_true", help="已存在时用默认覆盖")
