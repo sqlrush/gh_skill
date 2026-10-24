@@ -311,7 +311,7 @@ def test_every_contracted_skill_carries_the_current_block():
 
 # 2026-10-24:对话界面里出自知识库的内容显示成蓝色。opencode 网页渲染行内 HTML(DOMPurify 保留 style),
 # 颜色取 opencode 主题里随明暗切换的强调色,取不到时退回固定蓝。三处写法必须一字不差,模型照抄。
-KB_MARK = '<span style="color:var(--color-v2-text-text-accent,#2563eb)">'
+KB_MARK = '<span style=color:var(--color-v2-text-text-accent,#2563eb)>'
 
 
 def test_contract_tells_the_model_to_mark_kb_content_blue():
@@ -319,6 +319,12 @@ def test_contract_tells_the_model_to_mark_kb_content_blue():
     assert KB_MARK in text
     assert "不标蓝" in text, "要写明哪些不标:诊断结果、通用经验、「本行无先例」"
     assert "代码块里不放标签" in text, "代码块里的标签不变色,还会原样露出来"
+    assert "不加引号" in text and "加粗" in text, "引号被写成中文引号、标签里加粗,都会让蓝色失效(测试环境实测)"
+
+
+def test_blue_tag_has_no_quotes_to_mangle():
+    """2026-10-24 测试环境:模型把 style="…" 写成了 style=“…”,整段不变色。属性值不含空格与等号,可以不加引号。"""
+    assert '"' not in KB_MARK and "'" not in KB_MARK
 
 
 @pytest.mark.parametrize("rel", ["skills/gaussdb-kb/SKILL.md", "AGENTS.md"])
