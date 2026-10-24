@@ -18,7 +18,7 @@
 | 解释器 | 要装了 `psycopg2`。Mac 上用 `~/p2venv/bin/python` |
 | 容器可执行 | 建专用用户与打 WDR 快照要 `omm` 权限，经 `docker exec` 完成，所以要能跑 `docker` |
 | 磁盘 | 数据约 900 MB；跑的过程中临时文件与 WAL 另算，留 5 GB 余量 |
-| 宿主机文件表 | 落盘类场景（S2/S6）会产生大量临时文件。**macOS 上先确认文件表没被占满**：`sysctl kern.num_vnodes kern.maxvnodes`，两者相等就说明已经满了，这时不要开跑（见 §6 最后一条） |
+| 宿主机文件表 | 落盘类场景（S2/S6）会产生大量临时文件。**macOS 上先确认文件表有余量**：`sysctl vfs.vnstats.num_free_vnodes kern.num_files kern.maxfiles`，空闲 vnode 不到 10 万、或打开文件数超过上限的 3/4 时不要开跑（见 §6「跑到一半 og5 自己重启了」）。**不要看 `kern.num_vnodes` 是否等于 `kern.maxvnodes`**：那是已分配数，macOS 分配满之后不归还，机器开久了一直相等 |
 
 换别的实例：在 `~/.faultlab/conn.json` 里写覆盖值（只写要改的字段）。
 
@@ -50,6 +50,7 @@ $P tools/faultlab/faultlab.py status --watch 10
 
 ```bash
 $P tools/faultlab/faultlab.py report
+$P tools/faultlab/faultlab.py expected    # 预期发现矩阵：格式核对 + actual 还剩几项没填（见 §7）
 ```
 
 **建议用 `nohup` 跑 `run`**，这样终端断了也不影响（故障会按窗口自己结束）：
@@ -273,8 +274,10 @@ $P tools/faultlab/faultlab.py purge --yes    # 连数据与用户一起删，库
 已经做的事：把 S6 的 `work_mem` 调到 2MB、S2 调到 4MB——照样是 external merge、
 照样落几百 MB，但临时文件数少一个量级。**不要再把它们往下调。**
 
-如果还是撞上：`sysctl kern.num_vnodes kern.maxvnodes` 看是不是满了。
-满了就先找出占着文件句柄的进程（`lsof -n -p <pid> | wc -l`）。
+如果还是撞上：`sysctl vfs.vnstats.num_free_vnodes kern.num_files kern.maxfiles` 看余量。
+（`kern.num_vnodes` 是已分配数，满了之后释放的 vnode 只进空闲表、不归还 —— 2026-10-24 实测
+`num_deallocedvnodes=0`，它会一直等于 `kern.maxvnodes`，看它判断不了满没满。）
+余量不够就先找出占着文件句柄的进程（`lsof -n -p <pid> | wc -l`）。
 这台机器上占得最多的往往是沙箱虚拟机，在沙箱里 `sync; sudo sh -c 'echo 2 > /proc/sys/vm/drop_caches'`
 能立刻放掉一大批。`kern.maxvnodes` 要 root 才能改，一般不动它。
 
@@ -293,8 +296,13 @@ $P tools/faultlab/faultlab.py purge --yes    # 连数据与用户一起删，库
 
 1. `report` 拿到各场景的起止时刻（数据库时间）和快照号。
 2. 对着 `expected.yaml` 一项项跑 skill，把实际结果填进 `actual` 字段。
+   每个场景、每个跨场景项都已经留好了 `actual: ""`（空串 = 还没填）。填的时候写**一段文字**：
+   哪个 skill 报了什么判定码、关键的一句话；没报也写明「未报」——不要写成列表，也不要删掉这个键。
 3. **填之前先确认故障真的造出来了**：看 `signals` 那一列，用 `status` 复核。
    「skill 没报」有两种可能——它漏报，或者故障根本没造出来。分不清就等于没测。
+4. 填完跑一次 `$P tools/faultlab/faultlab.py expected`（不连库）：核对 YAML 还读得通、每项都有 `actual`、
+   场景编号与 `lab/config.py` 的排期表一一对应，并列出还剩哪几项没填。格式有问题时退出码 1。
+   **以 `*` `&` `!` 等符号开头的值要加引号**——否则整份文件解析不了（S7 那一行原先就是这样）。
 
 ### 给模型的测试提问（对话里直接说，看它选不选对 skill、结论对不对）
 
@@ -318,5 +326,7 @@ $P tools/faultlab/faultlab.py purge --yes    # 连数据与用户一起删，库
   否则下一次运行会带着上一次的残留开始，现象看起来还一模一样。
 - **schema.sql 里有几处故意不建索引**（`payments.order_id`、`orders.cust_code`），
   它们是 S1/S3/S4/S5/S7 的成因，不是遗漏。
-- 单元测试在 `tests/test_faultlab_units.py`（纯函数：排期预算、SQL 规模校验、残留登记簿、
-  报告渲染），不连库，随仓库全量测试一起跑。
+- **改了 `expected.yaml` 或排期表就跑 `faultlab.py expected`**：新加的场景没在矩阵里登记、
+  矩阵里的项缺 `actual`，单测会红，命令也会点名。
+- 单元测试在 `tests/test_faultlab_units.py`（纯函数：预期发现矩阵的格式、排期预算、SQL 规模校验、
+  残留登记簿、报告渲染），不连库，随仓库全量测试一起跑。

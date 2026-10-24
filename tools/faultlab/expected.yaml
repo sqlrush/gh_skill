@@ -5,6 +5,11 @@
 #   signals  —— 不靠 skill、直接查库就能看到的事实(复核用,也是 probe 的依据)
 #   expect   —— 哪个 skill、应该出现哪个判定码 / 哪句话
 #   actual   —— **第一次全量跑完后由人填**:实际报了什么。没报出来的就是测试发现。
+#               空串 = 还没填;填一段文字(没报也写明「未报」),不写成列表。
+#
+# 填完跑 `faultlab.py expected`:YAML 读不读得通、每项有没有 actual、编号与 lab/config.py 的排期表
+# 是否一一对应,以及还剩哪几项没填。**以 * & ! 等符号开头的值要加引号**,否则整份文件解析不了
+# (S7 那一行原先就是这样,一直没人发现)。
 #
 # expect 里的判定码取自各 skill 脚本里的常量(2026-10-17 从代码里核对过):
 #   health    XACT_IDLE XACT_LONG PREPARED_XACT DEADLOCKS STALE_STATS SLOWSQL_TOP
@@ -34,7 +39,7 @@ scenarios:
       - slowsql: 执行历史里**不该**有它 —— 它一次都没跑完;只会出现在「正在执行」里
       - sqltune: 给出的根因应落在「相关子查询 + 内层无索引」,建议建 payments(order_id) 索引
       - explain: 计划里应出现 SubPlan + Seq Scan on payments
-    actual: ""
+    actual: "故障已造出：fl:S1/q 整个窗口一直 active，到 10:05 已连续执行 1123 秒，一次没跑完。health 未报：Slow SQL 维度只读 dbe_perf.statement（只有已完成的执行），Top1 是 S3；没有「长时间执行中的 SQL」这类判定，ACTIVE_SQL_HOT 全程没触发，Overview 的「最老事务」还写着「无」（health.long_xact 带 COALESCE(connection_info,'')<>'' 过滤，psycopg2 客户端会话全被滤掉）。slowsql 报对了：执行历史里没有 S1。explain --pid 报对了：计划里有 SubPlan 1/2 + Seq Scan on payments（Filter: order_id = orders.id），不过这是 EXPLAIN 估算计划（og 没有 gs_get_explain）。sqltune（--sql-stdin，api 路径）只给通用 seq_scan/sort 警告，写着「本次没有待评估的索引建议」，没指出相关子查询 + payments.order_id 无索引，也没建议建 payments(order_id) 索引；白名单路径下 hypopg 不可用。"
 
   - code: S2
     title: 三层派生表 + LIKE 前缀关联 + 1MB work_mem
@@ -43,7 +48,7 @@ scenarios:
       - waitevent: 该窗口 DB time 里 IO 占比上升(DBTIME_IO_HEAVY)
       - memanalyze: 落盘类发现(MEM_SQL_SPILL / MEM_OP_SPILL)
       - sqltune: 应指出 LIKE 前缀关联用不上索引
-    actual: ""
+    actual: "故障造出来了，但和设计不一样：S2 并非跑不完，而是循环跑完了 13 次，单次 57~135 秒；WDR 归到它名下的落盘是 682.8 MB。waitevent 五个窗口都没报 DBTIME_IO_HEAVY（DATA_IO_TIME 只占 DB_TIME 的 0.1%~2.7%）。memanalyze 跑了 4 次 snapshot，都没报 MEM_SQL_SPILL / MEM_OP_SPILL：L4/L5 视图存在，但「无 SQL 级/算子级数据」（openGauss-lite 上 gs_wlm_* 实时视图为空）；history 模式因 enable_resource_record=off 不可用。L3 会话层还出现了负的「已用」内存（如 fl:S1/q -1.11 GB），脚本没标不可信。sqltune 只给通用 seq_scan/nestloop 警告，没指出 c.code LIKE l3.k || '%' 这种前缀关联用不上索引，未报。旁证：wdr collect 的 WDR_TEMP_SPILL 和 health 时段体检的 WIN_TEMP_SPILL 都报出了库级落盘 6.6 GB。"
 
   - code: S3
     title: NOT IN 碰上可空列(逐行子计划)
@@ -52,7 +57,7 @@ scenarios:
       - slowsql: 应按阈值筛出它(SLOWSQL_TOP)
       - topsql: 平均耗时榜应排前
       - sqltune: 应指出 NOT IN + 可空列不能改写成反连接,建议改 NOT EXISTS
-    actual: ""
+    actual: "故障已造出：S3 在窗口内只跑完 1 次，耗时 880 秒（目标 8 分钟），dbe_perf.statement 里有 sql_id 3509710879。slowsql --threshold 1000 报对了，排第 2；第 1 是被 K1 挡住的 K2 批处理 FOR UPDATE（1081 秒）。health 10:02 那次巡检的 SLOWSQL_TOP Top1 就是它（avg 879587ms）。topsql --by avg 排第 2，榜首同样是那条锁等待语句。sqltune 按 sql_id 调直接失败（rc=1）：合成占位符把 c.grade + ? 里的 ? 猜成了 'test'，报 invalid input syntax for integer。改用 --sql-stdin 能出计划（Filter: NOT (SubPlan 1)），但只有通用 seq_scan/nestloop 警告，没说 NOT IN + 可空列不能改写成反连接，也没建议改 NOT EXISTS，未报。"
 
   - code: S4
     title: 索引列上套类型转换(code::bigint)
@@ -60,7 +65,7 @@ scenarios:
     expect:
       - slowsql: 应筛出
       - sqltune: 应指出转换套在索引列上导致 idx_customers_code 失效
-    actual: ""
+    actual: "故障已造出：跑完 1 次，315 秒（目标 3 分钟）。slowsql 报对了，排第 4（sql_id 2643287733）。sqltune 按 sql_id 能出计划：Seq Scan on customers，Filter: ((code)::bigint = orders.cust_id)，Indexes 一节也列出了 idx_customers_code。但确定性发现只有通用 seq_scan/nestloop 警告，写着「本次没有待评估的索引建议」，没点明是类型转换套在索引列上让 idx_customers_code 失效，未报。另外 schema 按执行账号被推测成了 fl_app（实际是 fl；SQL 里写的是全名，计划不受影响）。explain --sql-id 拒绝执行（rc=2）：取到的是带 3 个占位符的归一化文本，statement_history 里没有这条。"
 
   - code: S5
     title: 统计信息过期 + 数据倾斜 → 估 3 行实际 16 万行
@@ -69,7 +74,7 @@ scenarios:
       - sqltune: 应指出统计信息过期(建议 ANALYZE),而不是只建议加索引
       - health: STALE_STATS 应包含 fl.import_stage
       - memanalyze: 可能报 MEM_SQL_ESTIMATE_OFF(估算偏差)
-    actual: ""
+    actual: "故障没造出来：V7 导入后约 80 秒，即 09:47:28，import_stage 就被自动 ANALYZE 了（last_autoanalyze=09:47:28；表级 autovacuum_enabled=false 还在，autoanalyze=off），S5 开跑时统计已经是新的。EXPLAIN 估 import_stage rows=11033，实际 cust_id=1 且 id<=33079 的是 11026 行，估得很准，没有「估 3 行实际 16 万行」。另外 09:57~09:59 这段，S5 被 K3 残留的 ALTER 堵在 fl.payments 上，人工取消那条 ALTER 后才执行；到窗口结束跑了 483 秒，一次没跑完，statement 里没有它。sqltune（--sql-stdin）没建议 ANALYZE，这时统计确实是新的，判断本身没错；health 没报 STALE_STATS，memanalyze 没报 MEM_SQL_ESTIMATE_OFF，都与现场一致。这一项要等 V7 修好后重测。"
 
   - code: S6
     title: 四个窗口函数 + 64kB work_mem(落盘)
@@ -77,15 +82,15 @@ scenarios:
     expect:
       - memanalyze: MEM_SQL_SPILL / MEM_OP_SPILL
       - waitevent: IO 相关占比上升
-    actual: ""
+    actual: "故障已造出：S6 跑完 4 次，每次约 60 秒。WDR collect（3149→3154）把它认成「溢出冠军」sql_id 2858996927：落盘 3587 MB，占语句级落盘的 84%，并注明它不在耗时前 10。memanalyze 在 S6 运行期间（09:59:42、10:01:50）跑的 snapshot 都没报 MEM_SQL_SPILL / MEM_OP_SPILL：L4/L5 无数据，history 要 enable_resource_record=on，未报。waitevent 第 4 窗口（09:58→10:02）的 IO 事件里 BufFileRead 57 秒、BufFileWrite 39.5 秒排在前列，但 DATA_IO_TIME 只占 2.7%，没出 DBTIME_IO_HEAVY，判定码未报。sqltune 只给通用 sort 警告（Check work_mem if the sort spills），没点明落盘。"
 
   - code: S7
     title: 高频中等慢 SQL(cust_code 无索引)
     signals: 调用次数远高于其他 SQL,单次 1~3 秒
     expect:
-      - topsql: **总耗时**榜首应是它,而**平均耗时**榜首应是 S3/S4 —— 两张榜不该是同一条
+      - topsql: "**总耗时**榜首应是它,而**平均耗时**榜首应是 S3/S4 —— 两张榜不该是同一条"
       - health: SLOWSQL_TOP 或 ACTIVE_SQL_HOT
-    actual: ""
+    actual: "故障已造出：窗口内调用 10057 次，单次约 113 ms（比设计的 1~3 秒快得多），合计 1140 秒。topsql 的总耗时榜（--from/--to 和累计榜结果一样）榜首是 K1 链上等锁的 UPDATE fl.acct（6779 秒，CPU≈0），S7 只排第 8；平均耗时榜首是 K2 的 FOR UPDATE（1081 秒），S3/S4 排第 2/4。两张榜确实不同，但两个榜首都是锁等待语句，不是预期的 S7 和 S3/S4。topsql 不区分「执行耗时」和「等锁耗时」，全量混跑时锁场景把两张榜都占了。WDR 的「各维度元凶」把 S7 列为 CPU 主导（WDR_TOPSQL_CPU_HEAVY，1140s×10057 次）。health 两个码都没报：SLOWSQL_TOP 只看 avg>500ms，S7 进不去；ACTIVE_SQL_HOT 一直没触发。"
 
   # ----------------------------------------------------------------- 锁等待
   - code: K1
@@ -95,7 +100,7 @@ scenarios:
       - lockwait: LOCK_BLOCKED + LOCK_ROOT_IDLE_XACT;**根阻塞会话必须算到最根上那个
           (fl:K1/root),不能算成链条中间的 mid1/mid2**
       - health: XACT_IDLE(空闲事务)
-    actual: ""
+    actual: "故障已造出：根是 fl:K1/root（idle in transaction），链为 root←mid1←mid2←wait0←wait1←wait2，一直保持到窗口结束。lockwait 报对了：每次都把根算到会话 5369（fl:K1/root），不是 mid1/mid2；kill 语句只针对根（pg_terminate_session）。判定码是 LOCK_WAIT（22.7s，满 60s 后升成 LOCK_WAIT_LONG）+ LOCK_ROOT_IDLE_XACT，没出现单独的 LOCK_BLOCKED，那只是等待不足 5 秒时的档位。小瑕疵：「互斥关系」里对 transactionid 锁写的是「持有者取这把锁的典型语句：REFRESH MATERIALIZED VIEW CONCURRENTLY」，套的是表级锁的说明，有误导。health 漏报 XACT_IDLE：到 10:02 根会话已空闲事务 16 分钟，超过 10 分钟的告警线，Long & Idle Transactions 仍写「无活动客户端事务」。原因是 registry 里 health.long_xact 的 SQL 带 COALESCE(connection_info,'')<>''，psycopg2 等不填 connection_info 的客户端会话全被滤掉；health 里只有从 lockwait 转述来的 LOCK_ROOT_IDLE_XACT。"
 
   - code: K10
     title: 孤儿两阶段事务
@@ -103,35 +108,35 @@ scenarios:
     expect:
       - health: PREPARED_XACT
       - lockwait: 等它的会话应被识别为「阻塞者不是会话」,建议 ROLLBACK PREPARED
-    actual: ""
+    actual: "故障已造出：pg_prepared_xacts 里有 fl_orphan_k10，它锁着 acct id=100，持锁者不在 pg_stat_activity 里。health 报对了：PREPARED_XACT（🟠，K10 + V3 共 2 条）。lockwait 无从检验：这一轮没有会话去等 id=100 那一行（K2 批处理 FOR UPDATE 卡在 id=1、被 K1 挡住，走不到 100），所以没出现「阻塞者不是会话」的情形，lockwait 什么也没报。vacuum 把它列为 R4 的阻塞源。要测 lockwait 这一条，场景得自带一个等待者。"
 
   - code: K4
     title: LOCK TABLE IN EXCLUSIVE MODE,锁 2 分钟放 1 分钟
     signals: 锁着的那几分钟 pg_locks 有 ExclusiveLock,业务侧 2 个会话 waiting
     expect:
       - lockwait: LOCK_WAIT / LOCK_WAIT_LONG,锁对象是 fl.acct_child
-    actual: ""
+    actual: "故障已造出：锁 2 分钟、放 1 分钟。lockwait 报对了（09:50:10 那次）：根是 fl:K4/monthend（LOCK TABLE fl.acct_child IN EXCLUSIVE MODE），5 个会话以 RowExclusiveLock ← ExclusiveLock 等在 relation fl.acct_child 上，已等 45~60 秒，整体判定为 LOCK_WAIT_LONG。后半段出现了交叉：K4 的 LOCK TABLE 自己排到了 K6 子表插入的后面，链变成 K4 等待者 → K4 → K6 child → K6 parent，lockwait 也如实把根算到了 K6/parent。"
 
   - code: K6
     title: 外键父子表互等
     signals: 子表插入会话 waiting,等的是父行
     expect:
       - lockwait: 应报出等待,且说明与外键有关
-    actual: ""
+    actual: "故障已造出：K4 放锁的那一分钟里，fl:K6/child 在 transactionid 上等 fl:K6/parent（SELECT … FOR UPDATE 锁着父行 id=200）。lockwait 报出了这一对：ShareLock ← ExclusiveLock、transactionid、已等 123 秒，根是 K6/parent，也给了持有者的 SQL。但没说明这和外键有关（没提子表插入要在父行上拿键级共享锁），「与外键有关」未报。K4 锁表的那两分钟里，K6 的子表插入被 K4 的表锁挡着，看到的是表锁等待，不是外键等待。"
 
   - code: K7
     title: 多会话插同一主键
     signals: waiting 的会话等的是 transactionid(不是行锁)
     expect:
       - lockwait: 应报出「在等某笔事务的结果」,而不是「在等某一行」
-    actual: ""
+    actual: "故障已造出：fl:K7/race0、race1 两个会话在 transactionid 上等 fl:K7/first（INSERT uniq_race k=777 未提交）。lockwait 报出了等待对，锁对象写的是 transactionid（不是行锁），根是 K7/first。但「互斥关系」照样套了表锁那句「典型语句 REFRESH MATERIALIZED VIEW CONCURRENTLY」，没说成「在等对方事务的结果（同键插入）」。SKILL.md 里写的「transactionid = 在等对方事务结束」这句话，只在死锁日志解析里出现，实时报告里没有。算部分报对。"
 
   - code: K8
     title: 咨询锁(advisory)排队
     signals: pg_locks 里 locktype='advisory',1 持有 3 排队
     expect:
       - lockwait: 应报出 advisory 锁等待 —— **只看表锁的实现会在这里完全漏报**
-    actual: ""
+    actual: "故障已造出：1 个会话持有咨询锁 880001，3 个会话排队。lockwait 报对了：锁对象是 advisory，ExclusiveLock ← ExclusiveLock，已等 83 秒，根是 fl:K8/holder，3 个排队会话都归到它名下（库里实际是 wait0→wait1→wait2→holder 一条队列）。小瑕疵：会话级咨询锁没有事务，kill 语句旁的「事务已持续 ? 秒」显示成了「?」。"
 
   - code: K2
     title: 批处理 FOR UPDATE,抖动型等锁
@@ -139,28 +144,28 @@ scenarios:
     expect:
       - lockwait: 瞬时查询可能什么都看不到(正常);WDR 窗口里应有锁等待事件累计
       - waitevent: WAIT_LOCK_HEAVY 或 LOCK_EVENT 占比
-    actual: ""
+    actual: "故障变形了：K2 批处理（SELECT … WHERE id BETWEEN 1 AND 401 FOR UPDATE）一上来就卡在 id=1，被 K1 的根会话挡住，到窗口结束都没解开（单次 1081 秒，收工时作为死锁牺牲者被回滚），两个在线更新会话也挂在 K1 链上。结果是持续阻塞，不是设计的抖动型。lockwait 瞬时查询把它们算进了 K1 的链（根 5369），归属是对的。waitevent 第 1、2 窗口都有 LOCK_EVENT（tuple/transactionid），第 2 窗口报了 WAIT_LOCK_HEAVY（32%），但主要是 K4 的 relation 锁撑起来的。lockwait --from/--to 时段回看报「回看不了：这段时间一个采样都没有」，这是误报：gs_asp 表确实是空的，但 dbe_perf.local_active_session 里有 5.3 万条覆盖整个窗口的内存样本；脚本只读 gs_asp，还把原因说成「实例没运行或采样没开」（实际 enable_asp=on）。"
 
   - code: K5
     title: 非并发建索引挡住写入
     signals: 建索引期间写入会话 waiting,锁对象 fl.order_items
     expect:
       - lockwait: 应报出 DDL(建索引)是阻塞者
-    actual: ""
+    actual: "故障只造出来一半：CREATE INDEX 只用了约 7 秒（09:53:33→09:53:40）。之后 DROP INDEX 要在 fl.order_items 上拿 AccessExclusiveLock，被 S2/S3 的长查询挡住，两个写入会话又排在 DROP 后面，probe 记到「写入侧等锁 3 个」；也就是说，挡住写入的其实是 DROP + 长查询，不是建索引本身。lockwait 两次都没赶上建索引：09:53:50 那次 K5 没有任何等待；09:55:31 那次 K5/ddl 正在等 S2（AccessExclusiveLock ← AccessShareLock，根 5380=S2），写入会话那一刻没在等。所以「应报出 DDL（建索引）是阻塞者」未报。时段回看因为 ASP 的问题（见 K2）也查不了。"
 
   - code: K3
     title: DDL 锁队列放大
     signals: ALTER TABLE 在等长查询,普通读又排在 ALTER 之后
     expect:
       - lockwait: 应把根因指到**长查询**,并说明后面的读是被 ALTER 挡住的(队列放大)
-    actual: ""
+    actual: "故障已造出：ALTER TABLE fl.payments ADD COLUMN 排在长查询后面（主要等的是 S1 的长读，不只是 K3 自己的 longread），K3/reader0、reader1 又排在 ALTER 后面。lockwait（09:57:34）报对了一半：根是 5376=fl:S1/q，即长查询，不是 ALTER；K3 自己的 longread（5862）被单列为独立阻塞者；阻塞明细里 ALTER 是 AccessExclusiveLock ← AccessShareLock。但报告没有解释「后面的读是被 ALTER 挡住的（队列放大）」，没有队列放大这层说明。工具问题：K3 在排期 +700 秒停下时，没取消还在排队的 ALTER，它一直堵着 fl.payments，S5、faultlab status、explain、health 都跟着卡住（explain 等到了语句超时）。09:59:27 人工 pg_cancel_backend 掉 fl:K3/ddl 后才恢复。"
 
   - code: K9
     title: 并发插入抢表扩展锁
     signals: pg_locks 里 locktype='extend'(瞬时,抓不到也正常)
     expect:
       - waitevent: 等待事件里应出现 extend 相关
-    actual: ""
+    actual: "故障已造出：10:04 连采 10 次，pg_locks 里每次都有 1 把 extend ExclusiveLock，其中两次在排队；K9 会话的等待事件有 DataFileExtend / BufferContentLock。waitevent 第 5 窗口（3153→3154）报对了：LOCK_EVENT 明细里出现 extend（15730 次 / 8.2 秒），IO 事件里 DataFileExtend 26.8 秒。整体判定码是 WAIT_LOCK_HEAVY（64.2%），主要来自 tuple/transactionid/advisory，不是 extend。lockwait 瞬时查询没有报 extend 等待对，抓不到在意料之中。"
 
   # ----------------------------------------------------------------- 死锁
   - code: D
@@ -170,7 +175,7 @@ scenarios:
       - health: DEADLOCKS(应给出累计计数,并说明这个计数不会自己清零)
       - lockwait: LOCK_DEADLOCK
       - 建议内容: 不同形态的建议应有区别(改加锁顺序 / 一开始就 FOR UPDATE / 调整父子表写入顺序)
-    actual: ""
+    actual: "故障已造出：D 驱动报本次新增 19 次；health 时段体检的 WIN_DEADLOCK 和 WDR 的 WDR_DEADLOCK 都是 27 次（3148→3154），死锁日志里 09:47~10:06 也正好 27 条 deadlock detected。health 的 DEADLOCKS 只给累计值（80→96），没有「距上次新增」，也没说为什么给不出（Mac 上没有报告存档目录，也就没有计数基线，脚本对此一句没提）；证据里也没有「这个计数不会自己清零」，算部分报到。lockwait 实时模式一次 LOCK_DEADLOCK 都没有：环 1 秒内就被解开，SKILL.md 写明了这是预期内的限制。把从 og5 容器日志 grep 出的死锁段交给 lockwait --deadlock-log，解析出 27 次、10 种模式：D2 三会话环、D3 跨表（建议「不同语句交叉加行锁，统一表顺序」）、D6 唯一索引（建议「同键插入，按同一顺序」）都对；D4 锁升级被并进「同一条 UPDATE 改行顺序不一致」，没建议「一开始就 FOR UPDATE」；D5 外键那次（09:51:06，两条 INSERT acct_child 互等）被归成「同键插入 / 唯一索引冲突」，没建议调整父子表的写入顺序。这两种形态的建议没区分出来。"
 
   # ----------------------------------------------------------------- VACUUM
   - code: V1
@@ -179,7 +184,7 @@ scenarios:
     expect:
       - vacuum: VACUUM_DISABLED(R2) + VACUUM_DEAD_RATIO(R3)
       - health: 膨胀维度应提到这张表
-    actual: ""
+    actual: "故障已造出：fl.bloat_hot 的 autovacuum_enabled=false，死元组比例从 25% 涨到 92.8%（646 MB），last_autovacuum 为空。vacuum 报对了：R1、R2、R3、R4 全中；health 也并入了 VACUUM_DISABLED、VACUUM_DEAD_RATIO（🔴）和 VACUUM_OVERDUE，都点到了 fl.bloat_hot；R4 的阻塞源只列了两笔两阶段事务（K10/V3），并提示「先处理该事务，现在跑 VACUUM 不会有效果」。health 的 STALE_STATS 也点到了 fl.bloat_hot。"
 
   - code: V5
     title: autovacuum 被表级限速,追不上
@@ -187,7 +192,7 @@ scenarios:
     expect:
       - vacuum: VACUUM_DEAD_RATIO(R3);**不应**报 VACUUM_DISABLED —— 它是开着的
       - 建议内容: 应指向 cost_delay / cost_limit,而不是「打开 autovacuum」
-    actual: ""
+    actual: "故障只造出来一部分：表级限速 cost_delay=100ms / cost_limit=10 生效，bloat_slow 的死元组从 7.7% 涨到 74.4%（122 MB）。但 V5 这 3 分钟里 autovacuum 一次都没来过，last_autovacuum 一直是「从未运行」，关键信号「last_autovacuum 在更新却追不上」没造出来。vacuum 报对的部分：先报 R1+R4，后来加上 R3（VACUUM_DEAD_RATIO），始终没报 R2（VACUUM_DISABLED），这点对。没报对的部分：建议里没提 cost_delay / cost_limit，没认出 reloptions 里明摆着的 autovacuum_vacuum_cost_delay=100，统计陈旧时给的建议是「先 ANALYZE 这张表再看」。"
 
   - code: V2
     title: 长事务(可重复读)卡住回收水位
@@ -195,7 +200,7 @@ scenarios:
     expect:
       - vacuum: VACUUM_XMIN_BLOCKED(R4),来源应指向**长事务**
       - health: XACT_LONG
-    actual: ""
+    actual: "故障已造出：fl:V2/holder（可重复读）长事务持续 1118 秒，fl.xmin_hold 的死元组比例涨到 84.5%（80 MB）。vacuum 漏报了来源：R4（VACUUM_XMIN_BLOCKED）确实命中，但列出的阻塞源只有两笔两阶段事务（K10、V3），没有 V2 的长事务；health 也没报 XACT_LONG / XACT_IDLE。原因和 K1 一样：vacuum.oldest_xmin 与 health.long_xact 两条 registry SQL 都带 COALESCE(connection_info,'')<>''，psycopg2 客户端的长事务整类被过滤掉了。真实客户里 JDBC/gsql 会填 connection_info，但 libpq 系驱动和不少中间件并不填。"
 
   - code: V3
     title: 两阶段事务卡住回收水位
@@ -203,7 +208,7 @@ scenarios:
     expect:
       - vacuum: VACUUM_XMIN_BLOCKED(R4),来源应指向**两阶段事务**并给出 gid
       - 建议内容: 应是 ROLLBACK/COMMIT PREPARED,不是「找那笔长事务」
-    actual: ""
+    actual: "故障已造出：pg_prepared_xacts 里有 fl_xmin_v3，pg_stat_activity 里找不到持有者。vacuum 报对了：R4 / VACUUM_XMIN_BLOCKED 的来源写的是「两阶段（prepared）事务（标识 fl_xmin_v3）：已持续 774 秒」，带了 gid 和 owner，并提示「先处理该事务，现在跑 VACUUM 不会有效果」。health 的 PREPARED_XACT 也报了（2 条）。但所有报告里都没出现 ROLLBACK PREPARED / COMMIT PREPARED，建议只停在「先处理该事务」，没给到具体做法。"
 
   - code: V4
     title: 复制槽无人消费
@@ -212,7 +217,7 @@ scenarios:
       - vacuum: VACUUM_XMIN_BLOCKED(R4),来源应指向**复制槽**
       - 已知限制: 这个内核上 pg_replication_slots 没有时间戳列,xmin_age_s 恒为空
           (见 gaussdb-vacuum/scripts/rules.py 的 docstring)—— R4 不该因此漏报
-    actual: ""
+    actual: "故障没真正造出来：fl_slot_v4 是物理槽，active=false，但 xmin、catalog_xmin、restart_lsn 全是 NULL，既不钉回收水位，也不保留 WAL（V4 probe 也显示 restart_lsn=None）。vacuum 没把它列为 R4 来源：registry 里 vacuum.oldest_xmin 只取 xmin/catalog_xmin 非空的槽，就这个槽的状态而言这样判是对的。health 也没报 WAL_SLOT_INACTIVE / WAL_SLOT_LAG。场景要改成建槽时就预留 WAL（例如物理槽带 immediately_reserve，或改用逻辑槽），否则复制槽这一路测不到，「xmin_age_s 为空也不该漏报」这一条也无从检验。"
 
   - code: V6
     title: VACUUM FULL 堵住整张表
@@ -220,7 +225,7 @@ scenarios:
     expect:
       - lockwait: 应报出 VACUUM FULL 是阻塞者
       - vacuum: 做完之后 bloat_hot 的死元组应回落(前后对比)
-    actual: ""
+    actual: "故障只造出来很短一下：VACUUM FULL bloat_hot 只跑了约 10 秒（10:01:15→10:01:25），之后不再重复。lockwait 没赶上这 10 秒，ASP 时段回看又「回看不了」（见 K2），所以「VACUUM FULL 是阻塞者」未报。vacuum 前后对比：VACUUM FULL 做完后 bloat_hot 的死元组没有回落，09:59 是 290 万（504 MB），10:01:50 是 321 万（540 MB），原因是 K10/V3 两笔两阶段事务卡着回收水位，VACUUM FULL 也清不掉这些死元组。vacuum 报告一直把 bloat_hot 标成 R4，并写明「现在跑 VACUUM 不会有效果」，与这个结果一致。所以「做完后死元组应回落」这一轮不成立，但工具的解释是对的。"
 
   - code: V7
     title: 导入 50 万行不收集统计信息
@@ -228,7 +233,7 @@ scenarios:
     expect:
       - health: STALE_STATS 应包含 fl.import_stage
       - vacuum: 可能报 VACUUM_OVERDUE(R1)
-    actual: ""
+    actual: "故障只存在了约 80 秒：09:46:10 导入 50 万行、不做 ANALYZE，09:47:28 就被自动分析了（last_autoanalyze=09:47:28，表级 autovacuum_enabled=false 还在）。在这 80 秒内，vacuum（09:46:42）写了「fl.import_stage：统计里的页数为 0（从没 ANALYZE 过），不能用来做估算」，但没给 R1 / VACUUM_OVERDUE。health 那时没报 STALE_STATS，fl.import_stage 根本不在统计新鲜度的表里：registry 的 health.stale_stats 按 c.relpages DESC LIMIT N 取表，从没 ANALYZE 过的表 relpages=0，排在最后被截掉了。最该报的表恰好进不了候选，这个排序是 bug。"
 
   # ----------------------------------------------------------------- 轻量锁
   # 五段都只验一件事:**只会查 pg_locks 的实现在这里全部漏报**,
@@ -239,21 +244,21 @@ scenarios:
     expect:
       - waitevent: WAIT_LWLOCK_HEAVY,排名里应出现 WAL 相关
       - wdr: 第 1 个窗口(0~240 秒)的等待事件段里 WAL 相关应靠前
-    actual: ""
+    actual: "故障已造出：probe 每 20 次采样里有 23~29 次在等 WALFlushWait。waitevent 第 1 窗口（3149→3150）报对了：WAIT_LWLOCK_HEAVY，LWLOCK 占 DB_TIME 31.9%，排名第一是 WALFlushWait（315 秒）。wdr collect 3149→3150 只报了 WDR_WAIT_CLASS_SKEW（LWLOCK_EVENT 50%），它的等待事件段只有等待类的聚合，没有事件名，看不出是 WAL 相关。所以「WAL 相关应靠前」在 WDR 里看不出来，要靠 waitevent。"
 
   - code: L2
     title: 热点页(页内容锁)
     signals: 等待事件里出现 BufferContentLock
     expect:
       - waitevent: WAIT_LWLOCK_HEAVY;第 2 个窗口(240~480 秒)
-    actual: ""
+    actual: "故障没造出来：L2 段的 probe 只看到 WALFlushWait（10~28 次），一次 BufferContentLock 都没有。waitevent 第 2 窗口（3150→3151）报了 WAIT_LWLOCK_HEAVY（11.5%），但排名第一是 WALFlushWait（190 秒，L2 每条更新都即刻提交），BufferContentLock 只有 0.17 秒。判定码报了，但内容与场景设计不符：热点页没争起来，争起来的是 WAL 刷盘，如实记录。"
 
   - code: L3
     title: 极短事务高频提交(事务号 / 快照相关)
     signals: 等待事件里出现 XidGenLock / ProcArrayLock / CSN 相关
     expect:
       - waitevent: 第 3 个窗口(480~720 秒)
-    actual: ""
+    actual: "故障没造出来：L3 段的 probe 只看到 wait cmd / none，没有 XidGenLock / ProcArrayLock / CSN；probe 还把 wait cmd（客户端空闲）算成了「在等」，这是 probe 的小 bug。waitevent 第 3 窗口（3151→3152）没报 WAIT_LWLOCK_HEAVY，LWLOCK 前两名是 DoubleWriteLock（4.3 秒）、WALFlushWait（0.7 秒），前 7 名里没有事务号/快照相关的锁；这个窗口只报了 WAIT_LOCK_HEAVY（18.8%，来自 K3/K5 的 relation 锁）。场景没争起来，skill 没报是正常的。"
 
   - code: L4
     title: 千分区表全分区扫描(锁管理器)
@@ -261,7 +266,7 @@ scenarios:
     expect:
       - waitevent: 第 4 个窗口(720~960 秒)
       - 可能不明显: og5 只有 4 核、3 条会话,争用可能很轻 —— 如实记录
-    actual: ""
+    actual: "故障很轻：probe 只有一次采样看到 LockMgrLock×2。waitevent 第 4 窗口（3152→3153）的 LWLOCK 排名里，LockMgrLock 排第 2（15488 次 / 5.2 秒，仅次于 DoubleWriteLock 的 9.2 秒），看得到，但没到阈值，没出 WAIT_LWLOCK_HEAVY。这与手册说的「4 核 3 会话，可能不明显」一致；waitevent 在明细里如实列出了 LockMgrLock。"
 
   - code: L5
     title: 每事务上千子事务(子事务 / CLog 相关)
@@ -269,22 +274,22 @@ scenarios:
     expect:
       - waitevent: 第 5 个窗口(960~1200 秒)
       - 可能不明显: 同 L4
-    actual: ""
+    actual: "故障没造出来：L5 段 4 次 probe 都是 none×60（在等 0 次）。waitevent 第 5 窗口（3153→3154）里没有 SubtransControlLock / CLogControlLock，LWLOCK 排名第一是 BufferContentLock（44.6 秒，来自 K9 的并发插入），只报了 WAIT_LOCK_HEAVY（64.2%）。另外，这个窗口的 DB_TIME 有 24993 秒，而窗口只有 260 秒，是长时间等锁的语句在窗口末尾一起结束、把整段等待都记了进来；脚本没标「不可信」，不过 CPU 2.5% 加上各类等待也没超过 100%，谈不上自相矛盾。"
 
 # ----------------------------------------------------------------- 跨场景
 cross_cutting:
   - 项: Top SQL 两张榜不该相同
     说明: 总耗时榜首应是 S7(高频),平均耗时榜首应是 S3/S4(单次慢)
-    actual: ""
+    actual: "两张榜确实不同，但两个榜首都不是预期的：总耗时榜首是 K1 链上等锁的 UPDATE fl.acct（6779 秒，CPU 0.03 秒），平均耗时榜首是卡在 K1 后面的 K2 FOR UPDATE（1081 秒）。S7 在总耗时榜排第 8（1140 秒 / 10057 次），S3、S4 在平均耗时榜排第 2、第 4。topsql 按 elapsed 排，锁等待的时间也算在里面，全量混跑时锁场景把两张榜都占了。WDR 的「各维度元凶」把 CPU、调用、溢出、物理读分开列，区分得更清楚：CPU 冠军是 S2，S7 是 CPU 主导的高频语句。想看到设计里的那种分离，要用 --only slow 单跑。"
   - 项: 四种「回收水位被卡」的来源要分得清
     说明: V2 长事务 / V3 两阶段事务 / V4 复制槽,三者的建议完全不同;只报「有死元组」等于没说
-    actual: ""
+    actual: "没分清。整个窗口里 vacuum 列出的阻塞源始终只有两笔两阶段事务（fl_orphan_k10、fl_xmin_v3），带 gid，这一类报对了。V2 的长事务被 connection_info 过滤，整类漏掉；V4 的复制槽 xmin 为 NULL，本来就没钉住水位，故障没造出来。所以三类来源里只验证了两阶段事务这一类，长事务一类是 skill 漏报，复制槽一类是场景没造出来。"
   - 项: autovacuum「关了」与「限速到追不上」要分得清
     说明: V1 vs V5 —— 后者 last_autovacuum 一直在更新,只看开关会判成正常
-    actual: ""
+    actual: "「开关」这一面分得清：bloat_hot 一直报 R2 VACUUM_DISABLED，bloat_slow 从没报 R2，只报 R1/R3/R4。「限速」这一面没认出来：bloat_slow 的 reloptions 里有 cost_delay=100、cost_limit=10，vacuum 只字未提，建议也没指向 cost_delay/cost_limit。V5 的「last_autovacuum 一直在更新」这次没造出来（3 分钟内 autovacuum 没来过），所以「只看开关会判成正常」这个陷阱这次没真正考到。"
   - 项: 线程池的空闲条目不该被算成会话
     说明: >
       og5 开了线程池,pg_stat_activity 里会有 sessionid=0、无客户端、不持锁的空闲线程条目
       (本工具在 db.REAL_SESSION 里专门过滤)。如果 skill 把它们算进「连接数 / 活跃会话数」,
       会虚高一截 —— 这是跑这套东西时顺带要核对的一点。
-    actual: ""
+    actual: "有轻微虚高。10:02:19 直接查库：pg_stat_activity 共 64~65 行，其中 sessionid<>0 的真会话 60~61 个，sessionid=0 的线程池空闲条目 4 个（state=idle）。同一时刻 health 的 Overview 写「连接 65/1000」，Connections 写「共 65：active 44、idle 17、IIT 4」，把这 4 条空闲条目算进了总数和 idle。线程池用量「61/800」用的是真会话，是对的；active 不受影响（空闲条目都是 idle）。health.conn_states 是不带过滤的 count(*) GROUP BY state，建议加上 sessionid<>0。"

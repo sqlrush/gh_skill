@@ -16,6 +16,7 @@
     $P tools/faultlab/faultlab.py status         # 另开一个终端:现在哪些现象看得到
     $P tools/faultlab/faultlab.py cleanup        # 收尾(run 正常结束会自己做)
     $P tools/faultlab/faultlab.py purge          # 连数据和用户一起删
+    $P tools/faultlab/faultlab.py expected       # 核对 expected.yaml 的格式,数 actual 还剩几项没填(不连库)
 
 **安全边界:** 只动目标库里模式 `fl` 下的对象与用户 `fl_app`;实例级参数一个都不改;
 动手前核对实例指纹(端口 + version()),对不上就拒绝执行。
@@ -102,6 +103,13 @@ def cmd_report(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_expected(args: argparse.Namespace) -> int:
+    from lab import expected
+    text, ok = expected.render(path=args.file or None)
+    print(text)
+    return EXIT_OK if ok else EXIT_FAILED
+
+
 def _pick(args: argparse.Namespace) -> Tuple[C.Scenario, ...]:
     groups = tuple(g.strip() for g in (getattr(args, "only", "") or "").split(",") if g.strip())
     return C.by_group(groups)
@@ -140,6 +148,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = add("report", cmd_report, "把上一次运行的时间线整理成报告")
     sp.add_argument("--file", default="", help="时间线文件,默认 ~/.faultlab/timeline.jsonl")
+
+    sp = add("expected", cmd_expected, "核对预期发现矩阵的格式与 actual 填写进度(不连库)")
+    sp.add_argument("--file", default="", help="矩阵文件,默认 tools/faultlab/expected.yaml")
     return p
 
 

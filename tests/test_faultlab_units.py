@@ -4,6 +4,7 @@
 `expected.yaml` 的人工核对,不在单测里 —— 单测要能在任何机器上随全量测试一起跑。
 
 这里钉的都是「改坏了不会立刻被发现」的地方:
+  · 预期发现矩阵 expected.yaml 读得通、每项都有 actual、编号与排期表一一对应(它是人手填的);
   · 排期表改完之后 CPU 预算是不是还在上限内(手写的排期很容易不小心排满);
   · 规模 cap 直接拼进 SQL,校验必须挡住非整数;
   · 残留登记簿是清理的依据,加了又撤的抵消逻辑错了会漏清;
@@ -22,7 +23,7 @@ _LAB = _ROOT / "tools" / "faultlab"
 sys.path.insert(0, str(_LAB))
 
 from lab import config as C                       # noqa: E402
-from lab import prepare, report, state            # noqa: E402
+from lab import expected, prepare, report, state  # noqa: E402
 from lab.cleanup import _safe                     # noqa: E402
 from lab.scenarios import ALL as REGISTERED       # noqa: E402
 from lab.scenarios import slow                    # noqa: E402
@@ -274,6 +275,58 @@ def test_report_without_a_timeline_says_so(tmp_path):
     from lab.db import LabError
     with pytest.raises(LabError):
         report.render(str(tmp_path / "nope.jsonl"))
+
+
+# ---------------------------------------------------------------- 预期发现矩阵(expected.yaml)
+
+def test_expected_matrix_parses_and_every_item_has_an_actual_slot():
+    """矩阵是人手填的:读得通、每项都有 actual(待填 = 空串)、编号与排期表一一对应。
+
+    第一版里 S7 那一行的值以 ** 开头,整份文件解析不了 —— 一直没人发现,因为没有任何代码读它。
+    """
+    data = expected.load()
+    assert expected.problems(data, [s.code for s in C.ALL_SCENARIOS]) == []
+    assert all("actual" in s for s in data["scenarios"]) and all("actual" in c for c in data["cross_cutting"])
+    assert {s["code"] for s in data["scenarios"]} == {s.code for s in C.ALL_SCENARIOS}
+
+
+def test_expected_problems_catch_missing_or_malformed_actual_and_unregistered_codes():
+    data = {"scenarios": [{"code": "S1", "title": "t", "signals": "s", "expect": ["x"]},
+                          {"code": "S2", "title": "t", "signals": "s", "expect": ["x"], "actual": ["列表"]},
+                          {"code": "S2", "title": "t", "signals": "s", "expect": ["x"], "actual": ""}],
+            "cross_cutting": [{"项": "两张榜"}]}
+    msgs = expected.problems(data, ["S1", "S2", "S9"])
+    assert any("S1 缺 actual" in m for m in msgs)
+    assert any("S2 的 actual 要写成一段文字" in m for m in msgs)
+    assert any("S2 重复登记" in m for m in msgs)
+    assert any("跨场景项 #1 缺 actual" in m for m in msgs)
+    assert any("S9" in m and "没登记" in m for m in msgs)
+
+
+def test_expected_progress_counts_filled_and_pending():
+    data = {"scenarios": [{"code": "S1", "actual": "health 报了 ACTIVE_SQL_HOT"}, {"code": "S2", "actual": ""},
+                          {"code": "S3", "actual": None}],
+            "cross_cutting": [{"项": "两张榜", "actual": "  "}]}
+    assert expected.progress(data) == (1, ["S2", "S3", "跨场景:两张榜"])
+
+
+def test_expected_load_explains_an_unquoted_star(tmp_path):
+    from lab.db import LabError
+    bad = tmp_path / "expected.yaml"
+    bad.write_text("scenarios:\n  - code: S7\n    expect:\n      - topsql: **总耗时**榜首\n    actual: \"\"\n",
+                   encoding="utf-8")
+    with pytest.raises(LabError, match="加引号"):
+        expected.load(bad)
+
+
+def test_expected_render_reports_progress_and_problems(tmp_path):
+    ok_text, ok = expected.render()                     # 仓库里的矩阵:格式没问题(填了几项随测试进度变,不钉)
+    assert ok and "格式问题" not in ok_text and "actual 已填" in ok_text
+    f = tmp_path / "expected.yaml"
+    f.write_text("scenarios:\n  - code: S1\n    title: t\n    signals: s\n    expect: [x]\n    actual: 报了\n",
+                 encoding="utf-8")
+    text, ok = expected.render(f)
+    assert not ok and "已填 1、待填 0" in text and "排期表里有、矩阵里没登记" in text
 
 
 # ---------------------------------------------------------------- 数据规模
