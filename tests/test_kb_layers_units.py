@@ -194,9 +194,17 @@ def test_show_unknown_id_says_so_and_suggests(kb, capsys):
     assert rc == 1 and "没有 `RB-LCK`" in out and "RB-LCK-001" in out and "不得编造" in out
 
 
+def test_template_lists_required_fields_and_allowed_values(capsys):
+    """模型为了知道字段能填什么去翻源码(测试环境里用了不放行的 sed),template 要把要求说全。"""
+    rc, out = run(capsys, "template", "baseline")
+    assert rc == 0 and "必填:" in out and "metric" in out and "取值:value_kind 只能是 累计值 / 差值 / 瞬时值" in out
+    rc, out = run(capsys, "template", "defect")
+    assert "取值:vendor_status 只能是 已确认 / 待确认" in out and "affected_versions" in out.split("建议")[0]
+
+
 def test_template_is_addable_after_filling(kb, capsys, tmp_path):
     rc, out = run(capsys, "template", "wiki")
-    tpl = out.split("\n", 2)[2]
+    tpl = out[out.index("---"):]
     draft = tmp_path / "d.md"
     draft.write_text(tpl.replace("<专题 slug,如 lock>", "conn").replace("<出处:sources/原文.docx#章节>", "wiki/x")
                      .replace("<≤200 字,结论在前;L1 专题导航里只显示这一段>", "连接池泄漏看 backend_start。")

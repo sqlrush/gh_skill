@@ -118,7 +118,7 @@ python3 {baseDir}/scripts/kb.py health
 
 ## 2.5 类型化条目(手册 / 缺陷 / 基线 / 产品文档 / Wiki / 画像)
 
-1. **骨架**:`python3 {baseDir}/scripts/kb.py template <runbook|defect|baseline|product|wiki|profile>` 打印 frontmatter + 小节;
+1. **骨架**:`python3 {baseDir}/scripts/kb.py template <runbook|defect|baseline|product|wiki|profile>` 打印必填项、建议项、**可选取值**和 frontmatter + 小节——字段要求以它为准,命令用法看 `kb.py <命令> --help`,**不要去读脚本源码**;
    照它在 `<kb>/inbox/drafts/` 下写草稿(一条一个 md,`id: auto`)。`## 摘要` 必填,≤200 字、结论在前——L1 专题导航只显示它。
    画像用 `kb.py profile --system CBST --alias og5 --version-string "<登录输出里的版本串>"` 起草,**只写连接别名,不写 IP / 主机名 / 口令**
    (校验会拦);连接池、批量窗口、关键业务依赖要管理员补。

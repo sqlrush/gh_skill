@@ -274,9 +274,35 @@ def template_text(type_code: str) -> str:
             + "\n".join(sections))
 
 
+def schema_lines(type_code: str) -> list:
+    """这一类的必填 / 建议 / 取值范围。2026-10-24 测试环境:模型为了知道 value_kind 能填什么去翻脚本源码
+    (还用了不放行的 sed,界面显示「shell 失败」)——字段要求直接在 template 里说全。"""
+    kt = kbtypes.TYPED[type_code]
+    required = ["id(写 auto)", "type", "title"] + (["topics"] if kt.needs_topics else []) \
+        + (["source"] if kt.needs_source else []) + list(kt.required_meta) + ["## 摘要"]
+    if type_code == "product":
+        required = [r if r != "product" else "product(产品系列)" for r in required]
+    lines = [f"必填:{'、'.join(required)}"]
+    rec = list(kt.recommended_meta) + [f"## {s}" for s in kt.recommended_sections]
+    if rec:
+        lines.append(f"建议:{'、'.join(rec)}(缺了只告警)")
+    for key, allowed in kt.enums:
+        lines.append(f"取值:{key} 只能是 {' / '.join(allowed)}")
+    lines.append("可选:applies {product, versions, systems, deployment}、not_applies、evidence、synonyms;"
+                 "版本范围写法 505.2 / 505.* / >= 503 / 505.1–505.2 / *")
+    if type_code == "runbook":
+        lines.append("手册 ID 的域:写 domain(2–4 个大写字母,如 LCK),不写就按第一个专题取")
+    if type_code == "profile":
+        lines.append("画像只写连接别名(aliases),不写 IP / 主机名:端口 / 口令(校验会拦)")
+    return lines
+
+
 def cmd_template(args: argparse.Namespace) -> int:
-    print(f"# {kbtypes.TYPED[args.type].name}({args.type},放 {kbtypes.TYPED[args.type].dir}/,"
-          f"ID {kbtypes.TYPED[args.type].id_hint};id 写 auto 由 kb.py add 分配)\n")
+    kt = kbtypes.TYPED[args.type]
+    print(f"# {kt.name}({args.type},放 {kt.dir}/,ID {kt.id_hint};id 写 auto 由 kb.py add 分配)")
+    for line in schema_lines(args.type):
+        print(f"#   {line}")
+    print()
     print(template_text(args.type), end="")
     return 0
 
