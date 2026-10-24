@@ -377,11 +377,12 @@ def test_sql_layer_flags_spill_and_estimate_deviation():
     cap = capability.assess(
         {"resource_track_level": "operator", "enable_resource_track": "on"},
         _catalog(wlm_session="gs_wlm_session_statistics"))
-    # 列名与 grmp_middleware/grmp_gen_memanalyze.py 的 SQL_COLS 一致
+    # 列名照注册脚本 memanalyze.wlm_sql 的 SELECT 列表;max_spill_size 现行白名单没取,给了才判下盘量
     rows = [{
         "queryid": 101, "query": "SELECT * FROM big", "start_time": "2026-07-12",
-        "duration": 9000, "estimate_memory": 100, "used_memory": 4096,
-        "max_peak_memory": 2048, "average_peak_memory": 0, "spill_info": "",
+        "duration": 9000, "estimate_memory": 100, "used_memory": None,
+        "max_peak_memory": 4096, "average_peak_memory": 0, "spill_info": "All",
+        "max_spill_size": 2048,
     }]
     runner = _FakeRunner({"memanalyze.wlm_sql": rows})
     d = wlm.collect_sql(runner, _catalog(wlm_session="gs_wlm_session_statistics"),
@@ -389,7 +390,8 @@ def test_sql_layer_flags_spill_and_estimate_deviation():
     assert d.available is True
     codes = [f.code for f in d.findings]
     assert "MEM_SQL_SPILL" in codes            # 2048 MB spilled
-    assert "MEM_SQL_ESTIMATE_OFF" in codes     # estimated 100 MB, used 4096 MB
+    assert "MEM_SQL_ESTIMATE_OFF" in codes     # estimated 100 MB, peak 4096 MB
+    assert "MEM_SQL_HOG" in codes              # peak 4096 MB
 
 
 # --------------------------------------------------------------------------
@@ -534,3 +536,115 @@ def test_summarize_err_keeps_the_chinese_hint_whole():
     assert s.startswith("ERROR: permission denied for schema dbe_perf")
     assert "LINE 1" not in s                      # 第一行以外的原文照旧丢
     assert s.endswith("\n提示:" + hint)            # 提示整段保留
+
+
+# --------------------------------------------------------------------------
+# 2026-10-24 faultlab 第二轮(og5):L3 出现负的「已用」没标不可信;L4/L5 无数据只给了几条「可能原因」,
+# 没说前置参数的实际值;history 报「enable_resource_record = off」—— 实际是 on,是白名单脚本没取这个参数。
+# --------------------------------------------------------------------------
+def test_negative_session_memory_is_flagged_untrustworthy():
+    rows = [{"sessid": "1792581802.281454235604640", "init_mem": "0", "used_mem": "-80", "peak_mem": "4"},
+            {"sessid": "1792806394.5380", "init_mem": "0", "used_mem": "24", "peak_mem": "24"}]
+    d = collectors.collect_session(_FakeRunner({"memanalyze.session": rows}),
+                                   _catalog(session_mem="dbe_perf.session_memory"), TH, 20)
+    neg = next(r for r in d.rows if r[0].startswith("1792581802"))
+    assert "不可信" in neg[4] and "-80" in neg[4]
+    ok = next(r for r in d.rows if r[0].endswith(".5380"))
+    assert "不可信" not in ok[4]
+    assert "负" in d.note and "1 个" in d.note and "不可信" in d.note
+
+
+def test_negative_session_memory_never_feeds_a_finding():
+    rows = [{"sessid": "1.2", "init_mem": "0", "used_mem": "-4096", "peak_mem": "4"}]
+    d = collectors.collect_session(_FakeRunner({"memanalyze.session": rows}),
+                                   _catalog(session_mem="dbe_perf.session_memory"), TH, 20)
+    assert d.findings == []
+
+
+def test_missing_enable_resource_record_is_not_read_as_off():
+    """「没读到」不等于 off:不许据此说 history 不可用。"""
+    cap = capability.assess({"enable_resource_track": "on", "resource_track_level": "operator"},
+                            _catalog(wlm_session_hist="gs_wlm_session_info"))
+    assert cap.history_available is True
+    assert "= off" not in cap.reasons.get("history", "")
+
+
+def test_gucs_script_reads_every_prerequisite():
+    from common.grmp.script import load_script
+    sql = load_script(_ROOT / "scripts" / "registry" / "memanalyze" / "gucs.yaml").script_content
+    for name in ("enable_resource_record", "enable_resource_track", "use_workload_manager",
+                 "resource_track_level", "resource_track_cost", "resource_track_duration"):
+        assert "'%s'" % name in sql, name
+
+
+_PREREQ_ON = {"enable_resource_track": "on", "use_workload_manager": "on", "resource_track_level": "operator",
+              "resource_track_cost": "10", "resource_track_duration": "0", "enable_resource_record": "on"}
+
+
+def test_empty_sql_layer_names_prerequisites_with_their_values():
+    cap = capability.assess(dict(_PREREQ_ON), _catalog(wlm_session="gs_wlm_session_statistics"))
+    d = wlm.collect_sql(_FakeRunner(), _catalog(wlm_session="v"), cap, TH, 10)
+    for kv in ("enable_resource_track=on", "use_workload_manager=on", "resource_track_level=operator",
+               "resource_track_cost=10"):
+        assert kv in d.note, kv
+    assert "都已满足" in d.note          # 参数没问题:空的原因在内核,不在配置
+    assert "WDR" in d.note               # 落盘该去哪看
+
+
+def test_empty_operator_layer_points_at_the_unmet_prerequisite():
+    cap = capability.assess(dict(_PREREQ_ON, use_workload_manager="off"),
+                            _catalog(wlm_operator="gs_wlm_operator_statistics"))
+    d = wlm.collect_operator(_FakeRunner(), _catalog(wlm_operator="v"), cap, TH, 10)
+    assert "use_workload_manager=off" in d.note and "需设为 on" in d.note
+    assert "都已满足" not in d.note
+
+
+def test_empty_history_names_record_and_duration():
+    cap = capability.assess(dict(_PREREQ_ON, resource_track_duration="60"),
+                            _catalog(wlm_session_hist="gs_wlm_session_info"))
+    d = wlm.collect_sql(_FakeRunner(), _catalog(wlm_session_hist="v"), cap, TH, 10, historical=True)
+    assert "enable_resource_record=on" in d.note and "resource_track_duration=60" in d.note
+
+
+def test_unread_prerequisite_is_shown_as_unknown_not_off():
+    gucs = {k: v for k, v in _PREREQ_ON.items() if k != "use_workload_manager"}
+    cap = capability.assess(gucs, _catalog(wlm_session="gs_wlm_session_statistics"))
+    d = wlm.collect_sql(_FakeRunner(), _catalog(wlm_session="v"), cap, TH, 10)
+    assert "use_workload_manager=?" in d.note and "use_workload_manager=off" not in d.note
+
+
+
+# --------------------------------------------------------------------------
+# L4 / L5 的列对应:注册脚本选的是 estimate_memory, NULL AS used_memory, max_peak_memory,
+# average_peak_memory, spill_info(算子:… NULL AS spill_size, warning)。原来的取法把 used_memory(恒 NULL)
+# 当峰值、max_peak_memory 当下盘量、spill_info 当 GaussDB 告警 —— history 模式一能用,og5 上 20 条 SQL
+# 各报一条「GaussDB 自带告警:None」,「下盘」一列其实是峰值内存。
+# --------------------------------------------------------------------------
+def _og5_hist_row(query, peak, spill_info):
+    return {"queryid": "15481123719318767", "query": query, "start_time": "2026-10-24 09:50:39",
+            "duration": "0", "estimate_memory": "0", "used_memory": None, "max_peak_memory": str(peak),
+            "average_peak_memory": str(peak), "spill_info": spill_info}
+
+
+def test_sql_layer_reads_peak_from_max_peak_memory_and_spill_info_is_not_a_warning():
+    cap = capability.assess(dict(_PREREQ_ON), _catalog(wlm_session_hist="gs_wlm_session_history"))
+    rows = [_og5_hist_row("UPDATE fl.bloat_hot SET cnt = cnt + ?", 13, "None"),
+            _og5_hist_row("WITH lvl1 AS ( SELECT i.order_id, sum(i.amount)", 9, "All")]
+    d = wlm.collect_sql(_FakeRunner({"memanalyze.wlm_sql_hist": rows}),
+                        _catalog(wlm_session_hist="gs_wlm_session_history"), cap, TH, 10, historical=True)
+    assert [f.code for f in d.findings] == []                 # 「None」不是告警,下盘量没取到不判
+    i_peak, i_spill = d.headers.index("峰值内存"), d.headers.index("下盘")
+    assert d.rows[0][i_peak] == "13 MB" and d.rows[0][i_spill] == "否"
+    assert d.rows[1][i_spill] == "是（All）"
+    assert "下盘量" in d.note                                  # 说清只有「是否下盘」
+
+
+def test_operator_layer_does_not_read_average_peak_as_spill():
+    cap = capability.assess(dict(_PREREQ_ON), _catalog(wlm_operator="gs_wlm_operator_statistics"))
+    rows = [{"queryid": "7", "plan_node_id": "3", "plan_node_name": "Sort", "duration": "9000",
+             "estimate_memory": None, "memory_used": None, "max_peak_memory": "2048",
+             "average_peak_memory": "2048", "spill_size": None, "warning": ""}]
+    d = wlm.collect_operator(_FakeRunner({"memanalyze.wlm_operator": rows}),
+                             _catalog(wlm_operator="gs_wlm_operator_statistics"), cap, TH, 10)
+    codes = [f.code for f in d.findings]
+    assert "MEM_OP_HOG" in codes and "MEM_OP_SPILL" not in codes

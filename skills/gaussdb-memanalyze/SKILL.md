@@ -101,6 +101,13 @@ metadata:
   **历史回溯需要 `enable_resource_record = on`**（默认 `off`）。没开就是没数据，
   脚本会明确报出 GUC 名与目标值。**这是环境限制，不是脚本缺陷**，如实转达并标注 `[需人工执行]`，
   不要绕过、不要猜数据。
+- **L4 / L5 视图在却没数据时**，脚本把这一层的前置参数连同本实例的当前值逐个列出来
+  （`enable_resource_track`、`use_workload_manager`、`resource_track_level`、`resource_track_cost`，history 再加
+  `enable_resource_record`、`resource_track_duration`）：有没满足的就照它报 `[需人工执行]`；**都满足仍为空**
+  的（当时没有够格的作业，或内核不填 —— openGauss-lite 单机实测不填 WLM 作业视图），如实说「这一层看不到」，落盘去看 `gaussdb-wdr`
+  的 `WDR_TEMP_SPILL` 与 Top SQL 溢出列，**不要说成「没有大内存 SQL」**。值显示「?（没读到）」是没取到，不是 off。
+- **L3「已用」为负的行标了「不可信」**：线程池下按行的内存计数会被减成负数。这几行的已用不能当用量，
+  峰值只当下限参考，不要拿它们排序或下结论。
 - **视图是运行时探测的**：openGauss 与 GaussDB、集中式与分布式的内存视图名与列集都不同。
   脚本会选它能找到的最优视图并在报告里印出来。某层所有候选视图都不存在时，
   说明该环境不提供这类数据，如实说明。

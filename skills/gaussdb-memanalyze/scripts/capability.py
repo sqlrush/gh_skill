@@ -57,7 +57,10 @@ def assess(gucs: dict, catalog: Catalog) -> Capability:
 
     track_on = _on(gucs, "enable_resource_track", "on")
     level = str(gucs.get("resource_track_level", "query")).strip().lower()
-    record_on = _on(gucs, "enable_resource_record", "off")
+    # 没读到(白名单脚本是旧版没取它,或本内核没有这个参数)不等于 off:旧版 memanalyze.gucs 不取
+    # enable_resource_record,这里按 off 处理,报告就写「= off(需设为 on)」—— og5 上它实际是 on。
+    # 读不到就照常去查历史表,查出来是空的再由 wlm.py 把前置参数逐个摆出来。
+    record_on = _on(gucs, "enable_resource_record", "on")
 
     track_off_reason = (
         f"enable_resource_track = {gucs.get('enable_resource_track', 'off')}"

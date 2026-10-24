@@ -52,11 +52,12 @@ from common import access  # noqa: E402
 from common import cli  # noqa: E402
 from common.finding import Finding, Severity, findings_to_json  # noqa: E402
 from common.grmp.values import as_float, as_int, is_null  # noqa: E402
-from common.lockmodes import conflict_reason, conflicts, typical_statements  # noqa: E402
+from common.lockmodes import conflicts  # noqa: E402
 import aspchain  # noqa: E402
 import chain  # noqa: E402
 import deadlocklog  # noqa: E402
 import deadlockreport  # noqa: E402
+import locktypes  # noqa: E402
 import recovery  # noqa: E402
 import render  # noqa: E402
 
@@ -260,16 +261,16 @@ def render_markdown(rep: LockReport) -> str:
 
     out.append("\n## 互斥关系\n")
     for p in rep.pairs[:5]:
-        holder_mode, waiter_mode = p.get("holder_mode"), p.get("waiter_mode")
+        # 按锁类型说:8 级矩阵与「典型语句」只适用于表锁,事务号 / 行 / 咨询锁各有各的意思(见 locktypes.py)
         try:
-            reason = conflict_reason(holder_mode, waiter_mode)
-            typical = typical_statements(holder_mode)
+            reason, detail = locktypes.explain(p.get("locktype"), p.get("holder_mode"),
+                                               p.get("waiter_mode"), p.get("waiter_query") or "")
         except KeyError as exc:
             reason = "互斥关系未知：%s" % exc
-            typical = "（未知锁模式，无法给出典型语句）"
-        out.append("- 会话 %s ← %s：%s\n  持有者取这把锁的典型语句：%s"
+            detail = "（未知锁模式，无法给出典型语句）"
+        out.append("- 会话 %s ← %s：%s\n  %s"
                    % (p.get("waiter_sessionid"), p.get("holder_sessionid"),
-                      reason, typical))
+                      reason, detail))
 
     out.append("\n## 阻塞链与根\n")
     if not root_groups:

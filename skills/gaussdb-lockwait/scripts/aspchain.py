@@ -1,11 +1,17 @@
-"""aspchain —— 时段锁回溯：从活跃会话采样（gs_asp）还原一段时间里谁挡了谁。
+"""aspchain —— 时段锁回溯：从活跃会话采样（ASP）还原一段时间里谁挡了谁。
 
 只读，**不生成 kill 语句**：时段已经过去，当时的会话可能已结束，会话号也可能被复用；
 要处置先跑此刻的 lockwait 核对。
 
-**时长是估算。** gs_asp 只存落表的样本：每 asp_sample_interval 秒采一次，每 asp_flush_rate
-个样本落一个，所以一个阻塞对「采到 N 次」≈ 等了 N × 落表间隔 秒。短于落表间隔的等待可能一次也
-采不到 —— 「没采到」不等于「没有」。
+**样本在两个地方。** ASP 每 asp_sample_interval 秒采一次，先放在内存里（dbe_perf.local_active_session，
+最多 asp_sample_num 个），**内存写满才**把其中每 asp_flush_rate 个落 1 个进 gs_asp（保留 asp_retention_days 天）。
+所以最近几个小时只在内存里 —— 2026-10-24 faultlab 第二轮：09:46–10:06 在 10:07 回看，gs_asp 一个样本都没有，
+内存里 5.3 万条，只读 gs_asp 的旧版报成了「回看不了 … 采样当时没开」（实际 enable_asp=on），
+直到 11:25 内存写满才落表。现在两处一起读（白名单脚本里合并），内存那一侧只取将来会落表的那一批
+（need_flush_sample），两处步长一致，同一时段落表前后查到的结果一样。
+
+**时长是估算。** 一个阻塞对「采到 N 次」≈ 等了 N × (asp_sample_interval × asp_flush_rate) 秒。
+短于这个间隔的等待可能一次也采不到 —— 「没采到」不等于「没有」。
 
 **链按时间重叠连接。** 阻塞对是整段时间聚合出来的：A 等 B、B 等 C 只有两段时间有重叠才连成一条链，
 否则是两件事，硬连起来会编出一条不存在的链。
@@ -28,7 +34,6 @@ STATUS_SCRIPT = "lockwait.asp_status"
 
 TS_FMT = "%Y-%m-%d %H:%M:%S"
 DEFAULT_STEP_S = 10.0          # openGauss 默认 asp_sample_interval=1 × asp_flush_rate=10
-FLUSH_LAG_S = 15               # 落表延迟:终点离此刻这么近,样本可能还没落表
 MAX_CHAINS = 50                # 链的条数上限(防止病态数据把输出撑爆)
 # 阻塞对要**取全**再连链:只取前 20 对时,被截掉的那一对会把链从中间断开,断点被当成「根」——
 # 2026-10-22 实测第二轮:5560(fl:K1/wait0,自己也在等)被报成根。展示条数另由 --limit 控制。
@@ -75,8 +80,16 @@ class Status:
     sample_interval: str
     flush_rate: str
     retention_days: str
-    samples: int
+    samples: int                # 时段内两处合计
     db_now: str
+    table_samples: int = 0      # 落表的 gs_asp
+    memory_samples: int = 0     # 内存里还没落表的 local_active_session(只数将来会落表的那一批)
+    memory_first: str = ""      # 内存样本覆盖的起止(内存是连续的:实例重启会清空它)
+    memory_last: str = ""
+    table_last: str = ""        # 落表样本最新到哪
+    flush_mode: str = ""        # asp_flush_mode:table / file / all
+    sample_num: str = ""        # asp_sample_num:内存最多留几个样本
+    memory_known: bool = False  # 新版 lockwait.asp_status 才返回内存那几行;客户没重导白名单时为 False
 
 
 @dataclass(frozen=True)
@@ -130,13 +143,20 @@ def parse_status(rows) -> Status:
         step = float(kv.get("asp_sample_interval") or 0) * float(kv.get("asp_flush_rate") or 0)
     except ValueError:
         step = 0.0
+    table, memory = _int(kv.get("samples_in_window")), _int(kv.get("memory_samples_in_window"))
     return Status(enabled=kv.get("enable_asp", "").lower() in ("on", "true", "1"),
                   step_s=step if step > 0 else DEFAULT_STEP_S,
                   sample_interval=kv.get("asp_sample_interval", ""),
                   flush_rate=kv.get("asp_flush_rate", ""),
                   retention_days=kv.get("asp_retention_days", ""),
-                  samples=_int(kv.get("samples_in_window")),
-                  db_now=kv.get("now", ""))
+                  samples=table + memory,
+                  db_now=kv.get("now", ""),
+                  table_samples=table, memory_samples=memory,
+                  memory_first=kv.get("memory_first", ""), memory_last=kv.get("memory_last", ""),
+                  table_last=kv.get("table_last", ""),
+                  flush_mode=kv.get("asp_flush_mode", "").lower(),
+                  sample_num=kv.get("asp_sample_num", ""),
+                  memory_known="memory_first" in kv)
 
 
 def parse_pairs(rows) -> Tuple[Pair, ...]:
@@ -227,22 +247,91 @@ def blocked_by_root(chains: Tuple[Chain, ...]) -> Dict[int, int]:
     return {k: len(v) for k, v in out.items()}
 
 
-# ---------------------------------------------------------------- 取数
+# ---------------------------------------------------------------- 覆盖范围
 
-def _no_samples_reason(st: Status, begin: str, end: str) -> str:
+def _dt(s: str) -> Optional[datetime]:
     try:
-        now = datetime.strptime(st.db_now, TS_FMT)
-        b, e = datetime.strptime(begin, TS_FMT), datetime.strptime(end, TS_FMT)
+        return datetime.strptime(s, TS_FMT)
+    except (TypeError, ValueError):
+        return None
+
+
+def _retention_floor(st: Status) -> Optional[datetime]:
+    """落表样本保留期的下限(此刻 − asp_retention_days)。"""
+    now = _dt(st.db_now)
+    try:
         days = float(st.retention_days or 0)
     except ValueError:
-        now, b, e, days = None, None, None, 0.0
-    if now and days and b < now - timedelta(days=days):
+        days = 0.0
+    return now - timedelta(days=days) if now and days else None
+
+
+def uncovered(st: Status, begin: str, end: str) -> Optional[Tuple[str, str]]:
+    """时段里第一段不在任何一处采样里的 (起, 止);都覆盖到返回 None。
+
+    落表的 gs_asp 覆盖 [保留期下限, table_last],内存里的覆盖 [memory_first, 此刻]。两者之间的空档
+    只会因为实例重启出现(重启会丢掉内存里还没落表的样本)。旧版 asp_status 不返回这几行,说不清就不说。
+    """
+    b, e = _dt(begin), _dt(end)
+    if not st.memory_known or b is None or e is None:
+        return None
+    spans = []
+    if _dt(st.table_last):
+        spans.append((_retention_floor(st) or datetime.min, _dt(st.table_last)))
+    if _dt(st.memory_first):
+        spans.append((_dt(st.memory_first), datetime.max))
+    cur = b
+    for lo, hi in sorted(spans):
+        if hi <= cur:
+            continue
+        if lo > cur:
+            break
+        cur = hi
+    if cur >= e:
+        return None
+    nxt = min([lo for lo, _hi in spans if lo > cur] + [e])
+    return cur.strftime(TS_FMT), nxt.strftime(TS_FMT)
+
+
+def coverage_text(st: Status) -> str:
+    """两处采样各覆盖到哪(一句话,状态行与「回看不了」的原因共用)。"""
+    table = ("落表的 gs_asp 到 %s 为止（保留 %s 天）" % (st.table_last, st.retention_days or "?")
+             if st.table_last else "落表的 gs_asp 里没有样本")
+    memory = ("内存里的 dbe_perf.local_active_session 覆盖 %s – %s" % (st.memory_first, st.memory_last)
+              if st.memory_first else "内存里没有样本")
+    return ("%s；%s（内存最多留 asp_sample_num=%s 个样本，写满才把每 asp_flush_rate=%s 个落 1 个进 gs_asp）"
+            % (table, memory, st.sample_num or "?", st.flush_rate or "?"))
+
+
+def _no_samples_reason(st: Status, begin: str, end: str) -> str:
+    """时段内两处都没有样本时:说清是哪种情况,只陈述参数与覆盖范围,不猜「没开」。
+
+    返回空串 = 这段时间在内存采样的连续覆盖范围内、只是一个活跃会话都没有 —— 那就是没有锁等待,不是回看不了。
+    """
+    floor, e = _retention_floor(st), _dt(end)
+    if floor and e and e <= floor:
         return ("这段时间已超过活跃会话采样的保留期（asp_retention_days=%s 天），样本已清理，锁阻塞回看不了"
                 % st.retention_days)
-    if now and e > now - timedelta(seconds=FLUSH_LAG_S):
-        return "样本还没落表（约每 %.0f 秒落一次），稍后再看" % st.step_s
-    return "这段时间一个采样都没有（实例当时可能没在运行，或采样当时没开）"
+    if not st.memory_known:
+        return ("落表的 gs_asp 里这段时间一个样本都没有；最近一段的样本在内存写满之前只在内存里"
+                "（dbe_perf.local_active_session），而白名单里的 lockwait.asp_status 是旧版、没查内存 —— "
+                "重新导入新版白名单后再看")
+    gap = uncovered(st, begin, end)
+    if gap is None:
+        if _dt(st.memory_first) and _dt(begin) and _dt(begin) >= _dt(st.memory_first):
+            return ""
+        return ("这段时间在落表样本的范围内（%s），但一个样本也没有：当时没有活跃会话，或实例在这批样本落表之前"
+                "重启过（内存里还没落表的样本会随重启丢失），分不清是哪一种" % coverage_text(st))
+    if gap != (begin, end):
+        return ""                                  # 只缺一段:有覆盖的那部分没有活动,缺的那段在依据里点名
+    if st.flush_mode == "file" and not (_dt(st.memory_first) and _dt(st.memory_first) <= _dt(end)):
+        return ("这段时间的样本已从内存刷到文件（asp_flush_mode=file，不进 gs_asp 表），本工具读不到；"
+                "内存里的样本从 %s 开始" % (st.memory_first or "?"))
+    return ("这段时间不在任何一处采样里：%s。中间这段的样本没有留下来（实例重启会丢掉内存里还没落表的样本）"
+            % coverage_text(st))
 
+
+# ---------------------------------------------------------------- 取数
 
 def collect(runner, begin: str, end: str) -> AspReport:
     """取数并连链。ASP 没开 / 没样本时 unavailable 写明原因 —— 不和「没有锁等待」混为一谈。"""
@@ -311,10 +400,20 @@ def basis_note(rep: AspReport) -> str:
         return ""
     cut = ("阻塞对超过 %d 对，只取了采到次数最多的 %d 对，链可能不全。" % (FETCH_LIMIT, FETCH_LIMIT)
            if rep.truncated else "")
-    return cut + ("来源：活跃会话采样（gs_asp），时段内 %d 个样本；每 %.0f 秒落一个样本（asp_sample_interval=%s × "
-            "asp_flush_rate=%s），保留 %s 天。等待时长 = 采到次数 × %.0f 秒，是估算；短于 %.0f 秒的等待可能采不到。"
-            % (st.samples, st.step_s, st.sample_interval or "?", st.flush_rate or "?",
-               st.retention_days or "?", st.step_s, st.step_s))
+    step = ("每 %.0f 秒一个样本（asp_sample_interval=%s × asp_flush_rate=%s）。等待时长 = 采到次数 × %.0f 秒，"
+            "是估算；短于 %.0f 秒的等待可能采不到。"
+            % (st.step_s, st.sample_interval or "?", st.flush_rate or "?", st.step_s, st.step_s))
+    if not st.memory_known:
+        return cut + ("来源：活跃会话采样（gs_asp），时段内 %d 个样本，保留 %s 天；%s白名单里的 lockwait.asp_status "
+                      "是旧版，只查了落表的样本，最近一段（内存写满之前）只在内存里，导入新版后才看得到。"
+                      % (st.samples, st.retention_days or "?", step))
+    gap = uncovered(st, rep.begin, rep.end)
+    missing = ("**时段里 %s – %s 这一段不在采样里**（%s），这一段的锁等待看不到。" % (gap[0], gap[1], coverage_text(st))
+               if gap else "")
+    return cut + missing + (
+        "来源：活跃会话采样，时段内 %d 个样本（落表的 gs_asp %d 个 + 内存里还没落表的 dbe_perf.local_active_session "
+        "%d 个；内存那一侧只取将来会落表的那一批，与 gs_asp 同一步长）；%s。%s"
+        % (st.samples, st.table_samples, st.memory_samples, coverage_text(st), step))
 
 
 def render_markdown(rep: AspReport, findings: List[Finding], conn: str, limit: int = 20) -> str:
@@ -322,6 +421,11 @@ def render_markdown(rep: AspReport, findings: List[Finding], conn: str, limit: i
     if rep.unavailable:
         return out + "> **回看不了：**%s。\n" % rep.unavailable
     out += "> %s\n\n" % basis_note(rep)
+    if not rep.pairs and rep.status.samples <= 0:
+        # 内存采样连续覆盖了这段时间、一个样本也没有:没有会话在干活,也就没人在等锁。
+        # 只覆盖了一部分时,只能对有覆盖的那部分下这个结论(缺的那段已在依据里点名)
+        part = "有采样覆盖的那部分" if uncovered(rep.status, rep.begin, rep.end) else ""
+        return out + "**时段内%s一个活跃会话都没采到**，也就没有锁等待。\n" % part
     if not rep.pairs:
         return out + ("**时段内没有采到锁等待**（%d 个样本里没有一个在等锁）。短于 %.0f 秒的等待可能采不到。\n"
                       % (rep.status.samples, rep.status.step_s))
@@ -390,6 +494,8 @@ def to_dict(rep: AspReport) -> dict:
     return {"begin": rep.begin, "end": rep.end, "unavailable": rep.unavailable,
             "basis": basis_note(rep),
             "step_s": st.step_s if st else None, "samples": st.samples if st else 0,
+            "sources": ({"table": st.table_samples, "memory": st.memory_samples, "memory_first": st.memory_first,
+                         "memory_last": st.memory_last, "table_last": st.table_last} if st else {}),
             "truncated": rep.truncated,
             "chains": [dict(c.__dict__, path=list(c.path)) for c in rep.chains],
             "roots": roots,

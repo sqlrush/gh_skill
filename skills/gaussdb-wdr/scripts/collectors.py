@@ -468,6 +468,35 @@ def _off_list(champs: dict, shown: set) -> list:
 
 
 # --- Wait Events / Classes ---------------------------------------------------
+#
+# 等待类之外还要给出**事件名**。faultlab L1(2026-10-24,3149→3150):提交风暴造出的是 WALFlushWait,
+# 这一维只给了「LWLOCK_EVENT 50%」一行,看不出是 WAL 相关,只能另跑 waitevent 才知道。
+# 事件级增量取 waitevent.events:与 wdr.waits 同源(snap_global_wait_events 两端快照相减)、
+# 排除 STATUS/NONE 的谓词逐字一致,两边的总量对得上;它早就在白名单里(gaussdb-waitevent 用),
+# 客户不需要重新导入。取不到只影响事件名这一列,等待类照常出。
+
+WAIT_EVENTS_SCRIPT = "waitevent.events"
+WAIT_EVENTS_TOP = 30          # 事件取前 30:够每个主要等待类摊到几个,又不把这一维撑大
+EVENTS_PER_CLASS = 3
+
+
+def _top_events(runner, b: int, e: int) -> tuple:
+    """(等待类 → [(事件, 微秒)…] 按耗时降序, 取不到的原因)。"""
+    try:
+        rows = runner.run(WAIT_EVENTS_SCRIPT, {"b": b, "e": e, "top": WAIT_EVENTS_TOP})
+    except access.QueryError as exc:
+        return {}, summarize_err(exc)
+    out: dict = {}
+    for r in rows:
+        out.setdefault(str(r["wait_class"]), []).append((str(r["event"]), _i(r["wait_us"])))
+    return {k: sorted(v, key=lambda x: -x[1]) for k, v in out.items()}, ""
+
+
+def _events_cell(events: list, why: str) -> str:
+    if why:
+        return "（取不到）"
+    return "、".join(f"{name} {f2(us / 1e6)}s" for name, us in events[:EVENTS_PER_CLASS]) or "—"
+
 
 def collect_waits(runner, opt: Options) -> DimResult:
     b, e, top = int(opt.begin), int(opt.end), int(opt.top)
@@ -479,25 +508,33 @@ def collect_waits(runner, opt: Options) -> DimResult:
     total = sum(it[2] for it in items)
     opt.wait_total_us = total          # 收尾时与 DB time 交叉校验(见 _check_consistency)
 
-    d = DimResult(dimension=DIM_WAITS, available=True, headers=["等待类", "waits", "wait_s", "占比%"])
+    d = DimResult(dimension=DIM_WAITS, available=True,
+                  headers=["等待类", "waits", "wait_s", "占比%", "主要事件"])
     if not items:
         d.headline = "窗口内无显著非空闲等待"
         return d
+    events, why = _top_events(runner, b, e)
     for cls, waits, usec in items:
         pct = 100.0 * usec / total if total > 0 else 0.0
-        d.rows.append([cls, i64(waits), f2(usec / 1e6), f2(pct)])
+        d.rows.append([cls, i64(waits), f2(usec / 1e6), f2(pct), _events_cell(events.get(cls, []), why)])
+    if why:
+        d.note = (f"事件名取不到（{why}），这一维只有等待类聚合；"
+                  f"要拆到具体事件，用 gaussdb-waitevent --begin {b} --end {e}")
 
     th = opt.thresholds
+    top_cls = items[0][0]
     top_pct = 100.0 * items[0][2] / total if total > 0 else 0.0
+    lead = (events.get(top_cls) or [("", 0)])[0]
+    which = (f"；其中最多的是 {lead[0]}（{f2(lead[1] / 1e6)}s）" if lead[0]
+             else "；事件名取不到" if why else "")
+    evidence = "snap_global_wait_events 等待类聚合" + which
     if top_pct > th.wait_skew_warn:
         d.findings.append(Finding(DIM_WAITS, "WDR_WAIT_CLASS_SKEW", Severity.WARN, "等待类倾斜",
-                                  f"{items[0][0]} {top_pct:.0f}%", f">{th.wait_skew_warn:.0f}%",
-                                  "snap_global_wait_events 等待类聚合"))
+                                  f"{top_cls} {top_pct:.0f}%", f">{th.wait_skew_warn:.0f}%", evidence))
     elif top_pct > th.wait_skew_notice:
         d.findings.append(Finding(DIM_WAITS, "WDR_WAIT_CLASS_SKEW", Severity.NOTICE, "等待类倾斜",
-                                  f"{items[0][0]} {top_pct:.0f}%", f">{th.wait_skew_notice:.0f}%",
-                                  "snap_global_wait_events 等待类聚合"))
-    d.headline = f"Top 等待类 {items[0][0]} 占 {top_pct:.0f}%"
+                                  f"{top_cls} {top_pct:.0f}%", f">{th.wait_skew_notice:.0f}%", evidence))
+    d.headline = f"Top 等待类 {top_cls} 占 {top_pct:.0f}%" + (f"，最多的事件 {lead[0]}" if lead[0] else "")
     return d
 
 

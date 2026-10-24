@@ -8,6 +8,8 @@ WDR = 两个快照之间的工作负载差值。先看 `## Report Window` 确认
 - **Database Stat**：回滚率高 → 应用异常/约束冲突；死锁 ≥1 必查；临时文件溢出 → work_mem 不足或缺索引致大排序/hash。
 - **Top SQL（多维度）**：表带 `elapsed_s`/`cpu_s`/`spill_MB`/`物理读`/`calls` 多列，且有 **「各维度元凶」行** —— **每类资源的冠军 SQL 往往不是同一条**（典型：DB time/CPU/溢出冠军是大排序查询，而**物理读冠军常是另一条按 elapsed 排名靠后、单维榜单上看不到的 SQL**）。归因时**按问题类型去对应冠军找元凶**，别只盯 elapsed 第一名。占 DB time 最高者也**未必**是资源元凶——**先看它的 `cpu_s`（是否真在算）与 `spill_MB`（是否它在制造临时溢出）**。⚠ **DB time 陷阱（必读）**：`elapsed` 按墙钟计，`pg_sleep`/被锁阻塞/空等的语句会**以巨大 elapsed 霸占 DB time 却消耗 ~0 CPU**，而真正烧 CPU/盘的查询在资源被打满时反被饿死、计入的 elapsed 反而小。若某 SQL 触发 `WDR_TOPSQL_LOW_CPU`（CPU 占其耗时 <10%），它是**阻塞/睡眠症状不是元凶**：根因转去 **CPU time 榜 + 等待事件（LOCK/IO） + 临时溢出/死锁**等维度，**不要**对它建索引或当作压垮库的原因。带 sql_id 的索引/改写建议**必须经 gaussdb-sqltune 实证后**才给（睡眠/阻塞类查询通常无法靠执行计划优化）。GaussDB 自己的系统 SQL（`dbe_perf.*` 监控查询、WDR 快照、诊断工具查系统视图）**已从 Top SQL 与各维度元凶里排除**，标题行末尾写着「已排除 N 条内核系统 SQL（…合计 X 秒）」：要转告；合计秒数占窗口 DB time 很高时，说明监控 / 诊断查询本身是负载的一部分，可以点出来，但不要把它们当应用元凶。
 - **Wait Events / Classes**：等待类倾斜指向瓶颈子系统——IO（缺索引/慢盘）、LOCK（锁竞争）、LWLOCK（缓冲/WAL 争用）。与 Top SQL、Cache 交叉印证。
+  「主要事件」列给出每类里耗时最多的几个事件，结论**落到事件名**：LWLOCK 里是 `WALFlushWait` / `WALInsertLock` 就是 WAL（提交太频繁 / 日志盘慢），
+  是 `BufferContentLock` 就是热点页，是 `LockMgrLock` 就是锁管理器争用（如大量分区）——不要只说「轻量锁高」。
 - **Checkpoint/Redo**：强制 checkpoint 占比高 → WAL/shared_buffers 配置或写入风暴。
 - **Cache/Memory**：物理读 Top 对象 = 索引/缓存候选；命中率本身在 Database Stat。
 - **File IO**：物理读写 Top 文件（以 db/spc/filenum 标识），定位热点表空间/盘。

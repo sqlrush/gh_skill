@@ -180,3 +180,101 @@ def test_pairs_are_fetched_in_full_not_by_display_limit(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "共 7 对，按采到次数列了前 2 对" in out
     assert "5146 → 5144 → 5145 → 5143 → 5142 → **5141" in out, "展示截断不影响连链"
+
+
+# ---------------------------------------------------------------- 内存里的样本(dbe_perf.local_active_session)
+#
+# 2026-10-24 faultlab 第二轮:时段 09:46–10:06 在 10:07 回看,gs_asp 一个样本都没有,而
+# dbe_perf.local_active_session 里有 5.3 万条覆盖整个窗口的样本 —— 脚本却报「回看不了 …
+# 采样当时没开」(实际 enable_asp=on)。原因:ASP 先把样本放在内存里(最多 asp_sample_num 个),
+# **内存写满才**把其中每 asp_flush_rate 个落 1 个进 gs_asp;og5 上那一段直到 11:25 才落表。
+
+def _status(table=0, memory=0, memory_first="2026-10-24 09:40:00", memory_last="2026-10-24 10:07:20",
+            table_last="2026-10-24 09:30:00", now="2026-10-24 10:07:29", flush_mode="table"):
+    rows = [{"item": "asp_flush_rate", "value": "10"}, {"item": "asp_retention_days", "value": "2"},
+            {"item": "asp_sample_interval", "value": "1"}, {"item": "enable_asp", "value": "on"},
+            {"item": "asp_flush_mode", "value": flush_mode}, {"item": "asp_sample_num", "value": "100000"},
+            {"item": "samples_in_window", "value": str(table)},
+            {"item": "memory_samples_in_window", "value": str(memory)},
+            {"item": "memory_first", "value": memory_first}, {"item": "memory_last", "value": memory_last},
+            {"item": "table_last", "value": table_last}, {"item": "now", "value": now}]
+    return rows
+
+
+W_BEGIN, W_END = "2026-10-24 09:46:00", "2026-10-24 10:06:00"
+
+
+def test_window_only_in_memory_is_read_from_memory_samples():
+    rep = aspchain.collect(FakeRunner(status=_status(table=0, memory=4618)), W_BEGIN, W_END)
+    assert rep.unavailable == ""
+    assert rep.status.samples == 4618 and rep.status.memory_samples == 4618
+    assert rep.chains and rep.chains[0].path[-1] == 5141
+    note = aspchain.basis_note(rep)
+    assert "local_active_session" in note and "4618" in note
+    assert "09:40:00" in note and "10:07:20" in note          # 说清内存样本覆盖到哪
+
+
+def test_samples_from_both_sources_are_counted():
+    rep = aspchain.collect(FakeRunner(status=_status(table=300, memory=200)), W_BEGIN, W_END)
+    assert rep.status.samples == 500
+    note = aspchain.basis_note(rep)
+    assert "gs_asp 300" in note and "local_active_session 200" in note
+
+
+def test_window_between_flushed_and_memory_samples_states_coverage_not_a_guess():
+    """两处都没有:说清两处各覆盖到哪,不猜「采样没开」(enable_asp 明明是 on)。"""
+    st = _status(memory_first="2026-10-24 11:25:41", memory_last="2026-10-24 14:00:00",
+                 table_last="2026-10-24 09:30:00", now="2026-10-24 14:00:05")
+    rep = aspchain.collect(FakeRunner(status=st), W_BEGIN, W_END)
+    assert rep.unavailable
+    assert "没开" not in rep.unavailable
+    assert "09:30:00" in rep.unavailable and "11:25:41" in rep.unavailable
+
+
+def test_window_covered_by_memory_without_samples_is_no_activity_not_unavailable():
+    """内存采样完整覆盖这段时间、一个样本也没有 = 当时没有活跃会话,也就没有锁等待 —— 不是「回看不了」。"""
+    r = FakeRunner(status=_status(table=0, memory=0))
+    rep = aspchain.collect(r, W_BEGIN, W_END)
+    assert rep.unavailable == "" and rep.pairs == ()
+    md = aspchain.render_markdown(rep, [], "og")
+    assert "一个活跃会话都没采到" in md
+    assert [c[0] for c in r.calls] == [aspchain.STATUS_SCRIPT]
+
+
+def test_partial_coverage_says_which_part_is_missing():
+    st = _status(table=0, memory=900, memory_first="2026-10-24 09:55:00", table_last="2026-10-24 09:30:00")
+    rep = aspchain.collect(FakeRunner(status=st), W_BEGIN, W_END)
+    assert rep.unavailable == ""
+    note = aspchain.basis_note(rep)
+    assert "09:46:00" in note and "09:55:00" in note and "看不到" in note
+
+
+def test_flush_to_file_is_named_from_the_parameter():
+    st = _status(flush_mode="file", memory_first="2026-10-24 11:25:41", now="2026-10-24 14:00:05")
+    rep = aspchain.collect(FakeRunner(status=st), W_BEGIN, W_END)
+    assert "asp_flush_mode=file" in rep.unavailable
+
+
+def test_old_whitelist_status_without_memory_rows_says_so():
+    """客户没重导白名单:旧版 asp_status 不返回内存样本那几行 —— 说清是脚本旧了,不说「没开」。"""
+    st = [r for r in _status(table=0, memory=0) if r["item"] not in ("memory_samples_in_window", "memory_first", "memory_last",
+                                             "table_last", "asp_flush_mode", "asp_sample_num")]
+    rep = aspchain.collect(FakeRunner(status=st), W_BEGIN, W_END)
+    assert "lockwait.asp_status" in rep.unavailable and "没开" not in rep.unavailable
+
+
+def test_json_carries_the_sources():
+    rep = aspchain.collect(FakeRunner(status=_status(table=300, memory=200)), W_BEGIN, W_END)
+    d = aspchain.to_dict(rep)
+    assert d["sources"] == {"table": 300, "memory": 200, "memory_first": "2026-10-24 09:40:00",
+                            "memory_last": "2026-10-24 10:07:20", "table_last": "2026-10-24 09:30:00"}
+
+
+@pytest.mark.parametrize("name", ["lockwait.asp_pairs", "lockwait.asp_sessions", "lockwait.asp_status"])
+def test_registry_reads_memory_samples_with_the_same_step(name):
+    """三条脚本都要同时读落表的 gs_asp 与内存里的 local_active_session;内存那一侧只取
+    need_flush_sample 的样本 —— 与将来落表的是同一批,步长不变,同一时段今天查和落表后查结果一样。"""
+    from common.grmp.script import load_script
+    sql = load_script(_ROOT / "scripts" / "registry" / "lockwait" / (name.split(".")[1] + ".yaml")).script_content
+    assert "gs_asp" in sql and "dbe_perf.local_active_session" in sql
+    assert "need_flush_sample" in sql

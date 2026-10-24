@@ -168,6 +168,13 @@ class SessionRow:
 
 _UNMATCHED = "（未关联到活动会话，可能已结束）"
 
+# 「已用」为负:这一行的内存计数已经失真。og5(openGauss-lite 5.0.3,线程池开)实测都出现在以工作线程号
+# 为后缀的行上(如 1792581802.281454235604640 -80 MB)—— 线程池下会话在工作线程间迁移,内存在一处记账、
+# 在另一处释放,按行的计数会被减成负数。负值不能当用量,同一行的峰值也只能当下限参考;不参与任何判定。
+_NEGATIVE_NOTE = ("%d 个会话的「已用」是负数（已标「不可信」）：dbe_perf.session_memory 按行记账，"
+                  "线程池下会话在工作线程之间迁移、内存在一处申请在另一处释放，计数会被减成负数。"
+                  "这几行的已用不能当真实用量，峰值也只能当下限参考，不参与判定。")
+
 _SESS_COLS = ("sessid", "init_mem", "used_mem", "peak_mem")
 _ACT_COLS = ("sessionid", "pid", "usename", "application_name", "state", "query")
 
@@ -234,9 +241,14 @@ def collect_session(runner, cat: Catalog, th: Thresholds, top: int) -> DimResult
 
     d = DimResult(dimension=DIM_SESSION, available=True,
                   headers=["会话", "用户", "应用", "状态", "已用", "峰值", "SQL"])
+    negative = 0
     for s in sessions:
+        used = human_mb(s.used_mb)
+        if s.used_mb < 0:
+            negative += 1
+            used = "⚠ %s（不可信）" % used
         d.rows.append([s.sessid, s.usename, s.application_name, s.state,
-                       human_mb(s.used_mb), human_mb(s.peak_mb),
+                       used, human_mb(s.peak_mb),
                        trunc(s.query, 60)])
 
         if s.peak_mb >= th.session_hog_mb:
@@ -257,6 +269,8 @@ def collect_session(runner, cat: Catalog, th: Thresholds, top: int) -> DimResult
 
     d.headline = (f"内存最高会话：{sessions[0].sessid}（峰值 "
                   f"{human_mb(sessions[0].peak_mb)}）" if sessions else "无会话内存数据")
+    if negative:
+        d.note = _NEGATIVE_NOTE % negative
     return d
 
 
