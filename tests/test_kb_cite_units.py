@@ -47,6 +47,13 @@ def test_extract_ids_stops_at_fullwidth_punctuation_and_markdown():
     assert kb_cite.extract_ids(text) == [("case", CID)]
 
 
+def test_extract_ids_ignores_the_blue_marking_tag():
+    """出自知识库的内容按契约包进蓝色 span:标签不能粘进 ID,否则核对时整条变「疑似编造」。"""
+    text = (f'<span style="color:var(--color-v2-text-text-accent,#2563eb)">案例 {CID}(已确认):处置 = 杀会话</span>;'
+            '<span style="color:var(--color-v2-text-text-accent,#2563eb)">依据 GS-GUC-001</span>')
+    assert kb_cite.extract_ids(text) == [("case", CID), ("clause", "GS-GUC-001")]
+
+
 def test_check_exact_prefix_archived_and_fabricated(tmp_path):
     kb = _kb(tmp_path)
     text = f"{CID};S2-20250120-CBST-…;GS-GUC-001;GS-IDX-009;GS-VAC-002;S3-20250101-XYZ-不存在"

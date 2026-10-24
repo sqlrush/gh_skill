@@ -301,6 +301,31 @@ def test_every_contracted_skill_carries_exactly_one_block():
         assert text.count(kb.CONTRACT_END) == 1, f"{name}: 契约块数量异常"
 
 
+def test_every_contracted_skill_carries_the_current_block():
+    """改了 kb-contract.md 要再跑 contract --apply——不然技能里还是旧契约,新规矩(比如标蓝)模型根本看不到。"""
+    for name in sorted(kb.CONTRACT_SKILLS):
+        md = _real_skill_md(name)
+        if md.is_file():
+            assert kb.contract_status(md, _template()) == "current", f"{name}: 契约块不是最新,跑 kb.py contract --apply"
+
+
+# 2026-10-24:对话界面里出自知识库的内容显示成蓝色。opencode 网页渲染行内 HTML(DOMPurify 保留 style),
+# 颜色取 opencode 主题里随明暗切换的强调色,取不到时退回固定蓝。三处写法必须一字不差,模型照抄。
+KB_MARK = '<span style="color:var(--color-v2-text-text-accent,#2563eb)">'
+
+
+def test_contract_tells_the_model_to_mark_kb_content_blue():
+    text = _template()
+    assert KB_MARK in text
+    assert "不标蓝" in text, "要写明哪些不标:诊断结果、通用经验、「本行无先例」"
+    assert "代码块里不放标签" in text, "代码块里的标签不变色,还会原样露出来"
+
+
+@pytest.mark.parametrize("rel", ["skills/gaussdb-kb/SKILL.md", "AGENTS.md"])
+def test_kb_skill_and_agents_md_use_the_same_blue_tag(rel):
+    assert KB_MARK in (_ROOT / rel).read_text(encoding="utf-8"), f"{rel} 的标蓝写法与契约不一致"
+
+
 def test_fetch_only_skills_stay_clean():
     for name in ("slowsql", "topsql", "sqlfetch", "explain", "topproc", "procinfo"):
         md = _real_skill_md(name)
