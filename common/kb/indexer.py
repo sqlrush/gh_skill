@@ -312,6 +312,15 @@ def _embed_texts(embedder: Optional[Embedder], texts: List[str]) -> Tuple[List[O
     return vecs, s.embedded, s.cached, s.failed
 
 
+def _endpoint_ok(embedder: Embedder, sample: str) -> bool:
+    """端点这次通不通:先试一条。不通就不逐批硬补 —— 几万块 × 每批 30 秒超时会把一次 index 拖成几小时。
+    试的这条进了缓存,接下来补的时候不重复算。"""
+    try:
+        return embedder.embed_one(sample) is not None
+    except Exception:                                   # noqa: BLE001  端点的任何异常都只是「这次不补」
+        return False
+
+
 def run_index(kb: pathlib.Path, pg: "SqliteStore", graph: Optional[sg.GraphStore],
               embedder: Optional[Embedder], kb_version: str = "",
               rebuild: bool = False, fill_missing: bool = False) -> IndexReport:
@@ -352,13 +361,18 @@ def run_index(kb: pathlib.Path, pg: "SqliteStore", graph: Optional[sg.GraphStore
             pg.delete_doc(doc_id)
             removed += 1
 
-    if fill_missing and caps.vector and embedder is not None:
-        missing = pg.missing_embeddings()
+    # 没有向量的块(之前没配 embedding、或上次端点没通)每次都补,不用记得加 --fill-missing。
+    # 2026-10-24 测试环境实测:已有知识库新配上 embedding 后跑 index,文档没变就不重新切块,覆盖率停在 0/10。
+    missing = pg.missing_embeddings() if caps.vector and embedder is not None else []
+    if missing and (fill_missing or _endpoint_ok(embedder, missing[0][1])):
         vecs, e, c, f = _embed_texts(embedder, [m[1] for m in missing])
         embedded += e; cached += c; failed += f
         for (chunk_id, _), v in zip(missing, vecs):
             if v is not None:
                 pg.set_chunk_embedding(chunk_id, v)
+    elif missing:
+        warnings.append(f"{len(missing)} 个块没有向量,embedding 端点这次没通,先不补(下次 index 再补,"
+                        f"或 --fill-missing 强制逐批重试)")
 
     # --- 图:整体重建 ---
     nodes, edges, vectors = build_graph(cases, triples, kb_version)
@@ -383,7 +397,7 @@ def run_index(kb: pathlib.Path, pg: "SqliteStore", graph: Optional[sg.GraphStore
             vectors = [spg.NodeVectorRow(**{**v.__dict__, "embedding": emb}) for v, emb in zip(vectors, vecs)]
         pg.delete_node_vectors(pg.node_ids())
         pg.upsert_node_vectors(vectors)
-        if fill_missing and caps.vector and embedder is not None:
+        if fill_missing and caps.vector and embedder is not None:    # 节点每次整批重算,这里只是逐个重试失败的
             for node_id, name in pg.missing_node_embeddings():
                 v = embedder.embed_one(name)
                 if v is not None:

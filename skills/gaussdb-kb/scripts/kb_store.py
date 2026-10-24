@@ -91,7 +91,7 @@ def open_embedder(cfg: kbconfig.KbConfig, caps: spg.Capabilities, why: str = "")
         print(f"警告:embedding 未启用({exc});向量列留空,检索只走词法 + 图", file=sys.stderr)
         return None
     if emb is None:
-        print("提示:kb.yaml 未配 embeddings,向量列留空;配好后 `kb.py index --fill-missing` 补齐", file=sys.stderr)
+        print("提示:kb.yaml 未配 embeddings,向量列留空;配好后再跑一次 `kb.py index` 就会补齐", file=sys.stderr)
     return emb
 
 
@@ -162,7 +162,7 @@ def cmd_index(args: argparse.Namespace) -> int:
         print(f"[warn ] {w}")
     if not rep.coverage_ok:
         print(f"[error] 向量覆盖率 {rep.chunk_embedded}/{rep.chunk_total} < 100%——"
-              f"embedding 失败或未配置;修好后 `kb.py index --fill-missing`。未补齐前状态行会如实显示。")
+              f"embedding 失败或未配置;修好后再跑一次 `kb.py index`(端点不稳时加 --fill-missing 强制逐批重试)。未补齐前状态行会如实显示。")
         return 2
     if rep.graph == "unavailable":
         return 2

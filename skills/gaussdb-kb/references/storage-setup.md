@@ -48,7 +48,7 @@ python3 {baseDir}/scripts/kb.py health     # 状态行 + 覆盖率 + 待处理 +
 ## 降级即发现
 
 - sqlite-vec 加载不了:`kb_meta.vector_engine=none`,状态行写「向量:未启用(原因)」;
-- 配了 embedding 但覆盖率不满:`index` 退出码 2,`index --fill-missing` 补;状态行写覆盖百分比;
+- 配了 embedding 但覆盖率不满:`index` 退出码 2;端点通了再跑一次 `index` 就补齐(先试一条,通了才逐批补),端点不稳时 `index --fill-missing` 强制逐批重试;状态行写覆盖百分比;
 - 没配 embedding:只告警,不算失败,状态行写「未启用(kb.yaml 未配 embeddings)」;
 - Neo4j 没配或不可达:index 只写 SQLite 索引并告警,检索时路径改走 `graph/*.yaml`,状态行写「模式:向量库+图文件 · 图:图文件 N 条已确认边(原因)」;
 - 还没 index / 索引文件打不开 / 格式旧了:整体退到文件模式,状态行写「模式:文件(原因)· 向量:未启用(文件模式无向量)」,skill 本身照常;
@@ -61,3 +61,12 @@ python3 {baseDir}/scripts/kb.py health     # 状态行 + 覆盖率 + 待处理 +
 向 `<baseURL>/embeddings` 请求 `embeddings.model`。前提是这个 provider 上确实挂了嵌入模型(Ollama / vLLM / Xinference
 都能顺道挂);纯聊天 API 没有,就用 `source: url` 指一个单独的嵌入服务,或 `source: none`。
 索引侧超时 30 s/批、查询侧 1.5 s,超了本次不用向量,状态行注明。
+
+- **后配上 embedding**:改好 `kb.yaml` 再跑一次 `kb.py index` 就会给已有的块补向量(先试一条,端点通了才逐批补);
+  端点不稳时 `index --fill-missing` 强制逐批重试。
+- **Ollama 的冷启动**:模型闲置 5 分钟会被卸载,下一次查询要先加载 —— 2026-10-24 测试环境实测 bge-m3 第一次加载 1.1–1.4 秒,
+  贴着查询侧 1.5 秒的超时,超了这一次只用词法 + 图。用 Ollama 时设 `OLLAMA_KEEP_ALIVE=-1`(常驻),
+  或在 kb.yaml 里把 `query_timeout_s` 放宽到 3。
+- **容器部署里的 `source: opencode`**:opencode 的配置在 `OPENCODE_CONFIG`,模型地址是本 Pod 的凭据代理,
+  Key 由代理加上;嵌入请求同样经代理转到模型服务的 `/embeddings`。前提是模型服务本身有嵌入接口 ——
+  DeepSeek 等纯聊天 API 回 404,这时用 `source: url` 指单独的嵌入服务。

@@ -194,6 +194,15 @@ def relevance(query_tokens: Sequence[str], text: str) -> Relevance:
     return Relevance(strong, len(matched), len(matched) / len(q))
 
 
+SHORT_QUERY_TOKENS = 3
+
+
+def _short_query(tokens: Sequence[str]) -> bool:
+    """很短的提问:去掉停用词后不超过 3 个词,且至少一个不是单字 / 纯数字。"""
+    q = [t for t in dict.fromkeys(tokens) if not t.isdigit()]
+    return 0 < len(q) <= SHORT_QUERY_TOKENS and any(len(t) >= 2 for t in q)
+
+
 def identifiers_in(text: str) -> List[str]:
     """finding 证据里像对象名 / GUC / 等待事件的整词,用来直接查图里的约束条款。"""
     out = []
@@ -362,7 +371,10 @@ class KbSession:
 
     # --- 检索 -------------------------------------------------------------
 
-    def search(self, key: str, label: str, q_text: str, objects: Sequence[str] = ()) -> FindingRefs:
+    def search(self, key: str, label: str, q_text: str, objects: Sequence[str] = (),
+               free_text: bool = False) -> FindingRefs:
+        """free_text:用户自己问的话(kb.py query --q)。很短的问题(「死锁」「连接数」)没有强 token,
+        按诊断发现那套绝对门槛一条都过不了;这时词全部命中就算相关(见 _relevant)。"""
         if not self.attached or self.cfg is None or self.pg is None:
             return FindingRefs(key=key, label=label, query=q_text)
         th = self.cfg.thresholds
@@ -389,7 +401,7 @@ class KbSession:
         # 两遍:先绝对门槛(强 token + 覆盖),再在幸存者里取同类最高分做相对门槛——
         # 参照分若来自一个高分但不相关的命中,真正相关的反而会被相对门槛砍掉。
         survivors = [(score, hit, lex_s, vec_s) for (score, hit, lex_s, vec_s) in fused.values()
-                     if self._relevant(tokens, hit, lex_s, vec_s)]
+                     if self._relevant(tokens, hit, lex_s, vec_s, free_text)]
         best_lex: Dict[str, float] = {}
         for _score, hit, lex_s, _vec_s in survivors:
             best_lex[hit.kind] = max(best_lex.get(hit.kind, 0.0), lex_s)
@@ -414,7 +426,8 @@ class KbSession:
             nl = self._safe(lambda: self.pg.search_nodes_lexical(tokens, k=10, kinds=["symptom"])) or []
             nv = self._safe(lambda: self.pg.search_nodes_vector(emb, k=10, kinds=["symptom"])) if emb is not None else None
             nfused = rrf([nl, nv] if nv is not None else [nl])
-            node_ok = [(i, s, h, l, v) for i, (s, h, l, v) in nfused.items() if self._relevant(tokens, h, l, v)]
+            node_ok = [(i, s, h, l, v) for i, (s, h, l, v) in nfused.items()
+                       if self._relevant(tokens, h, l, v, free_text)]
             best_node = max((l for (_i, _s, _h, l, _v) in node_ok), default=0.0)
             symptom_ids = [i for i, s, h, l, v in sorted(node_ok, key=lambda p: -p[1])
                            if s >= th.symptom and (v >= th.vector_min or l >= best_node * th.node_relative_floor)][:3]
@@ -446,15 +459,22 @@ class KbSession:
             self._log_miss(key, q_text)
         return refs
 
-    def _relevant(self, tokens: Sequence[str], hit: spg.Hit, lex_s: float, vec_s: float) -> bool:
+    def _relevant(self, tokens: Sequence[str], hit: spg.Hit, lex_s: float, vec_s: float,
+                  free_text: bool = False) -> bool:
         """绝对门槛:向量够像直接过;否则词法原始分要过下限,且命中至少一个强 token 并命中 ≥2 个
-        查询 token(或覆盖率达标)。相对门槛(同类最高分的比例)由调用方在幸存者里做。"""
+        查询 token(或覆盖率达标)。相对门槛(同类最高分的比例)由调用方在幸存者里做。
+
+        用户自己问的短问题(≤ SHORT_QUERY_TOKENS 个词、至少一个中文二元组或整词)词全部命中也算:
+        「死锁」「连接数」「主从切换」没有强 token,不开向量时(客户现场的默认)以前一条都查不到。
+        诊断发现生成的查询是长证据,不走这一条 —— 泛词误召回的防线照旧。"""
         th = self.cfg.thresholds if self.cfg else kbconfig.Thresholds()
         if vec_s >= th.vector_min:
             return True
         if lex_s < th.lexical_min:
             return False
         r = relevance(tokens, f"{hit.title} {hit.content}")
+        if free_text and _short_query(tokens) and r.coverage >= 1.0:
+            return True
         return r.strong >= 1 and (r.matched >= 2 or r.coverage >= th.min_coverage)
 
     def _refs(self, ranked: Sequence[Tuple[float, spg.Hit]], floor: float, top: int,
@@ -577,7 +597,7 @@ def from_text(q: str, kb_dir: Optional[pathlib.Path] = None,
     own = session is None
     sess = session or KbSession.open(kb_dir)
     try:
-        items = (sess.search("q:" + q[:24], q[:60], q),) if sess.attached else ()
+        items = (sess.search("q:" + q[:24], q[:60], q, free_text=True),) if sess.attached else ()
         status = sess.status()
     except Exception as exc:
         status = KbStatus(attached=False, reason=f"知识库检索异常:{exc}")

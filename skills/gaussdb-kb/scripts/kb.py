@@ -998,7 +998,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_index = sub.add_parser("index", help="重建 INDEX.md/RULES.md 与 SQLite 索引(index/store.sqlite);配了 Neo4j 再写图")
     p_index.add_argument("--kb")
     p_index.add_argument("--rebuild", action="store_true", help="清两库重灌(文件是真相)")
-    p_index.add_argument("--fill-missing", action="store_true", help="只补没向量的块")
+    p_index.add_argument("--fill-missing", action="store_true",
+                         help="端点试探失败时也逐批重试补没向量的块(端点正常时 index 本来就会补)")
     p_index.set_defaults(func=cmd_index_all)
     kb_store.add_subcommands(sub)
     kb_cases.add_subcommands(sub)
