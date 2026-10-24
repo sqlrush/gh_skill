@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 from xml.etree import ElementTree as ET
 
+import yaml
+
 # 列名同义词(小写比较);顺序即优先级
 COLUMN_SYNONYMS: Dict[str, Tuple[str, ...]] = {
     "id": ("工单号", "工单编号", "单号", "事件编号", "编号", "ticket", "ticket_id", "id", "incident"),
@@ -216,12 +218,54 @@ def std_meta(block: str) -> Dict[str, str]:
     return meta if all(meta.get(k) for k in _STD_REQUIRED) else {}
 
 
+_NO_ID = ("", "unknown", "none", "null", "-", "无")
+
+
+def _std_item_id(meta: Dict[str, str], title: str, fallback: str) -> str:
+    """标准化块的工单号;没号(kb-init 写成 unknown)时用「日期-标题」。
+
+    2026-10-24 测试环境:三份问题分析报告都没有工单号,标准化后都是 unknown,导入时三单写进同一个
+    unknown.md,前两单无声无息地没了。"""
+    raw = (meta.get("id") or meta.get("item_id") or "").strip()
+    if raw.lower() not in _NO_ID:
+        return raw
+    date = (meta.get("occurred_at") or "").strip()
+    return ("%s-%s" % (date, title) if date else title)[:80] if title else fallback
+
+
+def _std_document_item(text: str, locator_prefix: str, stem: str) -> Optional[Item]:
+    """kb-init 的单篇标准化文档(std/*.md,带 YAML frontmatter)直接导入:整篇是一单。
+    不认的话会按 `---` 把 frontmatter 切成几单乱码(同一次测试里模型绕路时撞上的)。"""
+    if not text.startswith("---"):
+        return None
+    m = re.match(r"^---\s*\n(.*?)\n---\s*\n?", text, re.S)
+    if not m:
+        return None
+    try:
+        front = yaml.safe_load(m.group(1)) or {}
+    except yaml.YAMLError:
+        return None
+    if not isinstance(front, dict) or "std_version" not in front:
+        return None
+    title = str(front.get("title") or stem).strip()
+    meta = {k: str(front.get(k) or "").strip() for k in ("item_id", "system", "occurred_at", "severity", "conclusion")}
+    head = "\n".join("- %s: %s" % (k if k != "item_id" else "id", v) for k, v in meta.items() if v)
+    fields = {k: v for k, v in meta.items() if k != "item_id" and v}
+    fields.update({"ingested_from": locator_prefix, "_std": "1"})
+    return Item(id=_std_item_id(meta, title, stem), title=title[:80],
+                text="# %s\n\n%s\n\n%s" % (title, head, text[m.end():].strip()) + "\n",
+                locator=str(front.get("source") or locator_prefix), fields=fields)
+
+
 def split_text_items(text: str, locator_prefix: str, stem: str) -> List[Item]:
     """md/txt:用 `\\n---\\n` 分隔多单;没有分隔符就是一单。标题取首个非空行。
 
     标准化(std)块另按它自己的已定字段走:id 用原始工单号、出处指回**客户原件**,
     我们的中间定位记进 `ingested_from`。否则案例的 source 会指向中间文件,追溯链断在自己手里。
     """
+    whole = _std_document_item(text, locator_prefix, stem)
+    if whole is not None:
+        return [whole]
     blocks = [b.strip() for b in re.split(r"\n-{3,}\n", text) if b.strip()]
     items: List[Item] = []
     for k, block in enumerate(blocks, 1):
@@ -233,7 +277,7 @@ def split_text_items(text: str, locator_prefix: str, stem: str) -> List[Item]:
             # 机器生成的文件总带块号:出问题时要能说清是中间文件的第几块
             fields["ingested_from"] = f"{locator_prefix}#item={k}"
             fields["_std"] = "1"
-            items.append(Item(id=meta.get("id") or default_locator, title=first[:80],
+            items.append(Item(id=_std_item_id(meta, first, default_locator), title=first[:80],
                               text=block + "\n", locator=meta.get("source") or default_locator,
                               fields=fields))
             continue
@@ -270,8 +314,15 @@ def write_items(items_dir: pathlib.Path, items: Sequence[Item], source_name: str
     """每单一文件,frontmatter 记出处;同名覆盖(同一材料重导)。"""
     items_dir.mkdir(parents=True, exist_ok=True)
     written: List[pathlib.Path] = []
+    used: Dict[str, int] = {}
     for it in items:
         safe = _SAFE_ID.sub("-", it.id).strip("-") or "item"
+        # 同一批里撞名:加序号,不覆盖。覆盖就是无声地丢一单(review 时也对不上 item_id)。
+        n = used.get(safe, 0)
+        used[safe] = n + 1
+        if n:
+            safe = "%s-%d" % (safe, n + 1)
+            it = Item(id="%s-%d" % (it.id, n + 1), title=it.title, text=it.text, locator=it.locator, fields=it.fields)
         body, n = redact(it.text) if do_redact else (it.text, 0)
         front = {"item_id": it.id, "title": it.title, "source": it.locator, "source_file": source_name,
                  "redacted": n}

@@ -129,6 +129,9 @@ python3 {baseDir}/../gaussdb-kb/scripts/kb.py ingest <out/批次-tickets.md> --k
 
 之后照 `gaussdb-kb` 的导入流程走:`propose` → 填候选 → `review` 出**选择列表交用户确认** → `apply` → `validate` + `index`。
 
+材料里没有工单号时 `item_id` 留空即可(**不要自己编号**):导入时脚本按「日期-标题」编号,同一批里撞名自动加序号。
+导入用 `out/<批次>-tickets.md` 这个交接文件(一批几单都在里面);`std/` 下的单篇也能直接 ingest,整篇算一单。
+
 导入侧认得本 skill 定下来的字段:原始工单号、**指回客户原件的出处**、时间 / 系统 / 级别 / 结论都会带进工单,
 `propose` 的工作单里以 `known` 给出。填候选时**照抄 known**,不要重新判断一遍——两边不一致 `review` 会报
 `[error]` 并把两个值都写出来(详见 `{baseDir}/references/std-format.md`)。确实认为 known 错了,回来改标准化文档再重跑。

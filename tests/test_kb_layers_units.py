@@ -303,6 +303,8 @@ def test_inbox_clean_removes_only_finished_batches(kb, capsys, tmp_path):
     assert rc == 2 and "[已清理] inbox/手册" in out and not (kb / "inbox" / "手册").exists()
     assert (kb / "inbox" / "uploads").is_dir() and (kb / "inbox" / "t1" / "items" / "a.md").is_file()
     assert "还有 1 单工单没处理" in out and (kb / "rules").is_dir()
+    rc, out = run(capsys, "inbox-clean", "t1", "--discard", "--kb", str(kb))
+    assert rc == 0 and not (kb / "inbox" / "t1").exists(), "导错的批次可以整批丢弃"
 
 
 def test_current_alias_maps_the_api_connection_back_to_the_login_alias(monkeypatch):

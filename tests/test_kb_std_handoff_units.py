@@ -188,3 +188,38 @@ def test_std_format_accepts_every_conclusion_the_import_side_allows():
     for value in kbcases.CONCLUSION_CONFIDENCE:
         text = initstd.render_std({**DRAFT, "conclusion": value}, META)
         assert initstd.validate_std(text) == []
+
+
+# ---------------------------------------------------------------- 没有工单号(2026-10-24 测试环境)
+
+def _no_id(title, date, system):
+    return {**DRAFT, "item_id": "", "title": title, "occurred_at": date, "system": system}
+
+
+def test_reports_without_ticket_ids_are_not_collapsed_into_one(tmp_path):
+    """三份问题分析报告都没有工单号,标准化后都是 unknown;导入时曾经三单写进同一个 unknown.md,前两单无声丢失。"""
+    pairs = [(_no_id("PAYS 主键插入排队", "2026-04-16", "F-PAYS"), META),
+             (_no_id("GOLD 咨询锁未释放", "2026-03-09", "F-GOLD"), META),
+             (_no_id("LOAN 外键父子表互等", "2026-02-27", "F-LOAN"), META)]
+    items = kbingest.split_text_items(_std_file(tmp_path, pairs).read_text(encoding="utf-8"), "x-tickets.md", "x-tickets")
+    assert len({it.id for it in items}) == 3 and not any(it.id == "unknown" for it in items)
+    assert items[0].id == "2026-04-16-PAYS 主键插入排队"
+    written = kbingest.write_items(tmp_path / "items", items, "x-tickets.md")
+    assert len({p.name for p in written}) == 3
+
+
+def test_same_ids_in_one_batch_get_suffixes_instead_of_overwriting(tmp_path):
+    same = [kbingest.Item(id="T-1", title="a", text="a\n", locator="x#1"), kbingest.Item(id="T-1", title="b", text="b\n", locator="x#2")]
+    written = kbingest.write_items(tmp_path / "items", same, "x")
+    assert [p.name for p in written] == ["T-1.md", "T-1-2.md"]
+    assert 'item_id: "T-1-2"' in written[1].read_text(encoding="utf-8"), "item_id 跟着改,review 才对得上"
+
+
+def test_a_single_std_document_imports_as_one_ticket(tmp_path):
+    """std/*.md 带 YAML frontmatter:整篇一单,已定字段照认,不能按 --- 把 frontmatter 切成几单。"""
+    std = initstd.render_std(_no_id("PAYS 主键插入排队", "2026-04-16", "F-PAYS"), META)
+    items = kbingest.split_text_items(std, "2026-04-16-pays.md", "2026-04-16-pays")
+    assert len(items) == 1
+    it = items[0]
+    assert it.id == "2026-04-16-PAYS 主键插入排队" and it.fields["system"] == "F-PAYS" and it.fields["_std"] == "1"
+    assert it.locator == "工单导出-2025Q3.csv#row=2" and "## 现场" in it.text and not it.text.startswith("---")

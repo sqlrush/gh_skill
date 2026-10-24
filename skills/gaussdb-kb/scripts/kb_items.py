@@ -436,7 +436,7 @@ def cmd_taxonomy(args: argparse.Namespace) -> int:
 _KEEP_INBOX = ("uploads", "drafts")
 
 
-def clean_inbox(kb: pathlib.Path, slug: str) -> str:
+def clean_inbox(kb: pathlib.Path, slug: str, discard: bool = False) -> str:
     """只删 inbox/ 下一层的批次目录:规范批次(source.md / outline.md)直接删;工单批次要 items/ 已清空
     (apply 会把处理完的单子移走),还有没处理的单子就拒绝——删了就是丢原文。收件目录与草稿目录不删。"""
     root = (kb / "inbox").resolve()
@@ -444,8 +444,9 @@ def clean_inbox(kb: pathlib.Path, slug: str) -> str:
     if target.parent != root or slug in _KEEP_INBOX or not target.is_dir():
         raise ItemCmdError(f"inbox/{slug} 不是可清理的批次目录(只认 inbox/ 下一层,uploads / drafts 不删)")
     items = list((target / "items").glob("*.md")) if (target / "items").is_dir() else []
-    if items:
-        raise ItemCmdError(f"inbox/{slug} 还有 {len(items)} 单工单没处理(propose → review → apply 之后再清)")
+    if items and not discard:
+        raise ItemCmdError(f"inbox/{slug} 还有 {len(items)} 单工单没处理(propose → review → apply 之后再清;"
+                           f"确认这批导错了要整批丢弃,加 --discard,原件快照仍在 sources/)")
     if not any((target / f).exists() for f in ("source.md", "outline.md", "manifest.json")):
         raise ItemCmdError(f"inbox/{slug} 不像 ingest 产生的批次目录(没有 source.md / manifest.json),不删")
     shutil.rmtree(target)
@@ -458,7 +459,7 @@ def cmd_inbox_clean(args: argparse.Namespace) -> int:
     with kblock.hold(kb):
         for slug in args.slugs:
             try:
-                print(f"[已清理] {clean_inbox(kb, slug.strip().strip('/').split('/')[-1])}")
+                print(f"[已清理] {clean_inbox(kb, slug.strip().strip('/').split('/')[-1], args.discard)}")
             except ItemCmdError as exc:
                 bad += 1
                 print(f"[跳过 ] {exc}")
@@ -499,6 +500,7 @@ def add_subcommands(sub: "argparse._SubParsersAction") -> None:
     p.set_defaults(func=cmd_profile)
     p = sub.add_parser("inbox-clean", help="删掉处理完的 inbox/<批次>/(规范批次条款化完、工单批次全部 apply 后)")
     p.add_argument("slugs", nargs="+", help="批次名(inbox/ 下的目录名)")
+    p.add_argument("--discard", action="store_true", help="整批丢弃导错的批次(还有没处理的工单也删;原件快照仍在 sources/)")
     p.add_argument("--kb")
     p.set_defaults(func=cmd_inbox_clean)
     p = sub.add_parser("taxonomy", help="写出可编辑的专题定义 topics/_taxonomy.yaml")

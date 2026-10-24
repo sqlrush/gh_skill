@@ -129,6 +129,7 @@ python3 {baseDir}/scripts/kb.py health
    (旧 ID 进 aliases,历史引用仍可追溯);专题要增删改先 `kb.py taxonomy --init` 写出 `topics/_taxonomy.yaml` 再编辑。
 5. `kb.py validate && kb.py index`:index 同时重建 L0(`L0-总索引.md`)与 L1(`topics/<专题>.md`);
    材料先 ingest 过的(原文快照进了 `sources/`,条目的 source 指向它),处理完 `kb.py inbox-clean <slug>` 清掉中间目录。
+   某一批导错了(拆单不对、选错文件),`kb.py inbox-clean <slug> --discard` 整批丢弃后重新 ingest,原件快照仍在 `sources/`。
 
 **存量迁移**(升级前导入的知识库):`kb.py migrate` 出清单(旧指南提议类型、条款与案例补专题)→ 原样给用户确认、按回答改清单 →
 `kb.py migrate --apply` → `validate && index`。产品文档必须补产品系列与版本才迁得过去。
