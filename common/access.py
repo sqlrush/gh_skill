@@ -18,7 +18,7 @@ from dataclasses import replace
 from typing import Any, Optional
 
 from .config import ConfigError, Connection, api_endpoint_if_configured, find, resolve
-from .grmp import signing, userid
+from .grmp import proxy, signing, userid
 from .grmp.client import GrmpClient, GrmpRunner
 from .grmp.errors import QueryError
 from .grmp.registry import Registry
@@ -238,6 +238,15 @@ def runner_for(
                 % (conn.name, driver, timeout),
                 file=sys.stderr, flush=True,
             )
+        if not conn.data_ip:
+            raise AccessError(
+                "连接 %s 使用 grmp 驱动，但未配置 data_ip。" % conn.name
+            )
+        sock = proxy.socket_path()
+        if sock:
+            # 凭据代理(容器部署):本进程里没有令牌与私钥,中间件地址、签名、工号都由代理定,这里只管报文
+            return GrmpRunner(GrmpClient(base_url="http://credproxy", token="", data_ip=conn.data_ip,
+                                         proxy_socket=sock))
         token = os.environ.get(TOKEN_ENV)
 
         # 如果设置了HOST_ENV 变量，则以变量的值为主，未设置则以配置文件里的host为主
@@ -257,10 +266,6 @@ def runner_for(
             raise AccessError(
                 "连接 %s 使用 grmp 驱动，但环境变量 %s 未设置。"
                 % (conn.name, HOST_ENV)
-            )
-        if not conn.data_ip:
-            raise AccessError(
-                "连接 %s 使用 grmp 驱动，但未配置 data_ip。" % conn.name
             )
         # 2026-09-18 中间件加固:配了 Appkey 就带签名头;没配就只带 auth。缺私钥 / 参数不对在这里
         # 就报清楚——拖到第一次请求会表现成中间件鉴权失败,排查方向又被带到中间件那边去。

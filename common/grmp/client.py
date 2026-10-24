@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Mapping, Optional
 
-from . import userid
+from . import proxy, userid
 from .errors import QueryError
 from .hints import with_hint
 from .params import to_param_value
@@ -48,6 +48,11 @@ def _error_body(exc: urllib.error.HTTPError) -> str:
         raw = exc.read(_ERROR_BODY_MAX).decode("utf-8", errors="replace").strip()
     except Exception:  # 响应体读不了:至少还有状态码
         return ""
+    return _error_detail(raw)
+
+
+def _error_detail(raw: str) -> str:
+    raw = raw.strip()
     if not raw:
         return ""
     detail = raw
@@ -74,9 +79,12 @@ class GrmpClient:
         timeout: int = DEFAULT_TIMEOUT,
         signer: Optional[Any] = None,
         user_id: Optional[Any] = None,
+        proxy_socket: str = "",
     ):
-        if not token:
+        # 经凭据代理时本进程里没有令牌:令牌、签名、工号都由代理加(common/grmp/proxy.py)
+        if not token and not proxy_socket:
             raise GrmpError("缺少 auth 令牌")
+        self._proxy = proxy_socket
         self.base_url = base_url.rstrip("/")
         self.data_ip = data_ip
         self._token = token
@@ -92,6 +100,8 @@ class GrmpClient:
     # -- 传输 -------------------------------------------------------------
 
     def _headers(self, path: str) -> Dict[str, str]:
+        if self._proxy:
+            return {"Content-Type": "application/json"}      # 凭据由代理加,这里一样都不带
         # 头名是 auth，不是 Authorization，且无 Bearer 前缀
         headers = {"auth": self._token, "Content-Type": "application/json"}
         if self._signer is not None:
@@ -105,6 +115,8 @@ class GrmpClient:
         return userid.apply_payload(self._user_id, payload)
 
     def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if self._proxy:
+            return self._post_via_proxy(path, payload)
         payload = self.with_user_id(payload)
         request = urllib.request.Request(
             self.base_url + path,
@@ -127,6 +139,10 @@ class GrmpClient:
             # 连不上、被对端断开、超时、DNS 解析失败——都在这里变成带地址的一句话。
             # 地址必须写出来:中间件换地址后老会话打旧地址(09-14 现场),排查第一眼要看的就是它。
             raise GrmpError("请求 %s 失败：%s（中间件 %s）" % (path, exc, self.base_url)) from exc
+        return self._parse(body)
+
+    @staticmethod
+    def _parse(body: str) -> Dict[str, Any]:
         try:
             parsed = json.loads(body)
         except ValueError as exc:
@@ -134,6 +150,20 @@ class GrmpClient:
         if not isinstance(parsed, dict):
             raise GrmpError("响应不是 JSON 对象：%s" % body[:200])
         return parsed
+
+    def _post_via_proxy(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """工号也不在这里加:代理按本 Pod / 槽位绑定的人强制写入,模型改不了。"""
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        try:
+            status, reason, raw = proxy.post(self._proxy, path, data, self._headers(path), self._timeout)
+        except (OSError, http.client.HTTPException) as exc:
+            raise GrmpError("请求 %s 失败：凭据代理不可用（%s：%s）。容器刚启动时稍等几秒重试；一直这样请联系管理员"
+                            % (path, self._proxy, exc)) from exc
+        body = raw.decode("utf-8", errors="replace")
+        if status >= 400:
+            raise GrmpError(with_hint("请求 %s 失败：HTTP %s %s%s（经凭据代理）"
+                                      % (path, status, reason, _error_detail(body[:_ERROR_BODY_MAX]))))
+        return self._parse(body)
 
     # -- 接口一 -----------------------------------------------------------
 

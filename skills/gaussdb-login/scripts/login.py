@@ -32,6 +32,7 @@ from common import access, config, session  # noqa: E402
 from common.config import MODE_API, MODE_GSQL, ConfigError, Connection  # noqa: E402
 from common.credential import secret_for  # noqa: E402
 from common.db import Database  # noqa: E402
+from common.grmp import proxy as grmp_proxy  # noqa: E402
 
 
 def _fail(message: str) -> int:
@@ -397,7 +398,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 return _fail(
                     "中间件端点需要配置host或环境变量%s，这两各值都没有配置, 请配置任意一个\n"
                     % (endpoint.host_env))
-            if not endpoint.resolve_token():
+            if not endpoint.resolve_token() and not grmp_proxy.socket_path():   # 走凭据代理时令牌在代理那里
                 return _fail(
                     "中间件端点 %s:%s 已配置，但%s 有设置，则 %s:%s 为准，但取不到令牌。\n"
                     "把它放进环境变量 %s（推荐），或写在 api_connection.token 里。\n"
