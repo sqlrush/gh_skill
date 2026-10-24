@@ -7,7 +7,8 @@
   · 一切统计写回 IndexReport,状态行靠它,不许有"看起来成功"的默默降级。
 
 切块规则:条款一条一块;指南按标题切、超长滑动;案例 = 摘要块 + 各小节一块(块首带 标题 › 小节),
-复发标志与 signals 作为加权的信号 token 附在摘要/现场/复发标志块上;原始工单整篇按滑动切。
+复发标志与 signals 作为加权的信号 token 附在摘要/现场/复发标志块上;原始工单整篇按滑动切;
+六类类型化条目(手册 / 缺陷 / 基线 / 产品文档 / Wiki / 画像)= 摘要块 + 各小节一块,kind 即类型代码。
 """
 from __future__ import annotations
 
@@ -198,9 +199,41 @@ def case_docs(cases: Sequence[kbcases.Case], kb: pathlib.Path) -> List[Tuple[spg
                          meta={"system": c.system, "occurred_at": c.occurred_at, "conclusion": c.conclusion,
                                "confidence": c.confidence, "severity": c.severity, "engine": c.engine,
                                "objects": list(c.objects), "signals": list(c.signals), "rules": list(c.rules),
-                               "primary_factor": c.primary_factor, "file": str(c.path.relative_to(kb))},
+                               "primary_factor": c.primary_factor, "file": str(c.path.relative_to(kb)),
+                               "topics": list(c.topics)},
                          content_hash=c.content_hash)
         out.append((doc, chunks))
+    return out
+
+
+# 类型化条目进索引时带上的 frontmatter 字段:检索结果的引用行、适用性判断要用,不必再回读文件
+_TYPED_META_KEYS = ("product", "versions", "deployment", "affected_versions", "fixed_in", "vendor_status",
+                    "system", "metric", "unit", "metric_source", "window", "value_kind", "version", "aliases")
+
+
+def typed_docs(kb: pathlib.Path) -> List[Tuple[spg.DocRow, List[spg.ChunkRow]]]:
+    """六类类型化条目(wiki/ product/ runbooks/ defects/ baselines/ profiles/):摘要一块(同义词作信号),
+    其余小节各一块(块首带 标题 › 小节,超长滑动)。kind = 类型代码。"""
+    from . import types as kbtypes
+    out = []
+    items, _ = kbtypes.load_items(kb)
+    for it in items:
+        doc_id = f"{it.type}:{it.id}"
+        signal_tokens = kbtext.tokenize(" ".join(it.synonyms))
+        chunks = [_chunk(doc_id, 0, kbtypes.SUMMARY_SECTION, f"{it.title} › 摘要\n{it.summary}",
+                         signal_tokens=signal_tokens)]
+        for name, body in it.sections.items():
+            if name == kbtypes.SUMMARY_SECTION or not body:
+                continue
+            for piece in sliding(body):
+                chunks.append(_chunk(doc_id, len(chunks), name, f"{it.title} › {name}\n{piece}"))
+        meta = {k: it.meta[k] for k in _TYPED_META_KEYS if it.meta.get(k) not in (None, "", [])}
+        meta.update({"type": it.type, "topics": list(it.topics), "applies": it.applies,
+                     "not_applies": it.not_applies, "verification": it.verification, "summary": it.summary,
+                     "file": it.path.relative_to(kb).as_posix(),
+                     "sections": {k: v for k, v in it.sections.items() if k in ("正常表现", "规避办法", "执行前提", "回退步骤")}})
+        out.append((spg.DocRow(id=doc_id, kind=it.type, title=it.title, source=it.source or meta["file"],
+                               version="", meta=meta, content_hash=it.content_hash), chunks))
     return out
 
 
@@ -248,7 +281,7 @@ def raw_docs(kb: pathlib.Path) -> List[Tuple[spg.DocRow, List[spg.ChunkRow]]]:
 
 def build_docs(kb: pathlib.Path, cases: Sequence[kbcases.Case]) -> List[Tuple[spg.DocRow, List[spg.ChunkRow]]]:
     return (rule_docs(kb) + md_docs(kb, "guides", "guide") + md_docs(kb, "errata", "errata")
-            + case_docs(cases, kb) + raw_docs(kb))
+            + case_docs(cases, kb) + raw_docs(kb) + typed_docs(kb))
 
 
 # ---------------------------------------------------------------- graph assembly (pure)

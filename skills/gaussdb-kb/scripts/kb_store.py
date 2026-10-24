@@ -197,9 +197,9 @@ def cmd_query(args: argparse.Namespace) -> int:
     kb = kbconfig.resolve_kb_dir(args.kb)
     if args.from_findings:
         findings = _load_findings(pathlib.Path(args.from_findings))
-        result = kbquery.from_findings(findings, kb_dir=kb)
+        result = kbquery.from_findings(findings, kb_dir=kb, alias=getattr(args, "alias", "") or "")
     else:
-        result = kbquery.from_text(args.q, kb_dir=kb)
+        result = kbquery.from_text(args.q, kb_dir=kb, alias=getattr(args, "alias", "") or "")
     if args.json:
         print(json.dumps(kbquery.result_to_dict(result), ensure_ascii=False, indent=2))
     else:
@@ -253,7 +253,44 @@ def health_dict(kb: pathlib.Path, status, file_warnings: list, readonly: bool) -
         "index_state": indexer.read_state(kb) or {},
         "pending": _pending(kb),
         "misses": [{"code": code, "n": n} for code, n in _misses_top(kb)],
+        "types": type_counts(kb),
     }
+
+
+# 八类知识的计数口径与建议的导入顺序(2026-10-24):最小环境画像和现行规范 → 高频故障案例及排查步骤 → 对应产品章节 → Wiki
+TYPE_ROWS = (("norm", "规范"), ("case", "案例"), ("profile", "画像"), ("baseline", "基线"), ("defect", "缺陷"),
+             ("runbook", "手册"), ("product", "产品文档"), ("wiki", "Wiki"), ("guide", "指南(待归类)"))
+
+
+def type_counts(kb: pathlib.Path) -> dict:
+    from common.kb import catalog as kbcat
+    try:
+        c = kbcat.type_counts(kbcat.load(kb))
+    except Exception:                                     # noqa: BLE001  大盘数据,读不了就空
+        return {}
+    c["norm"] = c.get("norm", 0) + c.pop("errata", 0)
+    return {k: c.get(k, 0) for k, _ in TYPE_ROWS}
+
+
+def next_step(types: dict) -> str:
+    """按建议的导入顺序,说下一步最该补什么。"""
+    if not types:
+        return ""
+    if not types.get("profile"):
+        return "先登记环境画像(kb.py profile 起草):没有画像,条目对本环境适不适用无法判断"
+    if not types.get("norm"):
+        return "导入现行规范(公司内部规范)"
+    if types.get("case", 0) < 5:
+        return "导入高频故障案例(带排查思路:候选原因、取证顺序、排除理由、区分证据)"
+    if not types.get("runbook"):
+        return "补处置与恢复手册(执行前提、影响、验证、回退)"
+    if not types.get("product"):
+        return "补对应的产品文档章节(写清产品系列与版本)"
+    if types.get("guide"):
+        return "旧指南还没归类型:kb.py migrate"
+    if not types.get("wiki"):
+        return "存量 Wiki 经验持续补齐(注明验证状态)"
+    return "覆盖齐了:按缺口清单补材料"
 
 
 def cmd_health(args: argparse.Namespace) -> int:
@@ -285,6 +322,10 @@ def cmd_health(args: argparse.Namespace) -> int:
         if state:
             print(f"上次索引  : {state.get('indexed_at', '?')} · 文档新写 {state.get('docs_indexed', '?')} · "
                   f"覆盖 {state.get('chunk_embedded', '?')}/{state.get('chunk_total', '?')} · 图 {state.get('graph', '?')}")
+        if d.get("types"):
+            print("知识类型  : " + " · ".join(f"{name} {d['types'].get(k, 0)}" for k, name in TYPE_ROWS
+                                              if k != "guide" or d["types"].get(k)))
+            print(f"下一步    : {next_step(d['types'])}")
         print("待处理    : " + ("; ".join(d["pending"]) if d["pending"] else "无"))
         if d["misses"]:
             print("缺口清单  : 近期查不到条款/案例的发现 Top —— " +
@@ -340,6 +381,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
             got: List[str] = []
             for it in res.items:      # 分类型各取前 k:条款和案例不互相挤占名额
                 got += [r.id for r in it.clauses][:k] + [r.id for r in it.cases][:k] + [r.id for r in it.raws][:k]
+                got += [r.id for r in it.typed]           # 六类类型化条目:每类本来就只出 top_typed 条
             ok = any(e in got for e in expect) if expect else not got
             total += 1
             hit += int(ok)
@@ -370,6 +412,7 @@ def add_subcommands(sub: "argparse._SubParsersAction") -> None:
     p.add_argument("--kb")
     p.add_argument("--q", help="问题文本")
     p.add_argument("--from-findings", help="skill 输出的 findings json 文件")
+    p.add_argument("--alias", help="当前连接别名(如 og5):按它匹配环境画像,判断条目适不适用本实例")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_query)
 

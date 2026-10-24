@@ -59,7 +59,7 @@ def _finding(code="VAC_FREQ"):
                    value="37", threshold="20", evidence="cbst.cosp_asyn_task_dtl autovacuum 次数异常高")
 
 
-def _canned(findings, kb_dir=None):
+def _canned(findings, kb_dir=None, **_kw):     # **_kw:alias 等后加的参数(2026-10-24 起传连接别名)
     items = tuple(kbquery.FindingRefs(key=getattr(f, "code", "x"), label=f"🟠 {getattr(f, 'code', 'x')}",
                                       query="q",
                                       cases=(kbquery.Ref(id="case:S2-20250224-CBST-偶现单条update慢", kind="case",
@@ -171,7 +171,7 @@ def test_lockwait_report_renders_hits_before_detail(monkeypatch, load):
 
 def _recording(calls):
     """替身 from_findings:记下每次检索收到的发现,再给命中。"""
-    def fake(findings, kb_dir=None):
+    def fake(findings, kb_dir=None, **_kw):
         calls.append(list(findings))
         return _canned(findings, kb_dir)
     return fake

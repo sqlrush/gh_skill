@@ -6,6 +6,9 @@
   不唯一           截断的前缀对上了多个案例
   未找到           库里没有——按编造处理,退出码 2
 等待事件名、GUC 名、错误码不是知识库 ID,不在核对范围。真相是 <kb>/ 的文件,不连库。
+
+2026-10-24 八类知识:手册 RB- / 缺陷 KD- / 基线 BL- / 产品文档 PD- / Wiki WK- / 画像 EP- 也核对;
+改过类型的旧 ID 记在新条目的 aliases 里,核对结果写「已改为 <新 ID>」。
 """
 from __future__ import annotations
 
@@ -15,13 +18,15 @@ import pathlib
 import re
 import sys
 from dataclasses import asdict, dataclass
-from typing import List, Set, Tuple
+from typing import Dict, List, Set, Tuple
 
 from common.kb import cases as kbcases
 
 CLAUSE_RE = re.compile(r"GS-[A-Z]{2,4}-\d{3}")
 CASE_RE = re.compile(r"S[1-4]-\d{8}-[A-Za-z0-9_]+-[^\s,，;;:：、。!?！?()（）\[\]【】〔〕《》〈〉\"'`<>*]*")
 _ELLIPSIS_RE = re.compile(r"(?:…|\.{2,})+$")
+TYPED_RE = re.compile(r"(?<![A-Za-z0-9_-])(?:WK-\d{4}|PD-\d{4}|KD-\d{4}|RB-[A-Z]{2,4}-\d{3}"
+                      r"|BL-[A-Z0-9_]+-[A-Z0-9_]+|EP-[A-Z0-9_]+)(?![A-Za-z0-9_])")
 
 STATUS_MARK = {"存在": "✓", "前缀匹配": "✓", "已废止": "⚠", "不唯一": "⚠", "未找到": "✗"}
 
@@ -33,7 +38,7 @@ class CiteCmdError(Exception):
 @dataclass(frozen=True)
 class Cite:
     token: str
-    kind: str          # case | clause
+    kind: str          # case | clause | typed
     status: str        # 存在 | 前缀匹配 | 已废止 | 不唯一 | 未找到
     resolved: str = ""
     note: str = ""
@@ -43,6 +48,7 @@ def extract_ids(text: str) -> List[Tuple[str, str]]:
     """按出现顺序返回 (kind, token),同一 token 只算一次。"""
     found = [(m.start(), "case", m.group(0)) for m in CASE_RE.finditer(text)]
     found += [(m.start(), "clause", m.group(0)) for m in CLAUSE_RE.finditer(text)]
+    found += [(m.start(), "typed", m.group(0)) for m in TYPED_RE.finditer(text)]
     out: List[Tuple[str, str]] = []
     seen: Set[str] = set()
     for _, kind, tok in sorted(found):
@@ -72,6 +78,25 @@ def known_ids(kb: pathlib.Path) -> Tuple[List[str], Set[str], Set[str]]:
     return case_ids, active, archived
 
 
+def typed_ids(kb: pathlib.Path) -> Dict[str, str]:
+    """类型化条目:ID → 自己;改过类型的旧 ID → 新 ID。"""
+    from common.kb import types as kbtypes
+    items, _ = kbtypes.load_items(kb)
+    out = {i.id: i.id for i in items}
+    for i in items:
+        for a in i.aliases:
+            out.setdefault(a, i.id)
+    return out
+
+
+def _check_typed(tok: str, ids: Dict[str, str]) -> Cite:
+    if tok not in ids:
+        return Cite(tok, "typed", "未找到", note="疑似编造")
+    if ids[tok] != tok:
+        return Cite(tok, "typed", "前缀匹配", ids[tok], note=f"旧 ID,已改为 {ids[tok]}")
+    return Cite(tok, "typed", "存在", tok)
+
+
 def _check_case(tok: str, case_ids: List[str]) -> Cite:
     bare = _ELLIPSIS_RE.sub("", tok)
     if bare in case_ids:
@@ -94,13 +119,21 @@ def _check_clause(tok: str, active: Set[str], archived: Set[str]) -> Cite:
 
 def check(text: str, kb: pathlib.Path) -> List[Cite]:
     case_ids, active, archived = known_ids(kb)
-    return [_check_case(tok, case_ids) if kind == "case" else _check_clause(tok, active, archived)
-            for kind, tok in extract_ids(text)]
+    typed = typed_ids(kb)
+    out: List[Cite] = []
+    for kind, tok in extract_ids(text):
+        if kind == "case":
+            out.append(_check_case(tok, case_ids))
+        elif kind == "clause":
+            out.append(_check_clause(tok, active, archived))
+        else:
+            out.append(_check_typed(tok, typed))
+    return out
 
 
 def render(cites: List[Cite]) -> str:
     if not cites:
-        return "引用核对 : 文本里没有案例 ID / 条款 ID"
+        return "引用核对 : 文本里没有案例 ID / 条款 ID(也没有手册 / 缺陷 / 基线 / 产品文档 / Wiki / 画像的 ID)"
     lines = ["引用核对 :"]
     for c in cites:
         extra = f" → {c.resolved}" if c.status == "前缀匹配" else ""

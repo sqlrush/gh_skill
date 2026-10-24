@@ -81,10 +81,13 @@ class FindingRefs:
     raws: Tuple[Ref, ...] = ()
     guides: Tuple[Ref, ...] = ()
     notes: Tuple[str, ...] = ()
+    typed: Tuple[Ref, ...] = ()        # 手册 / 缺陷 / 基线 / 产品文档 / Wiki / 画像(meta["_applies"] 是适用性标签)
+    topics: Tuple[str, ...] = ()       # 这条发现 / 这个问题落在哪些专题(L1 的入口)
+    hints: Tuple[str, ...] = ()        # 专题入口 + 本行确认过的候选原因(layers.hint_lines)
 
     @property
     def empty(self) -> bool:
-        return not (self.clauses or self.cases or self.paths or self.raws or self.guides)
+        return not (self.clauses or self.cases or self.paths or self.raws or self.guides or self.typed)
 
 
 @dataclass(frozen=True)
@@ -96,6 +99,7 @@ class KbStatus:
     vector: str = "未启用"
     graph: str = "未配置"
     mode: str = ""              # MODE_* 之一;未接入为空
+    l0: Tuple[str, ...] = ()    # L0 摘要:本实例画像、八类知识各多少(render 写在状态行下面)
 
 
 @dataclass(frozen=True)
@@ -265,6 +269,73 @@ class KbSession:
         self.graph_reason = graph_reason
         self.notes: List[str] = list(notes)
         self._vector_failed = False
+        self.alias = ""                 # 当前连接别名(诊断 skill 的会话),用来匹配环境画像
+        self._catalog = None
+        self._triples = None
+
+    # --- 八类知识 / 分层(条目元数据从文件现读;拿不到就当没有,检索照常)---------------
+
+    def catalog(self):
+        if self._catalog is None and self.cfg is not None:
+            from . import catalog as kbcat
+            try:
+                self._catalog = kbcat.load(self.cfg.kb_dir)
+            except Exception as exc:                      # noqa: BLE001  坏文件不许炸掉 skill
+                self.notes.append(f"条目目录读取失败:{exc}")
+                self._catalog = kbcat.Catalog(entries=(), topics=())
+        return self._catalog
+
+    def triples(self):
+        if self._triples is None and self.cfg is not None:
+            from . import graphfiles as gf
+            try:
+                cases = [e.id for e in self.catalog().entries if e.type == "case"]
+                self._triples, _ = gf.load_triples(self.cfg.kb_dir, case_ids=cases)
+            except Exception:                             # noqa: BLE001
+                self._triples = []
+        return self._triples or []
+
+    def profile(self):
+        """当前连接别名对应的画像条目(没有别名 / 没登记就是 None)。"""
+        if not self.alias or self.catalog() is None:
+            return None
+        from . import catalog as kbcat
+        return kbcat.profile_for_alias(self.catalog(), self.alias)
+
+    def topics_for_finding(self, f: Any) -> Tuple[str, ...]:
+        from . import topics as kbtopics
+        cat = self.catalog()
+        if cat is None:
+            return ()
+        return kbtopics.finding_topics(str(getattr(f, "code", "") or ""), str(getattr(f, "dimension", "") or ""),
+                                       finding_query_text(f), cat.topics)
+
+    def topics_for_text(self, q: str) -> Tuple[str, ...]:
+        from . import topics as kbtopics
+        cat = self.catalog()
+        return kbtopics.infer_topics(q, cat.topics) if cat is not None else ()
+
+    def l0_lines(self) -> Tuple[str, ...]:
+        """L0 摘要两行:本实例画像(或没登记)、八类知识各多少。为 0 的类型如实说未登记。"""
+        from . import catalog as kbcat
+        cat = self.catalog()
+        if cat is None:
+            return ()
+        lines: List[str] = []
+        prof = self.profile()
+        if prof is not None:
+            m = prof.meta
+            lines.append(f"> 本实例({self.alias}):{prof.id}《{prof.title}》{m.get('product', '')} {m.get('version', '')}"
+                         f" · {m.get('deployment', '部署形态未写')}")
+        elif self.alias:
+            lines.append(f"> 本实例({self.alias}):未登记环境画像——条目的产品系列 / 版本适用性按「未知」处理")
+        c = kbcat.type_counts(cat)
+        parts = [("规范", c.get("norm", 0) + c.get("errata", 0)), ("案例", c.get("case", 0)), ("画像", c.get("profile", 0)),
+                 ("基线", c.get("baseline", 0)), ("缺陷", c.get("defect", 0)), ("手册", c.get("runbook", 0)),
+                 ("产品文档", c.get("product", 0)), ("Wiki", c.get("wiki", 0))]
+        lines.append("> 已登记:" + " · ".join(f"{k} {v}" for k, v in parts)
+                     + "(为 0 的如实说「本行未登记」)· 总索引 `kb.py overview`")
+        return tuple(lines)
 
     @classmethod
     def open(cls, kb_dir: Optional[pathlib.Path] = None,
@@ -347,7 +418,7 @@ class KbSession:
         mode = self.mode
         return KbStatus(attached=True, reason=self.reason if mode == MODE_FILES else "",
                         version=version or str(state.get("kb_version", "")),
-                        counts=counts, vector=vector, graph=self._graph_label(), mode=mode)
+                        counts=counts, vector=vector, graph=self._graph_label(), mode=mode, l0=self.l0_lines())
 
     def _graph_label(self) -> str:
         if self.graph is None:
@@ -372,7 +443,7 @@ class KbSession:
     # --- 检索 -------------------------------------------------------------
 
     def search(self, key: str, label: str, q_text: str, objects: Sequence[str] = (),
-               free_text: bool = False) -> FindingRefs:
+               free_text: bool = False, topics: Sequence[str] = ()) -> FindingRefs:
         """free_text:用户自己问的话(kb.py query --q)。很短的问题(「死锁」「连接数」)没有强 token,
         按诊断发现那套绝对门槛一条都过不了;这时词全部命中就算相关(见 _relevant)。"""
         if not self.attached or self.cfg is None or self.pg is None:
@@ -418,7 +489,11 @@ class KbSession:
         clauses = self._refs(by_kind.get("rule", []), th.clause, th.top_clause)
         cases = self._refs(by_kind.get("case", []), th.case, th.top_case, with_sections=True)
         raws = self._refs(by_kind.get("raw", []), th.chunk, th.top_raw)
-        guides = self._refs(by_kind.get("guide", []) + by_kind.get("errata", []), th.chunk, th.top_guide)
+        # 修正(errata)排在指南前面:库内优先级 修正 > 条款 > 指南,检索结果的顺序要和契约一致
+        errata_first = sorted(by_kind.get("guide", []) + by_kind.get("errata", []),
+                              key=lambda p: (p[1].kind != "errata", -p[0], p[1].doc_id))
+        guides = self._refs(errata_first, th.chunk, th.top_guide)
+        typed = self._typed_refs(by_kind, th, free_text)
 
         # 图:现象节点 → 路径;对象 → 条款
         paths: List[PathRef] = []
@@ -453,11 +528,46 @@ class KbSession:
         elif self.graph is None:
             pass
 
+        hints: Tuple[str, ...] = ()
+        if topics and self.catalog() is not None:
+            from . import layers as kblayers
+            try:
+                hints = tuple(kblayers.hint_lines(self.catalog(), self.triples(), list(topics)))
+            except Exception:                             # noqa: BLE001  提示是附加的,失败不影响引用
+                hints = ()
         refs = FindingRefs(key=key, label=label, query=q_text, clauses=tuple(clauses), cases=tuple(cases),
-                           paths=tuple(paths), raws=tuple(raws), guides=tuple(guides), notes=tuple(notes))
+                           paths=tuple(paths), raws=tuple(raws), guides=tuple(guides), notes=tuple(notes),
+                           typed=typed, topics=tuple(topics), hints=hints)
         if not refs.clauses and not refs.cases and not refs.paths:
             self._log_miss(key, q_text)
         return refs
+
+    def _typed_refs(self, by_kind: Dict[str, List[Tuple[float, spg.Hit]]], th: Any, free_text: bool) -> Tuple[Ref, ...]:
+        """六类类型化条目:每类最多 top_typed 条;按本实例画像标适用性——不适用的降到同类末尾、写明理由,不丢。
+        别的系统的基线与本实例无关,直接不出;画像只在纯问答里出(诊断时 L0 已经写了本实例的画像)。"""
+        from . import versions as kbversions
+        prof = self.profile()
+        pmeta = dict(prof.meta) if prof is not None else None
+        out: List[Ref] = []
+        for kind in spg.TYPED_KINDS:
+            if kind == "profile" and not free_text:
+                continue
+            refs = list(self._refs(by_kind.get(kind, []), th.chunk, th.top_typed + 2))
+            labeled = []
+            for r in refs:
+                meta = dict(r.meta)
+                if kind == "baseline" and pmeta and meta.get("system") and meta.get("system") != pmeta.get("system"):
+                    continue
+                if kind == "defect":
+                    meta["_applies"] = kbversions.defect_verdict(meta, pmeta)
+                    verdict = kbversions.Verdict(kbversions.APPLICABLE)
+                else:
+                    verdict = kbversions.judge(meta, pmeta)
+                    meta["_applies"] = verdict.label
+                labeled.append((verdict.state == kbversions.NOT_APPLICABLE, Ref(**{**r.__dict__, "meta": meta})))
+            labeled.sort(key=lambda p: p[0])
+            out += [r for _bad, r in labeled[:th.top_typed]]
+        return tuple(out)
 
     def _relevant(self, tokens: Sequence[str], hit: spg.Hit, lex_s: float, vec_s: float,
                   free_text: bool = False) -> bool:
@@ -525,6 +635,9 @@ def result_to_dict(result: QueryResult) -> Dict[str, Any]:
                        "conclusion": r.meta.get("conclusion"), "action": r.sections.get("处置", "")} for r in it.cases],
             "paths": [dict(p.__dict__) for p in it.paths],
             "raws": [{"id": r.id, "title": r.title, "score": r.score} for r in it.raws],
+            "typed": [{"id": r.id, "kind": r.kind, "title": r.title, "score": r.score,
+                       "applies": r.meta.get("_applies", "")} for r in it.typed],
+            "topics": list(it.topics),
             "notes": list(it.notes),
         } for it in result.items],
     }
@@ -542,11 +655,13 @@ class SimpleFinding:
     threshold: str = ""
 
 
-def section_for(findings: Sequence[Any], kb_dir: Optional[pathlib.Path] = None) -> Tuple[str, Dict[str, Any]]:
-    """skill 脚本一行接入:返回 (markdown 小节, JSON 字典)。永不抛——知识库出任何问题都是「未接入(原因)」。"""
+def section_for(findings: Sequence[Any], kb_dir: Optional[pathlib.Path] = None,
+                alias: str = "") -> Tuple[str, Dict[str, Any]]:
+    """skill 脚本一行接入:返回 (markdown 小节, JSON 字典)。永不抛——知识库出任何问题都是「未接入(原因)」。
+    alias:当前连接别名(不传就从本进程的登录会话里取),用来匹配环境画像。"""
     from . import render as kbrender
     try:
-        result = from_findings(findings, kb_dir=kb_dir)
+        result = from_findings(findings, kb_dir=kb_dir, alias=alias or current_alias())
     except Exception as exc:                           # 兜底,理论上 from_findings 已不抛
         result = QueryResult(status=KbStatus(attached=False, reason=f"知识库检索异常:{exc}"))
     return kbrender.render_section(result), result_to_dict(result)
@@ -570,15 +685,26 @@ def finding_label(f: Any) -> str:
     return f"{label} {getattr(f, 'code', '')}" + (f"({detail})" if detail else "")
 
 
+def current_alias() -> str:
+    """本进程登录会话的连接别名(skill 脚本里 --session 选中的那个);取不到就空串,永不抛。"""
+    try:
+        from .. import session as gsession
+        conn = gsession.current()
+        return str(getattr(conn, "name", "") or "") if conn is not None else ""
+    except Exception:                                  # noqa: BLE001  没登录、旧安装都不影响知识库
+        return ""
+
+
 def from_findings(findings: Sequence[Any], kb_dir: Optional[pathlib.Path] = None,
-                  session: Optional[KbSession] = None) -> QueryResult:
+                  session: Optional[KbSession] = None, alias: str = "") -> QueryResult:
     """诊断 skill 的确定性入口:每条 finding 一组引用;永不抛。"""
     started = time.monotonic()
     own = session is None
     sess = session or KbSession.open(kb_dir)
+    sess.alias = alias or sess.alias
     try:
         items = tuple(sess.search(str(getattr(f, "code", "") or f"#{i}"), finding_label(f),
-                                  finding_query_text(f), objects=())
+                                  finding_query_text(f), objects=(), topics=sess.topics_for_finding(f))
                       for i, f in enumerate(findings)) if sess.attached else ()
         status = sess.status()
     except Exception as exc:                      # 兜底:知识库任何异常都不许炸掉 skill
@@ -591,13 +717,15 @@ def from_findings(findings: Sequence[Any], kb_dir: Optional[pathlib.Path] = None
 
 
 def from_text(q: str, kb_dir: Optional[pathlib.Path] = None,
-              session: Optional[KbSession] = None) -> QueryResult:
-    """纯问答入口(kb.py query --q)。"""
+              session: Optional[KbSession] = None, alias: str = "") -> QueryResult:
+    """纯问答入口(kb.py query --q [--alias og5])。"""
     started = time.monotonic()
     own = session is None
     sess = session or KbSession.open(kb_dir)
+    sess.alias = alias or sess.alias
     try:
-        items = (sess.search("q:" + q[:24], q[:60], q, free_text=True),) if sess.attached else ()
+        items = (sess.search("q:" + q[:24], q[:60], q, free_text=True, topics=sess.topics_for_text(q)),) \
+            if sess.attached else ()
         status = sess.status()
     except Exception as exc:
         status = KbStatus(attached=False, reason=f"知识库检索异常:{exc}")

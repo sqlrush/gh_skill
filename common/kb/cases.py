@@ -1,7 +1,11 @@
 """案例文件 <kb>/cases/S1-日期-系统-标题.md —— 解析与校验(纯函数 + 文件 I/O,无库)。
 
-格式参考 gaussdb-rootcause 的 S1 文件:YAML frontmatter + 四节(现场 / 判断 / 处置 / 复发标志)。
+格式参考 gaussdb-rootcause 的 S1 文件:YAML frontmatter + 现场 / 判断 / 处置 三个必填小节。
 frontmatter 是检索与图的结构化入口,正文给模型读。
+
+2026-10-24 起案例记「排查思路」,不只记结论:可选小节 候选原因 / 取证顺序 / 排除理由 / 最终验证,
+以及「区分证据」——同一现象在本行有过不同根因时,靠它区分(看起来相同、根因不同的反例)。
+frontmatter 可选 topics(所属专题)与 evidence(指向 L3 原始证据)。
 
 「结论强度」是整个案例所有边的置信度来源:已确认 1.0 / 推测 0.6 / 待验证 0.3。
 只有 1.0 的边进「本行历史路径」——所以这个字段校验得最严。
@@ -18,7 +22,9 @@ import yaml
 
 CASE_ID_RE = re.compile(r"^S[1-4]-\d{8}-[A-Za-z0-9_]+-\S+$")
 REQUIRED_FIELDS = ("id", "title", "system", "occurred_at", "conclusion", "source")
-SECTIONS = ("现场", "判断", "处置", "复发标志")
+# 顺序即写盘顺序:先现场,再排查过程,再结论与处置,最后是再发时怎么认、怎么和相似的区分
+SECTIONS = ("现场", "候选原因", "取证顺序", "排除理由", "判断", "处置", "最终验证", "复发标志", "区分证据")
+TROUBLESHOOTING_SECTIONS = ("候选原因", "取证顺序", "排除理由", "最终验证")
 REQUIRED_SECTIONS = ("现场", "判断", "处置")
 CONCLUSION_CONFIDENCE = {"已确认": 1.0, "推测": 0.6, "待验证": 0.3}
 SEVERITIES = ("S1", "S2", "S3", "S4")
@@ -45,6 +51,8 @@ class Case:
     objects: Tuple[str, ...] = ()
     signals: Tuple[str, ...] = ()
     rules: Tuple[str, ...] = ()
+    topics: Tuple[str, ...] = ()
+    evidence: Tuple[str, ...] = ()
     sections: Dict[str, str] = field(default_factory=dict)
     content_hash: str = ""
 
@@ -135,7 +143,8 @@ def parse_case(text: str, path: pathlib.Path) -> Tuple[Optional[Case], List[str]
         entered_by=str(meta.get("entered_by") or "").strip(),
         entered_at=str(meta.get("entered_at") or "").strip(),
         objects=_as_list(meta.get("objects")), signals=_as_list(meta.get("signals")),
-        rules=_as_list(meta.get("rules")), sections=sections,
+        rules=_as_list(meta.get("rules")), topics=_as_list(meta.get("topics")),
+        evidence=_as_list(meta.get("evidence")), sections=sections,
         content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
     )
     return case, errors

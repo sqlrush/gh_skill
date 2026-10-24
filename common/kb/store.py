@@ -9,6 +9,9 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Sequence
 
 DOC_KINDS = ("rule", "guide", "errata", "case", "raw")
+# 2026-10-24 八类知识:六类类型化条目各自一个 kind(= types.TYPED 的类型代码)
+TYPED_KINDS = ("runbook", "defect", "baseline", "product", "wiki", "profile")
+ALL_KINDS = DOC_KINDS + TYPED_KINDS
 
 
 class StoreError(Exception):
@@ -27,7 +30,7 @@ class Capabilities:
 @dataclass(frozen=True)
 class DocRow:
     id: str
-    kind: str              # rule | guide | errata | case | raw
+    kind: str              # rule | guide | errata | case | raw | 六类类型化条目(TYPED_KINDS)
     title: str
     source: str
     version: str

@@ -145,7 +145,12 @@ CANDIDATE_TEMPLATE = {
         "conclusion": "<已确认|推测|待验证 —— 原文明确写了根因且已验证才是已确认>",
         "objects": ["<表/GUC/等待事件/错误码,原样>"], "signals": ["<复发标志:再出现时能观察到什么>"],
         "rules": ["<引用的客户条款 ID,如 GS-VAC-002,没有留空>"],
-        "sections": {"现场": "<现象>", "判断": "<根因推理>", "处置": "<做了什么>", "复发标志": "<再发时的信号>"},
+        "topics": ["<所属专题 slug:conn/lock/sql/proc/wait/wal/mem/vacuum/repl/param/space/batch>"],
+        "sections": {"现场": "<现象,含现场背景:系统、版本、时段、负载>", "判断": "<根因推理>", "处置": "<做了什么>",
+                     "复发标志": "<再发时的信号>",
+                     "候选原因": "<可选:当时怀疑过哪些原因>", "取证顺序": "<可选:先查什么、再查什么>",
+                     "排除理由": "<可选:其他原因凭什么排除>", "最终验证": "<可选:怎么确认处置生效>",
+                     "区分证据": "<同一现象本行有过别的根因时必填:凭什么判断是这个根因而不是那个>"},
     },
     "quotes": {"primary_factor": "<原文片段,必须逐字出现在工单里>", "处置": "<原文片段>", "现场": "<原文片段>"},
     "entities": [{"kind": "object|guc|wait_event|error|component", "name": "<原样>", "quote": "<原文片段>"}],
@@ -386,6 +391,7 @@ def review_candidates(kb: pathlib.Path, slug: str, candidates: List[Dict[str, An
     existing_ids = {c.id for c in kbcases.load_cases(kb)[0]}
     aliases, _ = gf.load_canonical(kb)
     known = _known_entities(kb, limit=500)
+    confirmed_causes = _confirmed_causes(kb)
     entries: List[Dict[str, Any]] = []
     errors: List[str] = []
     n = 0
@@ -433,8 +439,11 @@ def review_candidates(kb: pathlib.Path, slug: str, candidates: List[Dict[str, An
             continue
 
         n += 1
+        topics = [str(x) for x in (case.get("topics") or []) if str(x).strip() and not str(x).startswith("<")]
+        look = _lookalike_note(cand, sections, confirmed_causes)
         entries.append({"n": n, "item_id": item_id, "kind": "case", "case_id": cid,
-                        "text": f"[案例] {cid} · 结论强度 {case.get('conclusion')} · 级别 {case.get('severity') or '?'}",
+                        "text": f"[案例] {cid} · 结论强度 {case.get('conclusion')} · 级别 {case.get('severity') or '?'}"
+                                f" · 专题 {'、'.join(topics) or '—(请补)'}" + look,
                         "quote": quotes.get("primary_factor") or quotes.get("现场") or "", "default": "accept",
                         "payload": {"case": case, "item_file": str(item_path.relative_to(kb)),
                                     "source": _source_of(item_path)}})
@@ -479,6 +488,34 @@ def review_candidates(kb: pathlib.Path, slug: str, candidates: List[Dict[str, An
                             "payload": {"src": src, "rel": rel, "dst": dst,
                                         "confidence": float(ed.get("confidence") or 0.7)}})
     return entries, errors
+
+
+def _confirmed_causes(kb: pathlib.Path) -> Dict[str, set]:
+    """库里已确认的 现象(归一名)→ {根因名}:新案例同现象、不同根因时要它写区分证据。"""
+    out: Dict[str, set] = {}
+    try:
+        triples, _ = gf.load_triples(kb)
+    except Exception:                                     # noqa: BLE001  只用于提示
+        return out
+    for tr in triples:
+        if tr.rel == "caused_by" and tr.in_path:
+            out.setdefault(kbtext.normalize(tr.src.name), set()).add(tr.dst.name)
+    return out
+
+
+def _lookalike_note(cand: Dict[str, Any], sections: Dict[str, Any], causes: Dict[str, set]) -> str:
+    if str(sections.get("区分证据") or "").strip() and not str(sections.get("区分证据")).startswith("<"):
+        return ""
+    for ed in cand.get("edges") or []:
+        if not isinstance(ed, dict) or ed.get("rel") != "caused_by":
+            continue
+        sym = kbtext.normalize(str((ed.get("src") or {}).get("name") or ""))
+        root = str((ed.get("dst") or {}).get("name") or "")
+        others = sorted(r for r in causes.get(sym, set()) if kbtext.normalize(r) != kbtext.normalize(root))
+        if others:
+            return (f"   ⚠ 同现象「{(ed.get('src') or {}).get('name')}」本行已有根因「{others[0]}」"
+                    "——看起来相同、根因不同,请补「区分证据」小节")
+    return ""
 
 
 def _source_of(item_path: pathlib.Path) -> str:
@@ -588,9 +625,16 @@ def _case_markdown(cid: str, case: Dict[str, Any], source: str, entered_by: str)
         "objects": list(case.get("objects") or []), "signals": list(case.get("signals") or []),
         "rules": list(case.get("rules") or []),
     }
+    topics = [str(x) for x in (case.get("topics") or []) if str(x).strip() and not str(x).startswith("<")]
+    if topics:
+        front["topics"] = topics
+    if case.get("evidence"):
+        front["evidence"] = list(case.get("evidence") or [])
     body = "---\n" + yaml.safe_dump(front, allow_unicode=True, sort_keys=False).strip() + "\n---\n"
     for s in kbcases.SECTIONS:
         val = str((case.get("sections") or {}).get(s) or "").strip()
+        if val.startswith("<") and val.endswith(">"):       # 模板占位没改就当没写
+            val = ""
         if val or s in kbcases.REQUIRED_SECTIONS:
             body += f"## {s}\n{val}\n"
     return body

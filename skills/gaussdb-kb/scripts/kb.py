@@ -7,7 +7,10 @@ entries. This script owns everything that must not depend on a model:
 
     ingest <file>       convert txt/md/docx/doc into <kb>/inbox/<slug>/source.md
                         (+ heading outline), snapshot the original into <kb>/sources/
-    index               rebuild <kb>/INDEX.md from rules/*.yaml + guides/ + errata/
+    index               rebuild <kb>/INDEX.md from rules/*.yaml + guides/ + errata/, plus the
+                        progressive-disclosure layers: L0-总索引.md and topics/<专题>.md (L1)
+    overview / topic / show / evidence / template   layered reads (kb_read.py)
+    add / attach / retype / migrate / profile / taxonomy   typed items (kb_items.py)
     validate            check encoding (non-UTF-8 is invisible to the skills' grep),
                         rule IDs, yaml schema, frontmatter, INDEX consistency,
                         and that withdrawn clauses actually left rules/
@@ -62,7 +65,9 @@ for _anc in _HERE.parents:                       # common/(仓库根,或装好�
 from common.kb import lock as kblock  # noqa: E402
 from common.kb.atomic import write_text_atomic  # noqa: E402
 
-KB_SUBDIRS = ("errata", "rules", "guides", "archive", "sources", "inbox")
+KB_SUBDIRS = ("errata", "rules", "guides", "archive", "sources", "inbox",
+              # 2026-10-24 八类知识:六类类型化条目各一个目录;topics/ 放 L1;evidence/ 放照片、日志等原始证据(L3)
+              "wiki", "product", "runbooks", "defects", "baselines", "profiles", "topics", "evidence")
 RULE_ID_RE = re.compile(r"^GS-[A-Z]{2,4}-\d{3}$")
 SEVERITIES = frozenset({"error", "warn", "info"})
 CHECK_KINDS = frozenset({"deterministic", "advisory"})
@@ -341,6 +346,17 @@ def iter_files(kb: pathlib.Path, sub: str, suffixes: tuple[str, ...]) -> list[pa
     return sorted(p for p in root.rglob("*") if p.is_file() and p.suffix in suffixes)
 
 
+def first_heading_typed(path: pathlib.Path) -> str:
+    """类型化条目:INDEX 里写「ID · 标题」。"""
+    try:
+        meta, _ = split_frontmatter(read_text_file(path))
+    except OSError:
+        meta = None
+    if meta and meta.get("title"):
+        return f"{meta.get('id', path.stem)} · {meta['title']}"
+    return first_heading(path)
+
+
 def first_heading(path: pathlib.Path) -> str:
     try:
         text = read_text_file(path)
@@ -491,6 +507,11 @@ def cmd_index(args: argparse.Namespace) -> int:
     lines += [f"- `rules/{p.relative_to(kb / 'rules')}` — {describe_rule_file(p)}" for p in rules] or ["(暂无)"]
     lines += ["", "## guides/(语义指南,模型判断依据)", ""]
     lines += [f"- `guides/{p.relative_to(kb / 'guides')}` — {first_heading(p)}" for p in guides] or ["(暂无)"]
+    from common.kb import types as kbtypes
+    for kt in kbtypes.TYPED.values():
+        files = iter_files(kb, kt.dir, (".md",))
+        lines += ["", f"## {kt.dir}/({kt.name})", ""]
+        lines += [f"- `{kt.dir}/{p.relative_to(kb / kt.dir)}` — {first_heading_typed(p)}" for p in files] or ["(暂无)"]
     lines += [
         "",
         "## archive/(已废止条款 —— 仅供追溯,**不得据此判定**)",
@@ -513,6 +534,11 @@ def cmd_index(args: argparse.Namespace) -> int:
     print(f"INDEX.md 已重建:{kb / 'INDEX.md'}({len(lines)} 行);"
           f"RULES.md 已重建:{kb / 'RULES.md'}({rule_total} 条现行条款);"
           f"CASES.md 已重建:{kb / 'CASES.md'}({case_total} 条案例)")
+    from common.kb import layers as kblayers
+    written, warns = kblayers.write_layers(kb, read_version(kb))
+    print(f"分层已重建  : L0-总索引.md + {len(written) - 1} 个专题导航(topics/*.md)")
+    for w in warns:
+        print(f"[warn ] {w}")
     return 0
 
 
@@ -629,7 +655,10 @@ def validate_guides(kb: pathlib.Path, findings: list) -> None:
 # entire mechanism by which a withdrawn clause stops reaching the skills.
 # sources/ is excluded too: it holds the customer's original files and keeps
 # whatever encoding they arrived in; nothing greps it.
-_SEARCHABLE = (("errata", (".md",)), ("rules", (".yaml", ".yml")), ("guides", (".md",)))
+_SEARCHABLE = (("errata", (".md",)), ("rules", (".yaml", ".yml")), ("guides", (".md",)),
+               # 2026-10-24 六类类型化条目(手册 / 缺陷 / 基线 / 产品文档 / Wiki / 画像)
+               ("runbooks", (".md",)), ("defects", (".md",)), ("baselines", (".md",)),
+               ("product", (".md",)), ("wiki", (".md",)), ("profiles", (".md",)))
 
 # archive/ is out of the grep range but validate still parses it, so it has to be
 # UTF-8 like the rest — a GB18030 archive file would make ID-reuse checks miss it.
@@ -673,19 +702,14 @@ def validate_index(kb: pathlib.Path, findings: list) -> None:
     # archive/ is indexed too (its IDs must stay traceable), so it is checked here
     # as well — otherwise deleting an archived file leaves a dangling INDEX entry
     # that nothing complains about.
-    kb_files = (
-        iter_files(kb, "errata", (".md",))
-        + iter_files(kb, "rules", (".yaml", ".yml"))
-        + iter_files(kb, "guides", (".md",))
-        + iter_files(kb, "archive", (".yaml", ".yml"))
-    )
+    kb_files = [p for sub, suffixes in _ENCODED for p in iter_files(kb, sub, suffixes)]
     newest = 0.0
     for path in kb_files:
         rel = str(path.relative_to(kb))
         newest = max(newest, path.stat().st_mtime)
         if rel not in index_text:
             findings.append(("error", f"INDEX.md 缺少条目:{rel}(重新运行 index)"))
-    for rel in re.findall(r"`((?:errata|rules|guides|archive)/[^`]+)`", index_text):
+    for rel in re.findall(r"`((?:errata|rules|guides|archive|runbooks|defects|baselines|product|wiki|profiles)/[^`]+)`", index_text):
         if not (kb / rel).is_file():
             findings.append(("error", f"INDEX.md 引用了不存在的文件:{rel}"))
     if kb_files and index.stat().st_mtime < newest:
@@ -742,6 +766,57 @@ def validate_cases_and_graph(kb: pathlib.Path, findings: list) -> None:
     validate_symptom_reachability(triples, findings)
 
 
+def validate_typed(kb: pathlib.Path, findings: list) -> None:
+    """八类知识:类型化条目的 schema、ID 全库唯一、专题合法、条款的审批 / 生效版本、反例的区分证据、L0 新旧。"""
+    from common.kb import catalog as kbcat
+    from common.kb import graphfiles as gf
+    from common.kb import layers as kblayers
+    from common.kb import types as kbtypes
+
+    _items, item_findings = kbtypes.load_items(kb)
+    findings.extend(item_findings)
+    cat = kbcat.load(kb)
+    findings.extend(("warn", w) for w in cat.warnings)
+    owner: dict[str, str] = {}
+    for e in cat.entries:
+        for key in (e.id,) + tuple(e.aliases):
+            if key in owner and owner[key] != e.file:
+                findings.append(("error", f"{e.file}: ID `{key}` 与 {owner[key]} 重复(ID 全库唯一,改过类型的旧 ID 也算)"))
+            owner.setdefault(key, e.file)
+    valid = {t.slug for t in cat.topics}
+    for e in cat.entries:
+        bad = [t for t in e.topics if t not in valid] if not e.topics_inferred else []
+        if bad:
+            findings.append(("warn", f"{e.file}: {e.id} 的专题 {bad} 不在专题定义里(kb.py topic --list)"))
+    norms = cat.of_type(kbtypes.NORM)
+    lacking = [e.id for e in norms if not (e.meta.get("approval") or e.meta.get("effective"))]
+    if norms and lacking:
+        findings.append(("warn", f"{len(lacking)}/{len(norms)} 条条款没写 approval(审批与变更要求)/ effective(生效版本),"
+                                 f"如 {', '.join(lacking[:3])}——公司内部规范要记这两项"))
+    guides = cat.of_type(kbtypes.GUIDE)
+    if guides:
+        findings.append(("warn", f"guides/ 里还有 {len(guides)} 篇旧指南没归类型(kb.py migrate 出清单,确认后 --apply)"))
+    untagged = [e.id for e in cat.entries if not e.archived and e.type != "profile" and not e.topics]
+    if untagged:
+        findings.append(("warn", f"{len(untagged)} 条没归进任何专题(L0 里列为「未归类」),如 {', '.join(untagged[:3])}"))
+    triples, _ = gf.load_triples(kb, case_ids=[e.id for e in cat.of_type(kbtypes.CASE)])
+    reported = set()
+    for t in cat.topics:
+        view = kblayers.topic_view(cat, triples, t.slug)
+        for c in view.causes:
+            key = (c.symptom, c.rootcause)
+            if c.symptom in view.lookalikes and c.disc_from != "区分证据" and key not in reported:
+                reported.add(key)
+                findings.append(("warn", f"现象「{c.symptom}」在本行有多种根因,根因「{c.rootcause}」的案例"
+                                         f" {', '.join(c.cases[:2])} 没写「区分证据」——看起来相同、根因不同的反例要记下区分它们的证据"))
+    l0 = kb / kblayers.L0_FILE
+    newest = max((p.stat().st_mtime for _c, p in kbtypes.iter_item_files(kb)), default=0.0)
+    if not l0.is_file():
+        findings.append(("warn", "L0-总索引.md 不存在(运行 kb.py index 生成 L0 / L1)"))
+    elif newest and l0.stat().st_mtime < newest:
+        findings.append(("warn", "L0-总索引.md 比条目旧(重新运行 index)"))
+
+
 def validate_symptom_reachability(triples, findings: list) -> None:
     """现象节点断成两半是静默失效:案例 `exhibits` 的现象与因果链起点的现象没归一,
     这个案例就永远走不到自己的 现象→根因→处置 链。向量检索靠语义相似能绕过去,
@@ -778,8 +853,11 @@ def cmd_validate(args: argparse.Namespace) -> int:
     validate_index(kb, findings)
     validate_rules_listing(kb, findings)
     validate_cases_and_graph(kb, findings)
+    validate_typed(kb, findings)
     for sub in sorted((kb / "inbox").glob("*")) if (kb / "inbox").is_dir() else []:
         if not sub.is_dir():
+            continue
+        if sub.name in ("uploads", "drafts"):            # 收件目录与类型化条目草稿,不是待条款化的规范
             continue
         if (sub / "manifest.json").is_file():          # 工单批次,不是规范
             items = list((sub / "items").glob("*.md")) if (sub / "items").is_dir() else []
@@ -978,6 +1056,8 @@ def cmd_contract(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     import kb_cases
     import kb_cite
+    import kb_items
+    import kb_read
     import kb_store
 
     parser = argparse.ArgumentParser(
@@ -1004,6 +1084,8 @@ def build_parser() -> argparse.ArgumentParser:
     kb_store.add_subcommands(sub)
     kb_cases.add_subcommands(sub)
     kb_cite.add_subcommands(sub)
+    kb_read.add_subcommands(sub)
+    kb_items.add_subcommands(sub)
 
     p_validate = sub.add_parser("validate", help="校验 ID/schema/INDEX 一致性")
     p_validate.add_argument("--kb")
@@ -1068,6 +1150,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     import kb_cases
     import kb_cite
+    import kb_items
+    import kb_read
     import kb_store
     from common.kb import config as kbconfig
     try:
@@ -1076,7 +1160,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"错误:{exc}", file=sys.stderr)   # 别人正在写:退出码 2(有活没干完),不是 1(坏了)
         return 2
     except (KbError, kb_store.StoreCmdError, kb_cases.CaseCmdError, kb_cite.CiteCmdError,
-            kbconfig.KbConfigError) as exc:
+            kb_read.ReadCmdError, kb_items.ItemCmdError, kbconfig.KbConfigError) as exc:
         print(f"错误:{exc}", file=sys.stderr)
         return 1
 

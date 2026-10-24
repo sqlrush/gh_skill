@@ -223,6 +223,7 @@ class Thresholds:
     top_path: int = 2
     top_raw: int = 2
     top_guide: int = 2
+    top_typed: int = 2             # 手册 / 缺陷 / 基线 / 产品文档 / Wiki 每类最多几条(2026-10-24 八类知识)
 
 
 @dataclass(frozen=True)
@@ -291,7 +292,7 @@ def _thresholds(raw: Any) -> Thresholds:
     for name in ("clause", "case", "path", "chunk", "symptom", "lexical_min", "vector_min",
                  "min_coverage", "relative_floor", "node_relative_floor"):
         kwargs[name] = float(raw.get(name, getattr(base, name)))
-    for name in ("top_clause", "top_case", "top_path", "top_raw", "top_guide"):
+    for name in ("top_clause", "top_case", "top_path", "top_raw", "top_guide", "top_typed"):
         kwargs[name] = int(raw.get(name, getattr(base, name)))
     return Thresholds(**kwargs)
 
