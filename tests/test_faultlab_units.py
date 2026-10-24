@@ -457,16 +457,13 @@ def test_lock_guard_follows_the_scenario_slot_not_the_window():
     assert C.lock_guard_s(None) == C.STATEMENT_TIMEOUT_S
 
 
-def test_guard_sql_sets_only_what_is_given_and_refuses_nonsense():
+def test_guard_sql_and_the_scenario_observer_maintenance_presets():
     sqls = db.guard_sql(db.Guards(30, 0, 3))
     assert "SET statement_timeout = '30s'" in sqls and "SET lockwait_timeout = '3s'" in sqls
     assert not any("idle_in_transaction" in s for s in sqls)
     assert not any("ALTER SYSTEM" in s.upper() for s in sqls)            # 全是会话级
     with pytest.raises(db.LabError):
         db.guard_sql(db.Guards(-1, 0, 0))
-
-
-def test_guard_presets_scenario_observer_and_maintenance():
     g = db.resolve_guards(True, lockwait_s=190)
     assert g.lockwait_s == 190 and g.statement_s == C.STATEMENT_TIMEOUT_S
     assert db.resolve_guards(False) is None
@@ -493,8 +490,8 @@ def test_base_worker_hands_the_slot_based_lock_guard_to_the_session(monkeypatch)
 class _StopWorker:
     """替身 Worker:被「置位 / 取消 / 终止」里的哪一种叫醒,由 dies_on 决定。"""
 
-    def __init__(self, app, drain=False, dies_on=("signal",)):
-        self.app, self.drain, self.dies_on = app, drain, dies_on
+    def __init__(self, app, drain=False, dies_on=("signal",), terminate=False):
+        self.app, self.drain, self.dies_on, self.terminate = app, drain, dies_on, terminate
         self.alive, self.signalled = True, False
 
     def signal(self):
@@ -532,9 +529,10 @@ def test_stop_cancels_a_statement_stuck_in_a_lock_wait_and_leaves_idle_holders_a
 
 def test_stop_escalates_to_terminate_when_cancel_does_not_help():
     w = _StopWorker("K5/ddl", dies_on=("terminate",))
-    kill, calls = _killer([w])
-    assert _stop([w], _ctx(), kill)["terminated"] == 1
-    assert calls == [("K5/ddl", "cancel"), ("K5/ddl", "terminate")]
+    q = _StopWorker("S1/q", dies_on=("terminate",), terminate=True)    # 慢 SQL:被取消的语句也会进执行历史
+    kill, calls = _killer([w, q])
+    assert _stop([w, q], _ctx(), kill)["terminated"] == 2
+    assert calls == [("K5/ddl", "cancel"), ("K5/ddl", "terminate"), ("S1/q", "terminate")]
 
 
 def test_a_draining_slow_query_finishes_its_round_until_the_window_ends():
@@ -576,8 +574,7 @@ def test_stop_targets_scenario_sessions_and_refuses_tool_connections_and_odd_nam
         db.stoppable_app(app)
 
 
-def _fake(**methods):
-    """临时替身对象:fake(query=lambda sql, args=None: …)。"""
+def _fake(**methods):                  # 临时替身对象:_fake(query=lambda sql, args=None: …)
     return type("Fake", (), {k: staticmethod(v) for k, v in methods.items()})()
 
 
@@ -620,8 +617,7 @@ def test_lwlock_probe_does_not_count_an_idle_client_as_waiting():
     assert "真在等的 28 次" in busy and "轻量锁 28 次" in busy
 
 
-class _CatalogConn:
-    """替身连接:按名字回答「库里在不在」;exec 当作撤成功了(东西随之消失)。"""
+class _CatalogConn:                    # 替身连接:按名字回答「在不在」;exec 当作撤成功了
 
     def __init__(self, present):
         self.present, self.ddl = set(present), []
@@ -657,20 +653,17 @@ def test_cleanup_keeps_a_residue_on_the_books_when_it_is_still_there():
     assert not gone and "人工" in text
 
 
-def test_k2_only_touches_rows_no_other_scenario_uses():
-    """K2 原来从 1 号行扫起,一上来就卡在 K1 根会话锁着的行上,抖动型变成了持续阻塞。"""
+def test_k2_only_touches_rows_no_other_scenario_uses_and_k5_builds_a_slow_index():
+    """K2 原来从 1 号行扫起,卡在 K1 锁着的行上;K5 的普通索引 7 秒就建完。"""
     import re
     src = (C.ROOT / "lab" / "scenarios" / "deadlock.py").read_text(encoding="utf-8")
     d_ids = {int(x) for x in re.findall(r'(?:_upd\("acct", |id = |lock_parent\(|ins\()(\d+)', src)}
     others = d_ids | {1, 2, 3, 100, lockmod.ForeignKeyWait.PARENT}
     k2 = lockmod.BatchForUpdate
-    assert k2.LO > max(others) and k2.HI <= 2000
+    assert k2.LO > max(others) and k2.HI <= 2000 and "acct_child" not in src.split("CHILD = ")[1]
     for n in range(30):
         lo, hi = k2.batch_range(n)
         assert k2.LO <= lo <= hi <= k2.HI and k2.LO <= k2.online_id(n) <= k2.HI
-
-
-def test_k5_builds_a_slow_expression_index_without_concurrently():
     sql = lockmod.IndexBuild.index_sql()
     assert sql.startswith("CREATE INDEX idx_fl_k5_items_note ON fl.order_items")
     assert "CONCURRENTLY" not in sql and "fl_slow_key(note, %d)" % C.K5_SLOW_ITERS in sql
@@ -697,6 +690,7 @@ def test_runtime_objects_use_ustore_only_when_available_and_the_v6_table_is_unlo
     maint = " ".join(with_u["maint_hist"])
     assert "UNLOGGED" in maint and "fl_slow_key(pad, %d)" % C.V6_SLOW_ITERS in maint
     assert set(C.RUNTIME_TABLES) <= set(with_u) and "maint_hist" in prepare.ANALYZE_TABLES
+    assert "REFERENCES fl.acct" in " ".join(with_u["dl_child"]) and cleanup.DELETE_ABOVE["dl_child"] == C.DL_CHILD_ROWS
 
 
 def test_import_stage_keeps_autoanalyze_out_with_table_level_options_only():
@@ -707,6 +701,9 @@ def test_import_stage_keeps_autoanalyze_out_with_table_level_options_only():
     schema = (C.SQL_DIR / "schema.sql").read_text(encoding="utf-8")
     assert "autovacuum_analyze_threshold = %d" % C.IMPORT_ANALYZE_THRESHOLD in schema
     assert "ALTER SYSTEM" not in (sql + schema).upper()
+    sent = []                                       # V7 导入前重建表:TRUNCATE 清不掉上一次的列统计
+    prepare.import_batch(_fake(exec=lambda q, a=None: sent.append(q)), rows=10)
+    assert sent[0].startswith("DROP TABLE") and "autovacuum_analyze_threshold" in sent[1] and "TRUNCATE" not in sent[2]
 
 
 def test_v7_probe_only_counts_an_autoanalyze_after_this_import():
@@ -726,7 +723,7 @@ def test_v4_slot_comes_first_and_its_probe_says_when_it_pins_nothing():
     empty = _fake(query=lambda sql, args=None: [("physical", False, None, None, None, None)])
     pinned = _fake(query=lambda sql, args=None: [("logical", False, "0/5000000", None, "12345", 3 * 1048576)])
     assert "没造出来" in sc.probe(empty)
-    assert "钉着 WAL 3 MB" in sc.probe(pinned) and "catalog_xmin=12345" in sc.probe(pinned)
+    assert "已产生 3 MB" in sc.probe(pinned) and "catalog_xmin=12345" in sc.probe(pinned)
 
 
 def test_v5_probe_counts_finished_autovacuum_rounds_since_it_started():
@@ -745,13 +742,10 @@ def test_s1_and_s2_are_the_two_that_never_finish():
     assert not slow.SPECS["S2"].loop and "substr(l2.cust_code, 1, 10)" in slow.sql_for("S2", 1000)
 
 
-def test_l2_sessions_touch_disjoint_rows_on_the_hot_page():
+def test_l2_and_l3_sessions_each_write_rows_of_their_own():
     rows = [{lwlock.HotPage.row_for(i, n) for n in range(200)} for i in range(lwlock.SESSIONS)]
     assert all(r <= set(range(1, 101)) for r in rows)
     assert not (rows[0] & rows[1]) and not (rows[1] & rows[2]) and not (rows[0] & rows[2])
-
-
-def test_l3_commits_tiny_write_transactions_on_rows_of_its_own():
     sc = lwlock.ShortTransactions.__new__(lwlock.ShortTransactions)
     sc._batch = False
     sent = []
@@ -762,10 +756,19 @@ def test_l3_commits_tiny_write_transactions_on_rows_of_its_own():
     assert {a[0] for _, a in sent} == {1, 401, 801}
 
 
-def test_l5_writes_more_subtransactions_than_the_cache_holds_and_has_a_reader():
-    sc = lwlock.SubTransactions.__new__(lwlock.SubTransactions)
-    assert lwlock.SubTransactions.LOOPS > 64
-    assert [sc.role_of(i) for i in range(lwlock.SESSIONS)] == ["sub", "sub", "read"]
+def test_l4_locks_partitions_without_scanning_and_l5_writers_commit_async():
+    """og5 分组验证:L4 的 count(*) 让 CPU 占了 99%,L5 被 WALFlushWait 盖住 —— 两处都改了。"""
+    sent = []
+    rec = _fake(exec=lambda sql, args=None: sent.append(sql), set=lambda k, v: sent.append("SET %s=%s" % (k, v)))
+    l4 = lwlock.PartitionLockMgr.__new__(lwlock.PartitionLockMgr)
+    l4._batch = True
+    l4.step(rec, 0)
+    l5 = lwlock.SubTransactions.__new__(lwlock.SubTransactions)
+    for i in range(lwlock.SESSIONS):
+        l5.setup(rec, i)
+    assert "LIMIT 1; COMMIT" in sent[0] and "count(*)" not in sent[0]
+    assert sent[1:] == ["SET synchronous_commit=off"] * 2                 # 两条写的;读的不改
+    assert lwlock.SubTransactions.LOOPS > 64 and [l5.role_of(i) for i in range(3)] == ["sub", "sub", "read"]
 
 
 def test_commit_in_do_probe_falls_back_and_is_remembered(monkeypatch):
@@ -789,12 +792,8 @@ def test_codes_pick_and_rebase_keep_durations_and_open_ends():
     assert k1.start_s == 5 and k1.stop_s == 0                    # 跟窗口一起结束的保持 0
     with pytest.raises(ValueError):
         C.by_codes(("Z9",))
-
-
-def test_run_takes_either_only_or_codes_not_both():
     import argparse
-    import faultlab
-    from lab.db import LabError
-    with pytest.raises(LabError):
+    import faultlab                                             # run 的 --only 与 --codes 二选一
+    with pytest.raises(db.LabError):
         faultlab._pick(argparse.Namespace(only="lock", codes="K5"))
     assert [s.code for s in faultlab._pick(argparse.Namespace(only="", codes="V6"))] == ["V6"]

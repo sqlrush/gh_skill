@@ -79,14 +79,18 @@ class Worker:
     lock_guard_s  这条会话最多等一把锁多久(会话级 lockwait_timeout,按场景时段算)。
     drain         场景按排期停时**不打断**正在跑的那条语句,让它跑完(慢 SQL 的最后一轮:
                   打断了就进不了执行历史);只有全局停(窗口结束)时才取消。
+    terminate     停的时候不取消语句、直接终止会话。**慢 SQL 用它:** 被取消的语句在 openGauss 里
+                  照样记进 dbe_perf.statement(2026-10-24 第二轮:S1 被取消后在执行历史里出现了
+                  「1 次、1182 秒、CPU 0」),一直跑不完的 S1/S2 就不再「历史里没有」;终止会话则不记。
     """
 
     def __init__(self, ctx: Ctx, app: str, fn: Callable[[Conn, threading.Event], None], *,
                  autocommit: bool = True, guards: bool = True, expect_errors: bool = False,
-                 lock_guard_s: Optional[int] = None, drain: bool = False):
+                 lock_guard_s: Optional[int] = None, drain: bool = False, terminate: bool = False):
         self.ctx = ctx
         self.app = app
         self.drain = drain
+        self.terminate = terminate
         self._fn = fn
         self._autocommit = autocommit
         self._guards = guards
@@ -226,8 +230,10 @@ def stop_workers(workers: List["Worker"], ctx: Ctx, *,
             return 0
     try:
         for w in stuck:
-            out["cancelled"] += act(w, "cancel")
-        _join_all(stuck, cancel_grace_s)
+            if not getattr(w, "terminate", False):
+                out["cancelled"] += act(w, "cancel")
+        if any(not getattr(w, "terminate", False) for w in stuck):
+            _join_all(stuck, cancel_grace_s)
         stuck = [w for w in stuck if w.alive]
         for w in stuck:
             out["terminated"] += act(w, "terminate")

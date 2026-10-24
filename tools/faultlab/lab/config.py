@@ -114,10 +114,12 @@ TABLES: Tuple[Table, ...] = (
     Table("xact_tick", 1_000, "L3:每条会话各改自己那一行的极短写事务(行分在不同页上)"),
     Table("subx_log", 0, "L5:每个子事务写一行,运行时写入、cleanup 清空"),
     Table("maint_hist", 200_000, "V6:VACUUM FULL 的对象(unlogged,带一条慢表达式索引,重建要两分钟)"),
+    Table("dl_child", 100, "D3/D5:死锁场景自己的外键子表(不和 K4 锁着的 acct_child 抢)"),
 )
 
 # 运行期对象(runtime_ddl 建,不在 schema.sql 里):这几张表与 fl_slow_key 函数。
-RUNTIME_TABLES = ("xact_tick", "subx_log", "maint_hist")
+RUNTIME_TABLES = ("xact_tick", "subx_log", "maint_hist", "dl_child")
+DL_CHILD_ROWS = next(t.rows for t in TABLES if t.name == "dl_child")
 
 BIG_CUSTOMER_ID = 1            # 占 30% 订单的那个大客户
 PARTITIONS = 1000              # part_log 的分区数

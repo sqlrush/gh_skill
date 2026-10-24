@@ -32,7 +32,7 @@ VACUUM_FULL_AFTER_RUN = ("bloat_hot", "bloat_slow", "xmin_hold")
 # **不删会出事:** K6 / K5 / D5 / D6 都往这些表里插数据。留着的话不但数据越跑越多,
 # 还会让下一次运行的插入撞上主键 —— 而那个报错会被当成「预期内的报错」吞掉,
 # 表现成「这个场景永远等不到锁」(2026-10-17 第四次跑时 K6 就是这么悄悄失效的)。
-DELETE_ABOVE = {"acct_child": 2_000, "order_items": 3_000_000}
+DELETE_ABOVE = {"acct_child": 2_000, "order_items": 3_000_000, "dl_child": C.DL_CHILD_ROWS}
 
 
 def kill_sessions(c: Conn) -> int:
@@ -132,6 +132,11 @@ def _undo_once(c: Conn, kind: str, name: str) -> str:
     return done
 
 
+def _table_exists(c: Conn, table: str) -> bool:
+    return bool(c.one("SELECT count(*) FROM pg_tables WHERE schemaname = %s AND tablename = %s",
+                      (C.SCHEMA, table)))
+
+
 def _safe(ident: str) -> str:
     """库对象名只允许字母、数字、下划线和点 —— 它要拼进 DDL。"""
     if not ident or not all(ch.isalnum() or ch in "_." for ch in ident):
@@ -201,15 +206,15 @@ def run() -> Dict[str, object]:
                 done.append("撤 %s %s 失败:%s" % (kind, name, str(exc).splitlines()[0][:120]))
         for t in TRUNCATE_AFTER_RUN:
             try:
-                # 运行期才建的表(subx_log)在没跑过新版本的库里还不存在 —— 没有就不用清
-                if not c.one("SELECT count(*) FROM pg_tables WHERE schemaname = %s AND tablename = %s",
-                             (C.SCHEMA, t)):
+                if not _table_exists(c, t):      # 运行期才建的表在没跑过新版本的库里还不存在
                     continue
                 c.exec("TRUNCATE %s.%s" % (C.SCHEMA, t))
             except Exception as exc:         # noqa: BLE001
                 done.append("清空 %s 失败:%s" % (t, str(exc).splitlines()[0][:100]))
         for table, max_id in DELETE_ABOVE.items():
             try:
+                if not _table_exists(c, table):
+                    continue
                 c.exec("DELETE FROM %s.%s WHERE id > %d" % (C.SCHEMA, table, max_id))
             except Exception as exc:         # noqa: BLE001
                 done.append("清 %s 的新增行失败:%s" % (table, str(exc).splitlines()[0][:100]))
@@ -229,6 +234,8 @@ def _shrink(c: Conn) -> str:
     """
     out = []
     for t in tuple(VACUUM_FULL_AFTER_RUN) + tuple(DELETE_ABOVE):
+        if not _table_exists(c, t):
+            continue
         try:
             before = c.one("SELECT pg_total_relation_size('%s.%s')" % (C.SCHEMA, t)) or 0
             c.exec("VACUUM FULL %s.%s" % (C.SCHEMA, t))

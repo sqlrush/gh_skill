@@ -300,7 +300,9 @@ class ReplicationSlotHold(Base):
         if lsn is None and xmin is None and cxmin is None:
             return "槽 %s 在(%s、active=%s),但 restart_lsn / xmin / catalog_xmin 全空 —— 不留 WAL、不钉水位,没造出来" % (
                 self.SLOT, kind, active)
-        return "槽 %s(%s、active=%s)钉着 WAL %s MB,xmin=%s、catalog_xmin=%s" % (
+        # 这个数是 restart_lsn 之后产生的 WAL 量 —— 槽在,这些就都不能回收;
+        # 不等于 pg_xlog 比平时多出来的量(og5 的 checkpoint_segments=256,平时就留着好几 GB)。
+        return "槽 %s(%s、active=%s)钉着 WAL:restart_lsn 之后已产生 %s MB,xmin=%s、catalog_xmin=%s" % (
             self.SLOT, kind, active, (int(held) // 1048576) if held is not None else "?", xmin, cxmin)
 
 

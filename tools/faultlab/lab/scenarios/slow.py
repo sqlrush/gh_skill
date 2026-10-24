@@ -131,8 +131,10 @@ class SlowQuery(Base):
         self.log("规模 cap=%s,work_mem=%s,%s" % (
             cap, spec.work_mem, "循环跑" if spec.loop else "跑一次(预期跑不完)"))
         # 会跑完的那几条按排期停时**不打断最后一轮**(drain):打断了它就进不了执行历史,
-        # 而 topsql / slowsql / wdr 要看的正是执行历史。窗口结束时照样取消。
-        self.worker("q", lambda c, stop: self._run(c, stop, spec, sql), drain=spec.finishes)
+        # 而 topsql / slowsql / wdr 要看的正是执行历史。窗口结束时一律**终止会话**而不是取消语句
+        # (terminate):被取消的语句也会记进执行历史,跑不完的 S1/S2 就不再「历史里没有」。
+        self.worker("q", lambda c, stop: self._run(c, stop, spec, sql), drain=spec.finishes,
+                    terminate=True)
 
     def _run(self, c: Conn, stop: threading.Event, spec: Spec, sql: str) -> None:
         c.set("work_mem", spec.work_mem)

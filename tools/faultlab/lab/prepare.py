@@ -59,7 +59,11 @@ def import_batch(c: Conn, rows: int = C.IMPORT_ROWS) -> None:
     """
     if not isinstance(rows, int) or rows <= 0 or rows > 5_000_000:
         raise LabError("导入行数不合法:%r" % (rows,))
-    c.exec("TRUNCATE %s.import_stage" % C.SCHEMA)
+    # **重建,不是 TRUNCATE:** TRUNCATE 清不掉 pg_statistic 里的列统计。2026-10-24 第二轮,
+    # 上午那次自动 ANALYZE 留下的列统计(cust_id 的高频值)一直在,导入的又是同分布的数据,
+    # S5 的估算因此是准的(估 11304、实际约 11026),根本没有「统计过期」。
+    for sql in import_stage_ddl():
+        c.exec(sql)
     # cust_id 故意倾斜:三分之一的行都挂在 BIG_CUSTOMER_ID 上。S5 要的「估少 60 倍」
     # 来自这个倾斜 —— 没有统计信息时优化器按默认选择率(约 0.5%)猜,实际有三分之一。
     c.exec("INSERT INTO %s.import_stage "
@@ -120,6 +124,12 @@ def runtime_ddl(ustore: bool) -> Dict[str, List[str]]:
         # L5:每个子事务写一行,cleanup 清空。
         "subx_log": ["DROP TABLE IF EXISTS %s.subx_log CASCADE" % s,
                      "CREATE TABLE %s.subx_log (id bigint, who varchar(16), at timestamp DEFAULT now())" % s],
+        # D3 / D5 自己的外键子表。原来它们用 acct_child,而 K4 每 3 分钟有 2 分钟用 LOCK TABLE 锁着 acct_child:
+        # 2026-10-24 第二轮 D5 三轮都卡在 K4 的表锁上(死锁 +0),D3 也只撞出 2 次。
+        "dl_child": ["DROP TABLE IF EXISTS %s.dl_child CASCADE" % s,
+                     "CREATE TABLE %s.dl_child (id int PRIMARY KEY, acct_id int NOT NULL REFERENCES %s.acct (id), "
+                     "amount numeric(18, 2) NOT NULL DEFAULT 1)" % (s, s),
+                     "INSERT INTO %s.dl_child SELECT g, g, 1 FROM generate_series(1, %d) g" % (s, C.DL_CHILD_ROWS)],
         # V6:unlogged —— VACUUM FULL 整表重写不产生 WAL(V4 的复制槽正钉着 WAL,不能再给它添几百 MB)。
         # 慢表达式索引让每次重建都要两分钟上下,VACUUM FULL 因此能持续堵住整个时段。
         "maint_hist": ["DROP TABLE IF EXISTS %s.maint_hist CASCADE" % s,
@@ -129,6 +139,15 @@ def runtime_ddl(ustore: bool) -> Dict[str, List[str]]:
                        "CREATE INDEX idx_maint_hist_slow ON %s.maint_hist ((%s))"
                        % (s, slow_key_expr("pad", C.V6_SLOW_ITERS))],
     }
+
+
+def import_stage_ddl() -> List[str]:
+    """import_stage 的建法(与 schema.sql 一致):一张从没被 ANALYZE 过的表,列统计也是空的。"""
+    return ["DROP TABLE IF EXISTS %s.import_stage CASCADE" % C.SCHEMA,
+            "CREATE TABLE %s.import_stage (id bigint, order_id bigint, cust_id bigint, "
+            "amount numeric(12, 2), batch_at timestamp) WITH (autovacuum_enabled = false, "
+            "autovacuum_analyze_threshold = %d, autovacuum_analyze_scale_factor = %d)"
+            % (C.SCHEMA, C.IMPORT_ANALYZE_THRESHOLD, C.IMPORT_ANALYZE_SCALE)]
 
 
 def import_stage_options_sql() -> str:
@@ -195,8 +214,15 @@ def ensure_runtime_objects(c: Conn, rebuild: bool = False) -> List[str]:
                        % (name, str(exc).splitlines()[0][:80]))
             continue
         if name != "fl_slow_key":
+            # 建完就收集统计:不然这几张表一直「从没 ANALYZE 过」,health 的 STALE_STATS 会把它们
+            # 当成故障报出来(2026-10-24 第二轮 maint_hist 就这样成了噪声)。import_stage 不在这里。
+            c.exec("ANALYZE %s.%s" % (C.SCHEMA, name))
             kind = "ustore" if ustore and name in ("hotpage", "xact_tick") else "普通表"
             out.append("已建 %s(%s,%.0f 秒)" % (name, kind, time.time() - t0))
+    for name in C.RUNTIME_TABLES:                 # 早先版本建好、却从没 ANALYZE 过的,补一次
+        if _has_table(c, name) and not c.one(
+                "SELECT count(*) FROM pg_stats WHERE schemaname = %s AND tablename = %s", (C.SCHEMA, name)):
+            c.exec("ANALYZE %s.%s" % (C.SCHEMA, name))
     c.exec(import_stage_options_sql())
     return out
 

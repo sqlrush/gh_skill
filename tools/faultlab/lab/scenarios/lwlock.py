@@ -239,13 +239,16 @@ class PartitionLockMgr(_Churn):
         return bool(c.one("SELECT count(*) FROM pg_settings WHERE name = 'enable_partition_opfusion'"))
 
     def step(self, c: Conn, idx: int) -> None:
+        # LIMIT 1:200 个分区的锁在执行器启动时就全拿了,扫到第一行就收手 —— 时间花在申请锁上,
+        # 不花在扫行上。原来 count(*) 要扫完 2 万行,og5 上分组验证时 CPU 占了 DB time 的 99%,
+        # LockMgrLock 虽然排第一,却只占 0.4%。
         lo = (idx * 200) % 800
         if getattr(self, "_batch", False):
-            c.exec("DO $$ DECLARE v bigint; BEGIN FOR i IN 1..%d LOOP "
-                   "  SELECT count(*) INTO v FROM %s.part_log WHERE bucket >= %d AND bucket < %d; COMMIT; "
+            c.exec("DO $$ BEGIN FOR i IN 1..%d LOOP "
+                   "  PERFORM 1 FROM %s.part_log WHERE bucket >= %d AND bucket < %d LIMIT 1; COMMIT; "
                    "END LOOP; END $$;" % (self.LOOPS, C.SCHEMA, lo, lo + 200))
         else:
-            c.query("SELECT count(*) FROM %s.part_log WHERE bucket >= %%s AND bucket < %%s"
+            c.query("SELECT 1 FROM %s.part_log WHERE bucket >= %%s AND bucket < %%s LIMIT 1"
                     % C.SCHEMA, (lo, lo + 200))
 
 
@@ -268,6 +271,12 @@ class SubTransactions(_Churn):
 
     def role_of(self, idx: int) -> str:
         return "read" if idx == SESSIONS - 1 else self.role
+
+    def setup(self, c: Conn, idx: int) -> None:
+        # 写的两条异步提交:og5 上分组验证时这一段排第一的是 WALFlushWait(每笔大事务都在等刷盘),
+        # 子事务号分配(XidGenLock)、SLRU 读写被它盖住了。
+        if idx != SESSIONS - 1:
+            self.async_commit(c)
 
     def step(self, c: Conn, idx: int) -> None:
         if idx == SESSIONS - 1:

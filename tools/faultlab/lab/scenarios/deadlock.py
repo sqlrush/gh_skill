@@ -104,6 +104,10 @@ class Deadlocks(Base):
         for t in threads:
             t.join(timeout=ROUND_TIMEOUT_S)
 
+    # D3 / D5 的子表。**不用 acct_child:** K4 每 3 分钟有 2 分钟用 LOCK TABLE 锁着它,
+    # 2026-10-24 第二轮 D5 三轮都卡在那把表锁上(死锁 +0),D3 也只撞出 2 次。
+    CHILD = "dl_child"
+
     def _upd(self, table: str, where_id: int) -> str:
         return "UPDATE %s.%s SET %s WHERE id = %d" % (
             C.SCHEMA, table, "bal = bal + 1" if table == "acct" else "amount = amount + 1", where_id)
@@ -120,9 +124,9 @@ class Deadlocks(Base):
                           [self._upd("acct", 22), self._upd("acct", 20)]])
 
     def _form_d3(self, stop: threading.Event) -> None:
-        """跨表顺序相反:A 先 acct 后 acct_child,B 反过来。"""
-        self._race(stop, [[self._upd("acct", 30), self._upd("acct_child", 30)],
-                          [self._upd("acct_child", 30), self._upd("acct", 30)]])
+        """跨表顺序相反:A 先 acct 后子表,B 反过来。"""
+        self._race(stop, [[self._upd("acct", 30), self._upd(self.CHILD, 30)],
+                          [self._upd(self.CHILD, 30), self._upd("acct", 30)]])
 
     def _form_d4(self, stop: threading.Event) -> None:
         """锁升级:两边都先对同一行加共享锁(FOR SHARE),再都想改它。
@@ -151,8 +155,8 @@ class Deadlocks(Base):
             return "SELECT bal FROM %s.acct WHERE id = %d FOR UPDATE" % (C.SCHEMA, parent)
 
         def ins(parent: int) -> str:
-            return ("INSERT INTO %s.acct_child(id, acct_id, amount) "
-                    "VALUES ((random() * 1000000)::int + 7000000, %d, 1)" % (C.SCHEMA, parent))
+            return ("INSERT INTO %s.%s(id, acct_id, amount) "
+                    "VALUES ((random() * 1000000)::int + 7000000, %d, 1)" % (C.SCHEMA, self.CHILD, parent))
         self._race(stop, [[lock_parent(50), ins(51)],
                           [lock_parent(51), ins(50)]])
 
