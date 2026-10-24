@@ -30,3 +30,5 @@ exchange 需要 AccessExclusiveLock。
 exchange 挪到 23:00–06:00 窗口(GS-CHG-003)。
 ## 复发标志
 LOCK_WAIT 且持锁语句为 alter table exchange。
+## 区分证据
+与「批量与联机互锁」区分:持锁根会话的语句是 alter table … exchange partition,不是 update;发生在白天而非 21:00 批量窗口。

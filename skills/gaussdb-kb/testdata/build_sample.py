@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""生成示例知识库 sample-kb/:24 份案例 + 12 条规范条款 + 三元组 + 别名表 + 黄金查询集。
+"""生成示例知识库 sample-kb/:27 份案例 + 12 条规范条款 + 六类类型化条目 + 三元组 + 别名表 + 黄金查询集。
 
 这是「导入前 / 导入后 / 删库回退」三态对照的语料,也是客户试用时的样板。全部虚构,
 但现象、code、对象名对准各诊断 skill 真会报出来的东西(INDEX_UNUSED / CACHE_LOW /
@@ -65,7 +65,7 @@ CASES = [
          scene="晚间批量启动后 10 分钟内联机交易大面积超时,pg_locks 里 200 多个会话等 cbst.acct_balance 的行锁。",
          judge="批量按账号倒序整批 update,联机按账号正序逐笔更新;两者交叉持锁,等待链根在批量的大事务。",
          act_text="批量作业改为按主键升序、每 5000 行一个事务(GS-DML-003 本行规范:所有对账户类表的更新必须按主键升序)。",
-         recur="LOCK_WAIT_LONG 集中在 21:00 批量窗口,持锁根会话 application_name 为 batch。"),
+         recur="LOCK_WAIT_LONG 集中在 21:00 批量窗口,持锁根会话 application_name 为 batch。", disc="与「exchange 分区锁等待」区分:根会话是批量作业的 update(application_name=batch),集中在 21:00 批量窗口,两边都在更新账户表。"),
     dict(sev="S2", date="2025-08-12", sys="CBMS", title="死锁频发", canary=True,
          primary="两个存储过程以相反顺序更新客户表与额度表", conclusion="已确认",
          objects=["cbms.customer", "cbms.credit_limit", "DEADLOCKS"],
@@ -131,14 +131,14 @@ CASES = [
          judge="业务通过 gs_loader 将数据批量导入一张临时表,后续通过 alter table exchange 操作同步到分区表。由于当前 exchange 操作不更新统计信息,分区表长期无有效统计。",
          act_text="临时规避方案:业务语句中执行完分区表 exchange 操作后,代码中增加 analyze 分区表逻辑(即 analyze msc.cbms_custpckg_cust_idx);"
                   "本行规范 GS-STAT-002 要求 exchange 后显式 ANALYZE,**不依赖** autoanalyze。",
-         recur="STALE_STATS 命中分区表且该表有 exchange 作业。"),
+         recur="STALE_STATS 命中分区表且该表有 exchange 作业。", disc="与「临时表统计信息缺失」区分:变慢前刚做过 exchange partition,pg_stat_user_tables 里该分区 last_analyze 很旧;不是过程内新建的临时表。"),
     dict(sev="S3", date="2025-05-05", sys="CBMS", title="临时表统计信息缺失",
          primary="存储过程内临时表无统计信息", conclusion="已确认",
          objects=["temp table", "STALE_STATS"], signals=["STALE_STATS", "临时表", "存过慢"], rules=["GS-PROC-002"],
          sym="存储过程执行时间突然变长", root="存储过程内临时表无统计信息",
          act="存储过程里灌完临时表后立即 ANALYZE 临时表",
          scene="日终存过从 5 分钟涨到 40 分钟。", judge="临时表灌 500 万行后直接关联,计划按 1000 行估。",
-         act_text="按本行存过模板(GS-PROC-002),临时表灌数后 ANALYZE 再关联。", recur="存过慢且计划里临时表估算行数为默认值。"),
+         act_text="按本行存过模板(GS-PROC-002),临时表灌数后 ANALYZE 再关联。", recur="存过慢且计划里临时表估算行数为默认值。", disc="与「分区表未做 analyze」区分:慢的语句访问的是过程内 create temp table 建的表,没有任何统计信息;近期没有分区变更。"),
     dict(sev="S3", date="2025-07-17", sys="CBST", title="大表autoanalyze未触发",
          primary="大表更新比例未达 autovacuum_analyze_scale_factor", conclusion="已确认",
          objects=["cbst.trans_journal", "autovacuum_analyze_scale_factor"],
@@ -187,7 +187,7 @@ CASES = [
          scene="健康检查 CACHE_LOW 命中率 96%,白天报表时段 blks_read 冲高。",
          judge="报表 SQL 对 trans_journal 全表扫描,把联机热点页挤出缓存;shared_buffers 已按 NUMA 绑核固定。",
          act_text="本行规范 GS-GUC-004:生产实例 shared_buffers 由 NUMA 绑核方案固定,**不因命中率调整**;处置是把报表 SQL 迁到只读实例。",
-         recur="CACHE_LOW 与报表时段重合。"),
+         recur="CACHE_LOW 与报表时段重合。", disc="与「冷启动」区分:实例已运行多日,命中率下降与报表时段吻合,Top SQL 有大表全表扫描。"),
     dict(sev="S3", date="2025-05-15", sys="CBMS", title="排序下盘",
          primary="报表会话 work_mem 不足", conclusion="已确认",
          objects=["work_mem", "PLAN_SORT"], signals=["PLAN_SORT", "排序下盘", "spill"], rules=["GS-GUC-004"],
@@ -222,7 +222,7 @@ CASES = [
          sym="锁等待超过 30 秒", root="exchange partition 与查询会话争锁",
          act="exchange 只在批量窗口执行",
          scene="白天做 exchange 挂了 30 个查询。", judge="exchange 需要 AccessExclusiveLock。",
-         act_text="exchange 挪到 23:00–06:00 窗口(GS-CHG-003)。", recur="LOCK_WAIT 且持锁语句为 alter table exchange。"),
+         act_text="exchange 挪到 23:00–06:00 窗口(GS-CHG-003)。", recur="LOCK_WAIT 且持锁语句为 alter table exchange。", disc="与「批量与联机互锁」区分:持锁根会话的语句是 alter table … exchange partition,不是 update;发生在白天而非 21:00 批量窗口。"),
     # ---- 存储过程 ----
     dict(sev="S2", date="2025-03-03", sys="CBST", title="存过循环单条提交慢",
          primary="循环内逐条 commit", conclusion="已确认",
@@ -256,7 +256,7 @@ CASES = [
          objects=["CACHE_LOW"], signals=["CACHE_LOW", "实例重启"], rules=[],
          sym="缓存命中率低于 98%", root="实例刚重启缓存未热",
          act="观察 30 分钟不处理",
-         scene="重启后命中率 90%。", judge="uptime 10 分钟。", act_text="观察。", recur="CACHE_LOW 且 uptime 短。"),
+         scene="重启后命中率 90%。", judge="uptime 10 分钟。", act_text="观察。", recur="CACHE_LOW 且 uptime 短。", disc="与「报表全表扫描冲刷缓存」区分:实例 uptime 只有十几分钟,命中率随时间自行回升;没有大表全表扫描。"),
     dict(sev="S3", date="2025-07-07", sys="CBST", title="索引未使用-季度报表",
          primary="季度报表索引", conclusion="已确认",
          objects=["cbst.trans_journal_qtr_idx", "INDEX_UNUSED"], signals=["INDEX_UNUSED", "季度报表"], rules=["GS-IDX-005"],
@@ -315,6 +315,65 @@ CANONICAL = {
 }
 
 # 黄金查询:q 模拟各 skill 的 finding 文本或用户提问;expect 里任一命中即通过;canary 未中 eval 退出 2。
+# 六类类型化条目(2026-10-24 八类知识):(相对路径, frontmatter, 小节)。全部虚构,与上面的规范、案例口径一致。
+TYPED = [
+    ("profiles/EP-CBST.md",
+     dict(id="EP-CBST", type="profile", title="CBST 核心账务系统画像", system="CBST", aliases=["cbst"],
+          product="GaussDB 集中式", version="505.2.0", deployment="一主两备", as_of="2026-09"),
+     {"摘要": "CBST 核心账务:GaussDB 集中式 505.2,一主两备;21:00 起批量、工作日上午联机高峰。",
+      "部署拓扑": "一主两备,同城双机房。", "连接池": "应用 druid,单实例上限 200,开 removeAbandoned。",
+      "批量窗口": "21:00–02:00 日终批量;月末加批。", "关键业务依赖": "联机记账、日终清算、对账。",
+      "高峰时段": "工作日 9:30–11:30。"}),
+    ("runbooks/RB-LCK-001.md",
+     dict(id="RB-LCK-001", type="runbook", title="阻塞链处置:定位根会话并交应用方处理", topics=["lock"],
+          source="sources/CBST-运维手册-v3.docx#4.2", verification="已验证",
+          applies={"product": "GaussDB 集中式", "versions": ">= 503"},
+          not_applies="根会话是主备同步、备份或变更窗口内的 DDL", approval=["GS-XACT-001"]),
+     {"摘要": "阻塞链只处理根会话:数据库侧定位根会话后交应用运维平台由应用方处理,不直接终止业务会话;"
+              "值班经理审批后才可在数据库侧终止根会话。",
+      "适用场景": "锁等待超过 30 秒、阻塞链 ≥3 层,根会话 idle in transaction。",
+      "执行前提": "按 GS-XACT-001,数据库侧终止业务会话必须有值班经理审批。",
+      "影响": "根会话所在交易回滚,应用按重试策略重提。",
+      "步骤": "1. lockwait 定位根会话与 application_name / client_addr;2. 通知应用运维平台;3. 应用方重启连接池或提交;"
+              "4. 超过 10 分钟未解除,值班经理审批后数据库侧终止根会话。",
+      "验证方法": "再跑 lockwait,阻塞链消失、活跃会话回落。", "回退步骤": "无需回退;交易由应用重试。"}),
+    ("defects/KD-0001.md",
+     dict(id="KD-0001", type="defect", title="505.1–505.2 存储过程大量 EXCEPTION 块导致 LockMgrLock 争用", topics=["wait", "proc"],
+          source="厂商通告 2026-03 第 7 号", affected_versions="505.1–505.2", fixed_in="505.2.1", vendor_status="已确认"),
+     {"摘要": "505.1–505.2 存储过程里大量 EXCEPTION 块(子事务)时 LockMgrLock 争用明显,505.2.1 修复。",
+      "现象": "LockMgrLock 等待占比高,集中在调用某几个存储过程的时段。",
+      "复现条件": "循环内每次迭代都进入带 EXCEPTION 的 BEGIN 块。",
+      "规避办法": "把 EXCEPTION 块移出循环;升级到 505.2.1。"}),
+    ("baselines/BL-CBST-ACTIVE_SESSIONS.md",
+     dict(id="BL-CBST-ACTIVE_SESSIONS", type="baseline", title="CBST 活跃会话数", topics=["conn"], system="CBST",
+          metric="active_sessions", unit="个", metric_source="gaussdb-health 连接维度(ACTIVE_HIGH)", window="5 分钟",
+          value_kind="瞬时值"),
+     {"摘要": "CBST 活跃会话数平时 30–60,21:00 起批量窗口 150–200 属正常,超过 250 才算异常。",
+      "正常表现": "日间 30–60;批量窗口 150–200;月末批量最高 230。"}),
+    ("product/PD-0001.md",
+     dict(id="PD-0001", type="product", title="openGauss 的 lockwait_timeout 默认值", topics=["lock"],
+          source="openGauss 5.0 文档 · GUC 参数说明", product="openGauss", versions="5.*"),
+     {"摘要": "openGauss 5.x 的 lockwait_timeout 默认 20 分钟,锁等待超时后报错。"}),
+    ("product/PD-0002.md",
+     dict(id="PD-0002", type="product", title="GaussDB 等待事件视图与 LockMgrLock 含义", topics=["wait"],
+          source="GaussDB 505 产品文档 · 等待事件", product="GaussDB 集中式", versions="505.*"),
+     {"摘要": "GaussDB 505 的 LockMgrLock 是锁管理器分区轻量锁,争用多由大量加锁 / 子事务引起;看等待事件占比定位。"}),
+    ("wiki/WK-0001.md",
+     dict(id="WK-0001", type="wiki", title="连接数缓慢上涨不回落的排查经验", topics=["conn"],
+          source="DBA 组 Wiki · 连接池", verification="未验证", as_of="2024-06"),
+     {"摘要": "连接数缓慢上涨、业务量不变也不回落,多半是应用连接池泄漏:按 client_addr 分组看 backend_start 分布。"}),
+]
+
+
+def write_typed(out: pathlib.Path) -> None:
+    for rel, front, sections in TYPED:
+        path = out / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        body = "".join(f"## {k}\n{v}\n" for k, v in sections.items())
+        path.write_text("---\n" + yaml.safe_dump(front, allow_unicode=True, sort_keys=False).strip() + "\n---\n" + body,
+                        encoding="utf-8")
+
+
 EVAL = [
     dict(q="INDEX_UNUSED schema gsbench.fact_sales_product_idx 在当前统计窗口内未被使用 idx_scan=0 窗口 14.8 天", expect=["case:S3-20250210-CBST-未使用索引清理", "rule:GS-IDX-005"], canary=True),
     dict(q="CACHE_LOW 缓存命中率 = 97.54% pg_stat_database blks_hit/read", expect=["case:S2-20250405-CBST-缓存命中率低", "rule:GS-GUC-004"], canary=True),
@@ -326,6 +385,13 @@ EVAL = [
     dict(q="LOCK_ROOT_IDLE_XACT 根阻塞会话 idle in transaction 40 分钟", expect=["case:S2-20250120-CBST-空闲事务持锁阻塞", "rule:GS-XACT-001"]),
     dict(q="CONN_HIGH 连接数 1650/2000 超过 80%", expect=["case:S2-20250725-CBST-连接数逼近上限", "rule:GS-GUC-004", "rule:GS-CONN-001"]),
     dict(q="SLOWSQL_TOP 慢 SQL 存储过程 proc_daily_settle 逐条 commit", expect=["case:S2-20250303-CBST-存过循环单条提交慢"]),
+    dict(q="空闲事务持锁阻塞了很多会话怎么办", expect=["case:S2-20250120-CBST-空闲事务持锁阻塞"]),
+    dict(q="有没有分区裁剪失效的案例", expect=["case:S2-20250115-CBMS-分区裁剪失效"]),
+    dict(q="存过循环里单条提交很慢", expect=["case:S2-20250303-CBST-存过循环单条提交慢"]),
+    # 八类知识(2026-10-24):手册 / 基线 / 缺陷也要能被问到
+    dict(q="阻塞链根会话要不要直接终止 需要谁审批", expect=["runbook:RB-LCK-001"]),
+    dict(q="CBST 活跃会话数平时多少算正常", expect=["baseline:BL-CBST-ACTIVE_SESSIONS"]),
+    dict(q="存储过程 EXCEPTION 块 LockMgrLock 争用 是不是已知缺陷", expect=["defect:KD-0001"]),
     dict(q="WAL 归档失败 archive_command 报错怎么办", expect=[]),
     dict(q="备机复制延迟 REPL_LAG 30 秒", expect=[]),
 ]
@@ -346,6 +412,8 @@ def write_case(out: pathlib.Path, c: dict) -> str:
     }
     body = "---\n" + yaml.safe_dump(front, allow_unicode=True, sort_keys=False).strip() + "\n---\n"
     body += f"## 现场\n{c['scene']}\n## 判断\n{c['judge']}\n## 处置\n{c['act_text']}\n## 复发标志\n{c['recur']}\n"
+    if c.get("disc"):                     # 看起来相同、根因不同:区分证据(2026-10-24)
+        body += f"## 区分证据\n{c['disc']}\n"
     (out / "cases" / f"{cid}.md").write_text(body, encoding="utf-8")
     return cid
 
@@ -378,11 +446,12 @@ def build(out: pathlib.Path) -> None:
     (out / "graph" / "canonical.yaml").write_text(yaml.safe_dump(CANONICAL, allow_unicode=True, sort_keys=True), encoding="utf-8")
     for fname, (comment, entries) in RULES.items():
         (out / "rules" / fname).write_text(f"# {comment}\n" + yaml.safe_dump(entries, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    write_typed(out)
     (out / "eval" / "queries.yaml").write_text(yaml.safe_dump(EVAL, allow_unicode=True, sort_keys=False), encoding="utf-8")
     (out / "VERSION").write_text("2026.09\n", encoding="utf-8")
     (out / "README.md").write_text(
-        "# 示例知识库(全部虚构)\n\n由 build_sample.py 生成:24 案例(含 5 个金丝雀、3 个干扰)、12 条规范条款、"
-        "三元组与别名表、黄金查询集。\n\n用法:复制本目录为 `<kb>/`,按需写 `kb.yaml`(embeddings、可选的 Neo4j),"
+        "# 示例知识库(全部虚构)\n\n由 build_sample.py 生成:27 案例(含 5 个金丝雀、3 组现象相同根因不同的反例,带区分证据)、"
+        "12 条规范条款、六类类型化条目各一两条(画像 / 手册 / 缺陷 / 基线 / 产品文档 / Wiki)、三元组与别名表、黄金查询集。\n\n用法:复制本目录为 `<kb>/`,按需写 `kb.yaml`(embeddings、可选的 Neo4j),"
         "然后 `kb.py setup && kb.py index && kb.py eval`。\n", encoding="utf-8")
     canaries = [case_id(c) for c in CASES if c.get("canary")]
     print(f"已生成 {out}:案例 {len(CASES)}(金丝雀 {len(canaries)}) · 三元组 {len(triples)} · "

@@ -31,3 +31,5 @@ rules:
 临时规避方案:业务语句中执行完分区表 exchange 操作后,代码中增加 analyze 分区表逻辑(即 analyze msc.cbms_custpckg_cust_idx);本行规范 GS-STAT-002 要求 exchange 后显式 ANALYZE,**不依赖** autoanalyze。
 ## 复发标志
 STALE_STATS 命中分区表且该表有 exchange 作业。
+## 区分证据
+与「临时表统计信息缺失」区分:变慢前刚做过 exchange partition,pg_stat_user_tables 里该分区 last_analyze 很旧;不是过程内新建的临时表。
