@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from . import config as C
 from .db import Conn
@@ -25,11 +25,12 @@ JOIN_TIMEOUT_S = 8.0
 
 
 class Ctx:
-    """跑一次的共享上下文:全局停止信号、时间线日志、错误与计数。"""
+    """跑一次的共享上下文:全局停止信号、时间线日志、错误与计数、这次的窗口长度。"""
 
-    def __init__(self, log: Callable[[str], None]):
+    def __init__(self, log: Callable[[str], None], window_s: int = C.WINDOW_S):
         self.stop = threading.Event()
         self.log = log
+        self.window_s = window_s
         self._lock = threading.Lock()
         self.errors: List[Dict[str, str]] = []
         self.counters: Dict[str, int] = {}
@@ -48,19 +49,25 @@ class Ctx:
             return dict(self.counters)
 
 
-def _closed_on_purpose(exc: BaseException, ctx: Ctx) -> bool:
-    """收工阶段「连接被断开」是我们自己干的,不算故障。
+# 停场景时我们自己取消 / 终止会话,会话那边收到的就是这几种报错;
+# 最后一种是按场景时段设的等锁上限到了(lock_guard_s)—— 也是我们自己设的兜底。
+_STOPPED_TEXTS = ("server closed the connection", "terminating connection",
+                  "connection already closed", "no connection to the server",
+                  "canceling statement due to user request", "lock wait timeout")
 
-    cleanup 会 pg_terminate_session 掉所有造故障的会话 —— 正挂在长查询里的那几条
-    必然收到 `server closed the connection unexpectedly`。第一版把它们记成了出错会话,
+
+def stopped_on_purpose(error_text: str, stopping: bool) -> bool:
+    """收工阶段「语句被取消 / 连接被断开」是我们自己干的,不算故障。
+
+    cleanup 会 pg_terminate_session 掉所有造故障的会话、停场景时会 pg_cancel_session 掉
+    还挂着的语句 —— 那几条会话必然收到上面这些报错。第一版把它们记成了出错会话,
     于是每次运行都带着两三条假错误收场(2026-10-17 全量跑时 S3/S5 就是这样)。
-    只在**停止位已经置上**之后才这么宽容,别把运行中途真的断连也掩盖掉。
+    只在**停止位已经置上**(本场景停或全局停)之后才这么宽容,别把运行中途真的断连也掩盖掉。
     """
-    if not ctx.stop.is_set():
+    if not stopping:
         return False
-    text = str(exc).lower()
-    return ("server closed the connection" in text or "terminating connection" in text
-            or "connection already closed" in text or "no connection to the server" in text)
+    text = (error_text or "").lower()
+    return any(t in text for t in _STOPPED_TEXTS)
 
 
 class Worker:
@@ -68,15 +75,22 @@ class Worker:
 
     连接在线程里建、在线程里关 —— psycopg2 的连接不是线程安全的,不能在主线程建好
     再交给别人用。
+
+    lock_guard_s  这条会话最多等一把锁多久(会话级 lockwait_timeout,按场景时段算)。
+    drain         场景按排期停时**不打断**正在跑的那条语句,让它跑完(慢 SQL 的最后一轮:
+                  打断了就进不了执行历史);只有全局停(窗口结束)时才取消。
     """
 
     def __init__(self, ctx: Ctx, app: str, fn: Callable[[Conn, threading.Event], None], *,
-                 autocommit: bool = True, guards: bool = True, expect_errors: bool = False):
+                 autocommit: bool = True, guards: bool = True, expect_errors: bool = False,
+                 lock_guard_s: Optional[int] = None, drain: bool = False):
         self.ctx = ctx
         self.app = app
+        self.drain = drain
         self._fn = fn
         self._autocommit = autocommit
         self._guards = guards
+        self._lock_guard_s = lock_guard_s
         self._expect_errors = expect_errors
         self._own_stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -92,11 +106,13 @@ class Worker:
     def _run(self) -> None:
         conn = None
         try:
-            conn = Conn(self.app, autocommit=self._autocommit, guards=self._guards)
+            conn = Conn(self.app, autocommit=self._autocommit, guards=self._guards,
+                        lockwait_s=self._lock_guard_s)
             self.started.set()
             self._fn(conn, self._stop_view())
         except BaseException as exc:            # noqa: BLE001 —— 线程里不接就只会打到 stderr
-            if self._expect_errors or _closed_on_purpose(exc, self.ctx):
+            stopping = self._own_stop.is_set() or self.ctx.stop.is_set()
+            if self._expect_errors or stopped_on_purpose(str(exc), stopping):
                 self.ctx.bump("expected_errors")
             else:
                 self.ctx.error(self.app, exc)
@@ -136,12 +152,89 @@ class Worker:
 
     def stop(self, join_s: float = JOIN_TIMEOUT_S) -> None:
         self.signal()
+        self.join(join_s)
+
+    def join(self, timeout_s: float) -> None:
         if self._thread is not None:
-            self._thread.join(timeout=join_s)
+            self._thread.join(timeout=max(0.0, timeout_s))
 
     @property
     def alive(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
+
+
+# ---------------------------------------------------------------- 停一组会话
+
+def _db_killer() -> Tuple[Callable[[str, str], int], Callable[[], None]]:
+    """真库上的「停这条会话」:懒建一条观测级连接(fl:stop),用完关掉。"""
+    from .db import OBSERVER_GUARDS, stop_sessions
+    holder: List[Conn] = []
+
+    def kill(app: str, action: str) -> int:
+        if not holder:
+            holder.append(Conn("stop", guards=OBSERVER_GUARDS))
+        return stop_sessions(holder[0], app, action)
+
+    def close() -> None:
+        for c in holder:
+            c.close()
+    return kill, close
+
+
+def _join_all(workers: List["Worker"], timeout_s: float) -> None:
+    """一起等,总共最多 timeout_s 秒(不是每条各等一遍)。"""
+    deadline = time.time() + timeout_s
+    for w in workers:
+        w.join(deadline - time.time())
+
+
+def stop_workers(workers: List["Worker"], ctx: Ctx, *,
+                 killer: Optional[Callable[[str, str], int]] = None,
+                 grace_s: float = C.STOP_GRACE_S, cancel_grace_s: float = C.CANCEL_GRACE_S,
+                 join_s: float = JOIN_TIMEOUT_S) -> Dict[str, int]:
+    """停一组会话,**确保挂在锁等待里的语句也停得下来**。
+
+    只置停止位是不够的:正在等锁的会话要等那条 SQL 返回才回到 Python 里看停止位。
+    2026-10-24 全量跑时 K3 按排期停下,它的 ALTER TABLE 却一直排在 fl.payments 的锁队列里,
+    把后面的 S5、status、explain、health 全堵住了。所以分三步:
+      ① 全部置停止位,一起等 grace_s —— 自己会收的(空闲持锁者、循环里的会话)在这一步就收了;
+      ② 还活着的,按 application_name 取消当前语句(pg_cancel_session),再等 cancel_grace_s;
+      ③ 还活着的,终止会话(pg_terminate_session)。
+    drain 会话(慢 SQL 的最后一轮)在场景按排期停时只置位、不打断、不等;全局停时照样取消。
+
+    killer(app, action) 返回动了几条会话;单测里换成替身,不连库。
+    返回 {"cancelled": n, "terminated": n, "left_running": n}。
+    """
+    for w in workers:
+        w.signal()
+    targets = [w for w in workers if ctx.stop.is_set() or not w.drain]
+    out = {"cancelled": 0, "terminated": 0, "left_running": len(workers) - len(targets)}
+    _join_all(targets, grace_s)
+    stuck = [w for w in targets if w.alive]
+    if not stuck:
+        return out
+    close: Callable[[], None] = lambda: None
+    if killer is None:
+        killer, close = _db_killer()
+
+    def act(w: "Worker", action: str) -> int:
+        # 停不掉一条会话不能让整个编排器跟着出错:记下来,后面还有会话级等锁上限与 cleanup 兜着
+        try:
+            return killer(w.app, action)
+        except Exception as exc:                 # noqa: BLE001
+            ctx.log("停 %s 时 %s 失败:%s" % (w.app, action, str(exc).splitlines()[0][:100]))
+            return 0
+    try:
+        for w in stuck:
+            out["cancelled"] += act(w, "cancel")
+        _join_all(stuck, cancel_grace_s)
+        stuck = [w for w in stuck if w.alive]
+        for w in stuck:
+            out["terminated"] += act(w, "terminate")
+        _join_all(stuck, join_s)
+    finally:
+        close()
+    return out
 
 
 # ---------------------------------------------------------------- 常用循环

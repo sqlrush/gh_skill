@@ -42,8 +42,8 @@ scenarios:
     actual: "故障已造出：fl:S1/q 整个窗口一直 active，到 10:05 已连续执行 1123 秒，一次没跑完。health 未报：Slow SQL 维度只读 dbe_perf.statement（只有已完成的执行），Top1 是 S3；没有「长时间执行中的 SQL」这类判定，ACTIVE_SQL_HOT 全程没触发，Overview 的「最老事务」还写着「无」（health.long_xact 带 COALESCE(connection_info,'')<>'' 过滤，psycopg2 客户端会话全被滤掉）。slowsql 报对了：执行历史里没有 S1。explain --pid 报对了：计划里有 SubPlan 1/2 + Seq Scan on payments（Filter: order_id = orders.id），不过这是 EXPLAIN 估算计划（og 没有 gs_get_explain）。sqltune（--sql-stdin，api 路径）只给通用 seq_scan/sort 警告，写着「本次没有待评估的索引建议」，没指出相关子查询 + payments.order_id 无索引，也没建议建 payments(order_id) 索引；白名单路径下 hypopg 不可用。"
 
   - code: S2
-    title: 三层派生表 + LIKE 前缀关联 + 1MB work_mem
-    signals: 同上一直 active;临时文件随哈希聚合落盘增长
+    title: 三层派生表 + LIKE 前缀关联 + 4MB work_mem(按完整编码归集,跑不完)
+    signals: 同上一直 active(2026-10-24 那轮取编码前 8 位,1~2 分钟就跑完一次,已改成跑不完);前半段哈希聚合落盘,之后一直在读临时文件
     expect:
       - waitevent: 该窗口 DB time 里 IO 占比上升(DBTIME_IO_HEAVY)
       - memanalyze: 落盘类发现(MEM_SQL_SPILL / MEM_OP_SPILL)
@@ -68,8 +68,8 @@ scenarios:
     actual: "故障已造出：跑完 1 次，315 秒（目标 3 分钟）。slowsql 报对了，排第 4（sql_id 2643287733）。sqltune 按 sql_id 能出计划：Seq Scan on customers，Filter: ((code)::bigint = orders.cust_id)，Indexes 一节也列出了 idx_customers_code。但确定性发现只有通用 seq_scan/nestloop 警告，写着「本次没有待评估的索引建议」，没点明是类型转换套在索引列上让 idx_customers_code 失效，未报。另外 schema 按执行账号被推测成了 fl_app（实际是 fl；SQL 里写的是全名，计划不受影响）。explain --sql-id 拒绝执行（rc=2）：取到的是带 3 个占位符的归一化文本，statement_history 里没有这条。"
 
   - code: S5
-    title: 统计信息过期 + 数据倾斜 → 估 3 行实际 16 万行
-    signals: "EXPLAIN 里 import_stage 估 rows=3;实际 cust_id=1 有 166668 行"
+    title: 统计信息过期 + 数据倾斜 → 估几行、实际上万行
+    signals: "EXPLAIN 里 import_stage 那一行的估计值远小于实际(实际是 cust_id=1 且 id<=cap 的约 cap/3 行,cap 由 calibrate 定);前提是 V7 的自证没写「已被自动 ANALYZE」—— 2026-10-24 那轮就是被自动 ANALYZE 抢先,估算准了,S5 不成立"
     expect:
       - sqltune: 应指出统计信息过期(建议 ANALYZE),而不是只建议加索引
       - health: STALE_STATS 应包含 fl.import_stage
@@ -139,16 +139,16 @@ scenarios:
     actual: "故障已造出：1 个会话持有咨询锁 880001，3 个会话排队。lockwait 报对了：锁对象是 advisory，ExclusiveLock ← ExclusiveLock，已等 83 秒，根是 fl:K8/holder，3 个排队会话都归到它名下（库里实际是 wait0→wait1→wait2→holder 一条队列）。小瑕疵：会话级咨询锁没有事务，kill 语句旁的「事务已持续 ? 秒」显示成了「?」。"
 
   - code: K2
-    title: 批处理 FOR UPDATE,抖动型等锁
-    signals: 等锁数在 0~2 之间跳;单次等待不超过几秒
+    title: 批处理 FOR UPDATE,抖动型等锁(只用 acct 1001~2000 号行)
+    signals: 等锁数在 0~2 之间跳;单次等待不超过几秒(2026-10-24 那轮从 1 号行扫起,被 K1 挡成了持续阻塞,已改用别的场景不碰的行)
     expect:
       - lockwait: 瞬时查询可能什么都看不到(正常);WDR 窗口里应有锁等待事件累计
       - waitevent: WAIT_LOCK_HEAVY 或 LOCK_EVENT 占比
     actual: "故障变形了：K2 批处理（SELECT … WHERE id BETWEEN 1 AND 401 FOR UPDATE）一上来就卡在 id=1，被 K1 的根会话挡住，到窗口结束都没解开（单次 1081 秒，收工时作为死锁牺牲者被回滚），两个在线更新会话也挂在 K1 链上。结果是持续阻塞，不是设计的抖动型。lockwait 瞬时查询把它们算进了 K1 的链（根 5369），归属是对的。waitevent 第 1、2 窗口都有 LOCK_EVENT（tuple/transactionid），第 2 窗口报了 WAIT_LOCK_HEAVY（32%），但主要是 K4 的 relation 锁撑起来的。lockwait --from/--to 时段回看报「回看不了：这段时间一个采样都没有」，这是误报：gs_asp 表确实是空的，但 dbe_perf.local_active_session 里有 5.3 万条覆盖整个窗口的内存样本；脚本只读 gs_asp，还把原因说成「实例没运行或采样没开」（实际 enable_asp=on）。"
 
   - code: K5
-    title: 非并发建索引挡住写入
-    signals: 建索引期间写入会话 waiting,锁对象 fl.order_items
+    title: 非并发建索引挡住写入(慢表达式索引,整个时段都在建)
+    signals: 整个时段 fl:K5/ddl 都在跑 CREATE INDEX(时段结束时被取消,不留索引);写入会话 waiting,锁对象 fl.order_items(2026-10-24 那轮普通索引 7 秒就建完,挡住写入的反而是之后的 DROP INDEX,已改)
     expect:
       - lockwait: 应报出 DDL(建索引)是阻塞者
     actual: "故障只造出来一半：CREATE INDEX 只用了约 7 秒（09:53:33→09:53:40）。之后 DROP INDEX 要在 fl.order_items 上拿 AccessExclusiveLock，被 S2/S3 的长查询挡住，两个写入会话又排在 DROP 后面，probe 记到「写入侧等锁 3 个」；也就是说，挡住写入的其实是 DROP + 长查询，不是建索引本身。lockwait 两次都没赶上建索引：09:53:50 那次 K5 没有任何等待；09:55:31 那次 K5/ddl 正在等 S2（AccessExclusiveLock ← AccessShareLock，根 5380=S2），写入会话那一刻没在等。所以「应报出 DDL（建索引）是阻塞者」未报。时段回看因为 ASP 的问题（见 K2）也查不了。"
@@ -187,8 +187,8 @@ scenarios:
     actual: "故障已造出：fl.bloat_hot 的 autovacuum_enabled=false，死元组比例从 25% 涨到 92.8%（646 MB），last_autovacuum 为空。vacuum 报对了：R1、R2、R3、R4 全中；health 也并入了 VACUUM_DISABLED、VACUUM_DEAD_RATIO（🔴）和 VACUUM_OVERDUE，都点到了 fl.bloat_hot；R4 的阻塞源只列了两笔两阶段事务（K10/V3），并提示「先处理该事务，现在跑 VACUUM 不会有效果」。health 的 STALE_STATS 也点到了 fl.bloat_hot。"
 
   - code: V5
-    title: autovacuum 被表级限速,追不上
-    signals: fl.bloat_slow 死元组持续涨,但 last_autovacuum 一直在更新
+    title: autovacuum 被表级限速(cost_delay=20ms / cost_limit=60),追不上
+    signals: fl.bloat_slow 死元组持续涨,但 last_autovacuum 一直在更新(V5 自证写「跑了 N 轮还追不上」;2026-10-24 那轮限速到 100ms/10,一轮都没跑完,已放宽到一轮几十秒)
     expect:
       - vacuum: VACUUM_DEAD_RATIO(R3);**不应**报 VACUUM_DISABLED —— 它是开着的
       - 建议内容: 应指向 cost_delay / cost_limit,而不是「打开 autovacuum」
@@ -211,8 +211,8 @@ scenarios:
     actual: "故障已造出：pg_prepared_xacts 里有 fl_xmin_v3，pg_stat_activity 里找不到持有者。vacuum 报对了：R4 / VACUUM_XMIN_BLOCKED 的来源写的是「两阶段（prepared）事务（标识 fl_xmin_v3）：已持续 774 秒」，带了 gid 和 owner，并提示「先处理该事务，现在跑 VACUUM 不会有效果」。health 的 PREPARED_XACT 也报了（2 条）。但所有报告里都没出现 ROLLBACK PREPARED / COMMIT PREPARED，建议只停在「先处理该事务」，没给到具体做法。"
 
   - code: V4
-    title: 复制槽无人消费
-    signals: pg_replication_slots 有 fl_slot_v4、active=false;WAL 持续增长
+    title: 逻辑复制槽无人消费(建不成时退回物理槽 + 推进)
+    signals: pg_replication_slots 有 fl_slot_v4、active=false、restart_lsn 与 catalog_xmin 非空;WAL 持续增长(V4 自证写「钉着 WAL N MB」;写「没造出来」时这一项不算 skill 漏报)
     expect:
       - vacuum: VACUUM_XMIN_BLOCKED(R4),来源应指向**复制槽**
       - 已知限制: 这个内核上 pg_replication_slots 没有时间戳列,xmin_age_s 恒为空
@@ -220,16 +220,17 @@ scenarios:
     actual: "故障没真正造出来：fl_slot_v4 是物理槽，active=false，但 xmin、catalog_xmin、restart_lsn 全是 NULL，既不钉回收水位，也不保留 WAL（V4 probe 也显示 restart_lsn=None）。vacuum 没把它列为 R4 来源：registry 里 vacuum.oldest_xmin 只取 xmin/catalog_xmin 非空的槽，就这个槽的状态而言这样判是对的。health 也没报 WAL_SLOT_INACTIVE / WAL_SLOT_LAG。场景要改成建槽时就预留 WAL（例如物理槽带 immediately_reserve，或改用逻辑槽），否则复制槽这一路测不到，「xmin_age_s 为空也不该漏报」这一条也无从检验。"
 
   - code: V6
-    title: VACUUM FULL 堵住整张表
-    signals: 维护会话 active,业务侧 waiting,锁对象 fl.bloat_hot
+    title: VACUUM FULL 堵住整张表(对象 fl.maint_hist,整个时段反复做)
+    signals: 维护会话 active(VACUUM FULL fl.maint_hist,一次约两分钟),业务侧读写 waiting,锁对象 fl.maint_hist
     expect:
       - lockwait: 应报出 VACUUM FULL 是阻塞者
-      - vacuum: 做完之后 bloat_hot 的死元组应回落(前后对比)
+      - 不再检验: 原来的「做完之后 bloat_hot 的死元组应回落」—— 回收水位被 V2/V3/K10 卡着,
+          VACUUM FULL 也收不回那些死元组(2026-10-24 实测做完反而更大),这一条在全量跑里永远不成立
     actual: "故障只造出来很短一下：VACUUM FULL bloat_hot 只跑了约 10 秒（10:01:15→10:01:25），之后不再重复。lockwait 没赶上这 10 秒，ASP 时段回看又「回看不了」（见 K2），所以「VACUUM FULL 是阻塞者」未报。vacuum 前后对比：VACUUM FULL 做完后 bloat_hot 的死元组没有回落，09:59 是 290 万（504 MB），10:01:50 是 321 万（540 MB），原因是 K10/V3 两笔两阶段事务卡着回收水位，VACUUM FULL 也清不掉这些死元组。vacuum 报告一直把 bloat_hot 标成 R4，并写明「现在跑 VACUUM 不会有效果」，与这个结果一致。所以「做完后死元组应回落」这一轮不成立，但工具的解释是对的。"
 
   - code: V7
     title: 导入 50 万行不收集统计信息
-    signals: "pg_class.reltuples 为 0 / 极小,实际 50 万行"
+    signals: "pg_class.reltuples 为 0 / 极小,实际 50 万行;V7 自证整个窗口都不出现「已被自动 ANALYZE」(2026-10-24 那轮导入 80 秒后就被自动分析了:光关 autovacuum 挡不住,已加表级 analyze 触发线)"
     expect:
       - health: STALE_STATS 应包含 fl.import_stage
       - vacuum: 可能报 VACUUM_OVERDUE(R1)
@@ -247,30 +248,32 @@ scenarios:
     actual: "故障已造出：probe 每 20 次采样里有 23~29 次在等 WALFlushWait。waitevent 第 1 窗口（3149→3150）报对了：WAIT_LWLOCK_HEAVY，LWLOCK 占 DB_TIME 31.9%，排名第一是 WALFlushWait（315 秒）。wdr collect 3149→3150 只报了 WDR_WAIT_CLASS_SKEW（LWLOCK_EVENT 50%），它的等待事件段只有等待类的聚合，没有事件名，看不出是 WAL 相关。所以「WAL 相关应靠前」在 WDR 里看不出来，要靠 waitevent。"
 
   - code: L2
-    title: 热点页(页内容锁)
-    signals: 等待事件里出现 BufferContentLock
+    title: 热点页(页内容锁;ustore 原地更新 + 会话级异步提交)
+    signals: 等待事件里出现 BufferContentLock(2026-10-24 那轮全是 WALFlushWait:同步提交在等刷盘,而且普通表在回收水位被卡时页会胀开 —— 已改;实例没有 ustore 时退回普通表,运行开头会写明)
     expect:
       - waitevent: WAIT_LWLOCK_HEAVY;第 2 个窗口(240~480 秒)
+      - 可能不明显: og5 只有 4 核、3 条会话 —— 以 L2 自证里「轻量锁 N 次」为准,如实记录
     actual: "故障没造出来：L2 段的 probe 只看到 WALFlushWait（10~28 次），一次 BufferContentLock 都没有。waitevent 第 2 窗口（3150→3151）报了 WAIT_LWLOCK_HEAVY（11.5%），但排名第一是 WALFlushWait（190 秒，L2 每条更新都即刻提交），BufferContentLock 只有 0.17 秒。判定码报了，但内容与场景设计不符：热点页没争起来，争起来的是 WAL 刷盘，如实记录。"
 
   - code: L3
-    title: 极短事务高频提交(事务号 / 快照相关)
-    signals: 等待事件里出现 XidGenLock / ProcArrayLock / CSN 相关
+    title: 极短写事务高频提交(事务号 / 快照相关;异步提交,能在匿名块里循环 COMMIT 就在服务端循环)
+    signals: 等待事件里出现 XidGenLock / ProcArrayLock / CSN 相关(2026-10-24 那轮是只读小事务,不分配事务号,时间全耗在客户端往返上 —— 已改成写事务;自证不再把 wait cmd 算成在等)
     expect:
       - waitevent: 第 3 个窗口(480~720 秒)
+      - 可能不明显: 同 L2
     actual: "故障没造出来：L3 段的 probe 只看到 wait cmd / none，没有 XidGenLock / ProcArrayLock / CSN；probe 还把 wait cmd（客户端空闲）算成了「在等」，这是 probe 的小 bug。waitevent 第 3 窗口（3151→3152）没报 WAIT_LWLOCK_HEAVY，LWLOCK 前两名是 DoubleWriteLock（4.3 秒）、WALFlushWait（0.7 秒），前 7 名里没有事务号/快照相关的锁；这个窗口只报了 WAIT_LOCK_HEAVY（18.8%，来自 K3/K5 的 relation 锁）。场景没争起来，skill 没报是正常的。"
 
   - code: L4
-    title: 千分区表全分区扫描(锁管理器)
-    signals: 等待事件里出现 LockMgrLock / 分区锁相关
+    title: 千分区表,每条语句锁 200 个分区、语句级提交(锁管理器)
+    signals: 等待事件里出现 LockMgrLock / 分区锁相关(2026-10-24 那轮只采到 2 次:BEGIN/SELECT/COMMIT 三次往返把锁申请频率拖住了 —— 已改成语句级提交,能在匿名块里循环就在服务端循环)
     expect:
       - waitevent: 第 4 个窗口(720~960 秒)
       - 可能不明显: og5 只有 4 核、3 条会话,争用可能很轻 —— 如实记录
     actual: "故障很轻：probe 只有一次采样看到 LockMgrLock×2。waitevent 第 4 窗口（3152→3153）的 LWLOCK 排名里，LockMgrLock 排第 2（15488 次 / 5.2 秒，仅次于 DoubleWriteLock 的 9.2 秒），看得到，但没到阈值，没出 WAIT_LWLOCK_HEAVY。这与手册说的「4 核 3 会话，可能不明显」一致；waitevent 在明细里如实列出了 LockMgrLock。"
 
   - code: L5
-    title: 每事务上千子事务(子事务 / CLog 相关)
-    signals: 等待事件里出现 SubtransControlLock / CLogControlLock 相关
+    title: 2 会话每事务数百个写子事务 + 1 会话并发读(子事务 / CLog 相关)
+    signals: 等待事件里出现 SubtransControlLock / CLogControlLock 相关(2026-10-24 那轮子事务里只做 SELECT,不分配子事务号,也没有并发读的会话,一次都没争起来 —— 已改)
     expect:
       - waitevent: 第 5 个窗口(960~1200 秒)
       - 可能不明显: 同 L4

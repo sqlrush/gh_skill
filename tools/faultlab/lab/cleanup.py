@@ -10,14 +10,14 @@
 """
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from . import config as C
 from . import state
-from .db import REAL_SESSION, Conn, LabError, omm_sql
+from .db import MAINT_GUARDS, REAL_SESSION, Conn, LabError, omm_sql
 
 # 运行期会长大的表:每次清理都清空(不然跑几次之后它们比事实表还大)
-TRUNCATE_AFTER_RUN = ("wal_log", "uniq_race")
+TRUNCATE_AFTER_RUN = ("wal_log", "uniq_race", "subx_log")
 
 # 膨胀类场景的表:清理时重建,把空间收回来。
 #
@@ -61,28 +61,75 @@ def kill_sessions(c: Conn) -> int:
     return killed
 
 
-def _undo(c: Conn, kind: str, name: str) -> str:
-    """撤掉一件残留。返回一句话说明结果(调用方汇总)。"""
+def _exists(c: Conn, kind: str, name: str) -> bool:
+    """这件残留在库里到底在不在。登记簿只说明「可能留下了」,不说明「真的建成了」。"""
+    if kind == "prepared_xact":
+        return bool(c.one("SELECT count(*) FROM pg_prepared_xacts WHERE gid = %s", (name,)))
+    if kind == "slot":
+        return bool(c.one("SELECT count(*) FROM pg_replication_slots WHERE slot_name = %s", (name,)))
+    if kind == "column":
+        tbl, col = name.rsplit(".", 1)
+        schema, table = tbl.split(".", 1)
+        return bool(c.one("SELECT count(*) FROM pg_attribute a JOIN pg_class t ON t.oid = a.attrelid "
+                          "  JOIN pg_namespace n ON n.oid = t.relnamespace "
+                          " WHERE n.nspname = %s AND t.relname = %s AND a.attname = %s "
+                          "   AND NOT a.attisdropped", (schema, table, col)))
+    if kind == "index":
+        schema, idx = name.split(".", 1)
+        return bool(c.one("SELECT count(*) FROM pg_class i JOIN pg_namespace n ON n.oid = i.relnamespace "
+                          " WHERE n.nspname = %s AND i.relname = %s", (schema, idx)))
+    return True                     # table_option:RESET 本身就是幂等的,照做
+
+
+# 登记了、库里却没有的那几种,各自说清楚是怎么回事 —— 以前一律报「已删」,
+# 2026-10-24 那轮 K3 的 ALTER 被取消、列根本没加上,清理还写着「已删列」。
+_ABSENT = {
+    "prepared_xact": "两阶段事务 %s 已不在(没 PREPARE 成,或已被回滚),不用处理",
+    "slot": "复制槽 %s 已不在(没建成,或被 WAL 守卫删了),不用处理",
+    "column": "列 %s 不存在(那条 ALTER 没做成),不用删",
+    "index": "索引 %s 不存在(那次建索引没建成),不用删",
+}
+
+
+def _undo(c: Conn, kind: str, name: str) -> Tuple[str, bool]:
+    """撤掉一件残留。**按实际结果报**:先看在不在,不在就说不在,在就撤、撤完再查一遍。
+
+    返回 (一句话说明, 是否已经不在了)。还在的不从登记簿里划掉,下次清理接着收。
+    """
+    text = _undo_once(c, kind, name)
+    return text, not text.endswith(_STILL_THERE)
+
+
+_STILL_THERE = "要人工看一下"
+
+
+def _undo_once(c: Conn, kind: str, name: str) -> str:
+    if kind not in state.KINDS:
+        raise LabError("不认得的残留种类 %r" % kind)
+    _safe(name.split(":", 1)[0])
+    if not _exists(c, kind, name):
+        return _ABSENT[kind] % name
     if kind == "prepared_xact":
         c.exec("ROLLBACK PREPARED '%s'" % _safe(name))
-        return "已回滚两阶段事务 %s" % name
-    if kind == "slot":
-        c.exec("SELECT pg_drop_replication_slot(%s) WHERE EXISTS "
-               "  (SELECT 1 FROM pg_replication_slots WHERE slot_name = %s)", (name, name))
-        return "已删复制槽 %s" % name
-    if kind == "table_option":
+        done = "已回滚两阶段事务 %s" % name
+    elif kind == "slot":
+        c.exec("SELECT pg_drop_replication_slot(%s)", (name,))
+        done = "已删复制槽 %s" % name
+    elif kind == "table_option":
         table = name.split(":", 1)[0]
         c.exec("ALTER TABLE %s RESET (autovacuum_enabled, autovacuum_vacuum_cost_delay, "
                "  autovacuum_vacuum_cost_limit, autovacuum_vacuum_scale_factor)" % _safe(table))
         return "已还原 %s 的表级参数" % table
-    if kind == "column":
+    elif kind == "column":
         tbl, col = name.rsplit(".", 1)
         c.exec("ALTER TABLE %s DROP COLUMN IF EXISTS %s" % (_safe(tbl), _safe(col)))
-        return "已删列 %s" % name
-    if kind == "index":
+        done = "已删列 %s" % name
+    else:
         c.exec("DROP INDEX IF EXISTS %s" % _safe(name))
-        return "已删索引 %s" % name
-    raise LabError("不认得的残留种类 %r" % kind)
+        done = "已删索引 %s" % name
+    if _exists(c, kind, name):
+        return "%s 的命令发了,但它还在 —— %s" % (name, _STILL_THERE)
+    return done
 
 
 def _safe(ident: str) -> str:
@@ -136,7 +183,8 @@ def residue_check(c: Conn) -> List[str]:
 def run() -> Dict[str, object]:
     """收尾清理。先杀会话,再撤残留 —— 顺序不能反:会话还握着的锁会让 DDL 挂住。"""
     out: Dict[str, object] = {}
-    c = Conn("cleanup", guards=False)
+    # 等锁最多一分钟:会话已经杀过,还等不到锁就说明有别人的会话挡着,如实报失败,别挂住。
+    c = Conn("cleanup", guards=MAINT_GUARDS)
     try:
         out["杀掉会话"] = kill_sessions(c)
         done: List[str] = []
@@ -145,12 +193,18 @@ def run() -> Dict[str, object]:
                 done.append("登记簿文件坏了(%s),只能靠下面的实地核对" % name)
                 continue
             try:
-                done.append(_undo(c, kind, name))
-                state.drop_residue(kind, name)
+                text, gone = _undo(c, kind, name)
+                done.append(text)
+                if gone:
+                    state.drop_residue(kind, name)
             except Exception as exc:         # noqa: BLE001
                 done.append("撤 %s %s 失败:%s" % (kind, name, str(exc).splitlines()[0][:120]))
         for t in TRUNCATE_AFTER_RUN:
             try:
+                # 运行期才建的表(subx_log)在没跑过新版本的库里还不存在 —— 没有就不用清
+                if not c.one("SELECT count(*) FROM pg_tables WHERE schemaname = %s AND tablename = %s",
+                             (C.SCHEMA, t)):
+                    continue
                 c.exec("TRUNCATE %s.%s" % (C.SCHEMA, t))
             except Exception as exc:         # noqa: BLE001
                 done.append("清空 %s 失败:%s" % (t, str(exc).splitlines()[0][:100]))

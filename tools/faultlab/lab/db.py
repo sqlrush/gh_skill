@@ -14,7 +14,7 @@ import json
 import secrets
 import string
 import subprocess
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 from . import config as C
 
@@ -120,6 +120,46 @@ def omm_sql(sql: str, timeout_s: int = 60) -> str:
     return (p.stdout or "") + (p.stderr or "")
 
 
+# ---------------------------------------------------------------- 会话级兜底超时
+
+class Guards(NamedTuple):
+    """一条连接的会话级超时(秒,0 = 不设)。**全是会话级,实例级参数一个都不改。**"""
+    statement_s: int
+    idle_xact_s: int
+    lockwait_s: int
+
+
+# 造故障的会话:语句与空闲事务按整个窗口兜底;等锁的上限由 Base.worker 按场景时段改小(lock_guard_s)。
+SCENARIO_GUARDS = Guards(C.STATEMENT_TIMEOUT_S, C.IDLE_XACT_TIMEOUT_S, C.STATEMENT_TIMEOUT_S)
+# 观测与停场景用的连接:宁可这一项查不出来,也不排进别人的锁队列。
+OBSERVER_GUARDS = Guards(C.OBSERVER_STATEMENT_S, 0, C.OBSERVER_LOCKWAIT_S)
+# 清理:VACUUM FULL 不限时长,等锁最多一分钟。
+MAINT_GUARDS = Guards(0, 0, C.MAINT_LOCKWAIT_S)
+
+
+def guard_sql(g: Guards) -> List[str]:
+    """把 Guards 翻成 SET 语句(纯函数,单测钉住)。0 的那项不设,沿用会话默认值。"""
+    out: List[str] = []
+    for name, secs in (("statement_timeout", g.statement_s),
+                       ("idle_in_transaction_session_timeout", g.idle_xact_s),
+                       ("lockwait_timeout", g.lockwait_s)):
+        if not isinstance(secs, int) or secs < 0:
+            raise LabError("%s 要是非负整数秒,给的是 %r" % (name, secs))
+        if secs:
+            out.append("SET %s = '%ds'" % (name, secs))
+    out.append("SET search_path = %s, public" % C.SCHEMA)
+    return out
+
+
+def resolve_guards(guards: Union[bool, Guards], lockwait_s: Optional[int] = None) -> Optional[Guards]:
+    """Conn 的 guards 参数:True = 造故障会话的默认值,False = 什么都不设,或直接给一组 Guards。
+    lockwait_s 只改等锁上限(给场景按自己的时段收紧用)。"""
+    if guards is False:
+        return None
+    g = SCENARIO_GUARDS if guards is True else guards
+    return g._replace(lockwait_s=lockwait_s) if lockwait_s else g
+
+
 # ---------------------------------------------------------------- psycopg2
 
 class Conn:
@@ -129,7 +169,8 @@ class Conn:
     按后端算的),池化会把两个场景的事务搅在一条连接上,造出来的现象就不是设计的那个。
     """
 
-    def __init__(self, app: str, autocommit: bool = True, guards: bool = True):
+    def __init__(self, app: str, autocommit: bool = True, guards: Union[bool, Guards] = True,
+                 lockwait_s: Optional[int] = None):
         require_driver()
         params = conn_params()
         self.app = app
@@ -139,10 +180,11 @@ class Conn:
             application_name=C.APP_PREFIX + app,
         )
         self._raw.autocommit = autocommit
-        if guards:
-            self._apply_guards()
+        g = resolve_guards(guards, lockwait_s)
+        if g is not None:
+            self._apply_guards(g)
 
-    def _apply_guards(self) -> None:
+    def _apply_guards(self, g: Guards) -> None:
         """会话级兜底超时。
 
         **这是编排器之外的第二道保险:** 编排器被 Ctrl-C / 被 kill / Mac 睡过去,
@@ -150,10 +192,8 @@ class Conn:
         og5 上还跑着别人的测试。
         """
         with self._raw.cursor() as cur:
-            cur.execute("SET statement_timeout = '%ds'" % C.STATEMENT_TIMEOUT_S)
-            cur.execute("SET idle_in_transaction_session_timeout = '%ds'" % C.IDLE_XACT_TIMEOUT_S)
-            cur.execute("SET lockwait_timeout = '%ds'" % C.STATEMENT_TIMEOUT_S)
-            cur.execute("SET search_path = %s, public" % C.SCHEMA)
+            for sql in guard_sql(g):
+                cur.execute(sql)
 
     # -- 执行 --------------------------------------------------------------
 
@@ -223,3 +263,50 @@ def assert_expected_instance(c: Conn) -> Dict[str, Any]:
         raise LabError("version() 里没有 %r:%s —— 不动手。"
                        % (C.EXPECT_FINGERPRINT["version_like"], fp["version"][:80]))
     return fp
+
+
+# ---------------------------------------------------------------- 停自己的会话
+
+# 两参数的会话感知形式:线程池下 pid 是会被复用的线程号,要 pid 与 sessionid 同时对上才动手。
+_STOP_FN = {"cancel": ("pg_cancel_session", "pg_cancel_backend"),
+            "terminate": ("pg_terminate_session", "pg_terminate_backend")}
+
+
+def stoppable_app(app: str) -> str:
+    """要停的会话的完整 application_name。**只认本工具造故障的会话:**
+    必须是 fl: 前缀、不是工具自己的观测连接、名字里只有安全字符(它要进 SQL 的参数,不进 SQL 文本,
+    但名字长得奇怪本身就说明调用方传错了)。不合格的直接拒绝,不去碰。"""
+    full = app if app.startswith(C.APP_PREFIX) else C.APP_PREFIX + app
+    body = full[len(C.APP_PREFIX):]
+    if not body or not all(ch.isalnum() or ch in "_/-" for ch in body):
+        raise LabError("会话名不合法,不停它:%r" % app)
+    if body.split("/", 1)[0] in C.INFRA_APPS:
+        raise LabError("%s 是工具自己的连接,不停它" % full)
+    return full
+
+
+def stop_sessions(c: Conn, app: str, action: str = "cancel") -> int:
+    """取消(cancel:只打断当前语句)或终止(terminate:断开会话)application_name 恰好等于 app 的真会话。
+
+    返回动了几条。**按名字精确匹配,不用 LIKE** —— K1/wait1 不该被当成 K1/wait 的前缀一起停掉。
+    """
+    if action not in _STOP_FN:
+        raise LabError("不认得的动作 %r" % action)
+    full = stoppable_app(app)
+    fn, fallback = _STOP_FN[action]
+    # 取消只对正在执行的语句有意义:空闲的会话 cancel 了也返回 true,却什么都没打断,不该记成「取消了一条」
+    busy = " AND state = 'active'" if action == "cancel" else ""
+    rows = c.query("SELECT pid, sessionid FROM pg_stat_activity "
+                   " WHERE application_name = %%s AND %s%s" % (REAL_SESSION, busy), (full,))
+    done = 0
+    for pid, sessionid in rows:
+        try:
+            if c.one("SELECT %s(%%s, %%s)" % fn, (pid, sessionid)):
+                done += 1
+        except Exception:        # noqa: BLE001 —— 老内核没有会话感知版,退回按 pid
+            try:
+                if c.one("SELECT %s(%%s)" % fallback, (pid,)):
+                    done += 1
+            except Exception:    # noqa: BLE001 —— 会话可能刚好自己退了
+                pass
+    return done

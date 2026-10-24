@@ -3,6 +3,10 @@
 **它不是为了好看,是为了分清两件事:** 用 skill 查不出东西时,到底是 skill 漏报,
 还是故障根本没造出来。status 只读库、不碰任何状态,给的都是能对着复查的原始数字。
 
+**它自己不能被挡住:** 2026-10-24 全量跑时,K3 的 ALTER 排在 fl.payments 上,status 里
+`pg_total_relation_size` 要拿那张表的共享锁,就排在 ALTER 后面一直挂着 —— 观测工具自己成了
+锁队列的一员。现在连接带等锁 / 语句超时(OBSERVER_GUARDS),哪一项被挡住就如实写「这一项没查出来」。
+
 **和 run 里的进度行的区别:** run 的进度行按场景自证(它知道自己起了哪些会话);
 status 是从库的角度看全局 —— 等锁最久的几条、锁类型分布、等待事件排名、死元组最多的表。
 就算 run 不在跑(比如只想看上一次留下的状态),它也能用。
@@ -13,13 +17,30 @@ import time
 from typing import List, Tuple
 
 from . import config as C
-from .db import Conn
+from .db import OBSERVER_GUARDS, Conn
 
 TOP_N = 6
 
 
+def why_failed(exc: BaseException) -> str:
+    """一项观测没查出来时给人看的一句话。等锁超时单独说清楚:多半是有 DDL 排在那张表上。"""
+    text = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
+    low = text.lower()
+    if "lock wait timeout" in low or "lockwait" in low or "could not obtain lock" in low:
+        return ("等锁超过 %d 秒没等到 —— 多半有 DDL / VACUUM FULL 正排在某张表上(比如 K3 的 ALTER、"
+                "V6 的 VACUUM FULL),这一项先跳过,不陪它排队" % C.OBSERVER_LOCKWAIT_S)
+    if "statement timeout" in low or "canceling statement" in low:
+        return "查询超过 %d 秒被取消,这一项先跳过" % C.OBSERVER_STATEMENT_S
+    return text[:160]
+
+
 def _rows(c: Conn, title: str, sql: str, args: Tuple = ()) -> str:
-    rows = c.query(sql, args)
+    """跑一项观测。**一项查不出来不影响别的项** —— 以前一条被挡住就整个 status 挂住。"""
+    try:
+        rows = c.query(sql, args)
+    except Exception as exc:                 # noqa: BLE001
+        c.rollback()
+        return "== %s\n  (这一项没查出来:%s)" % (title, why_failed(exc))
     if not rows:
         return "== %s\n  (没有)" % title
     body = "\n".join("  " + " | ".join("-" if v is None else str(v)[:46] for v in r) for r in rows)
@@ -27,8 +48,8 @@ def _rows(c: Conn, title: str, sql: str, args: Tuple = ()) -> str:
 
 
 def snapshot_text() -> str:
-    """一次性取全部观测。"""
-    c = Conn("status", guards=False)
+    """一次性取全部观测。连接按观测者设超时:等锁 3 秒、单条 30 秒,不排进别人的锁队列。"""
+    c = Conn("status", guards=OBSERVER_GUARDS)
     try:
         parts: List[str] = []
         parts.append(_rows(c, "实验会话(按已运行时长)",

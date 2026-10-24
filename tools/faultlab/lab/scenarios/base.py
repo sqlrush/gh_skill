@@ -15,7 +15,7 @@ from typing import Callable, Dict, List, Optional, Type
 
 from .. import config as C
 from ..db import REAL_SESSION, Conn
-from ..session import Ctx, Worker, app_name
+from ..session import Ctx, Worker, app_name, stop_workers
 
 
 class Base:
@@ -45,16 +45,29 @@ class Base:
     # -- 公共 ---------------------------------------------------------------
 
     def worker(self, role: str, fn: Callable, **kw) -> Worker:
-        """开一条会话并登记,stop() 时统一收。"""
+        """开一条会话并登记,stop() 时统一收。
+
+        等锁上限默认按本场景的时段收紧(config.lock_guard_s):停场景那一步万一没打断它,
+        数据库也会在时段结束后一分钟把这条等锁的语句掐掉。
+        """
+        if self.meta is not None:
+            kw.setdefault("lock_guard_s", C.lock_guard_s(self.meta, self.ctx.window_s))
         w = Worker(self.ctx, app_name(self.code, role), fn, **kw)
         self.workers.append(w)
         return w.start()
 
-    def stop(self) -> None:
-        for w in self.workers:
-            w.signal()          # 先全部置停止位
-        for w in self.workers:
-            w.stop()            # 再一起等(见 Worker.signal 的说明)
+    def stop(self) -> str:
+        """停本场景的全部会话(置位 → 取消挂着的语句 → 终止会话,见 session.stop_workers)。
+        返回一句给时间线的说明;什么都没打断时为空串。"""
+        r = stop_workers(self.workers, self.ctx)
+        parts = []
+        if r["cancelled"]:
+            parts.append("取消了 %d 条挂着的语句" % r["cancelled"])
+        if r["terminated"]:
+            parts.append("终止了 %d 条会话" % r["terminated"])
+        if r["left_running"]:
+            parts.append("%d 条让它跑完这一轮" % r["left_running"])
+        return "、".join(parts)
 
     def log(self, msg: str) -> None:
         self.ctx.log("[%s] %s" % (self.code, msg))

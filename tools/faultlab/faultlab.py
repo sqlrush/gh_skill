@@ -13,6 +13,7 @@
     $P tools/faultlab/faultlab.py calibrate      # 校准慢 SQL 的规模(换机器后跑一次)
     $P tools/faultlab/faultlab.py run            # 造故障,20 分钟
     $P tools/faultlab/faultlab.py run --only lock,deadlock --window 600
+    $P tools/faultlab/faultlab.py run --codes K5,V6 --window 180 --quiet 0   # 只验这两项,挪到开头跑
     $P tools/faultlab/faultlab.py status         # 另开一个终端:现在哪些现象看得到
     $P tools/faultlab/faultlab.py cleanup        # 收尾(run 正常结束会自己做)
     $P tools/faultlab/faultlab.py purge          # 连数据和用户一起删
@@ -110,9 +111,21 @@ def cmd_expected(args: argparse.Namespace) -> int:
     return EXIT_OK if ok else EXIT_FAILED
 
 
+def _split(text: str) -> Tuple[str, ...]:
+    return tuple(x.strip() for x in (text or "").split(",") if x.strip())
+
+
 def _pick(args: argparse.Namespace) -> Tuple[C.Scenario, ...]:
-    groups = tuple(g.strip() for g in (getattr(args, "only", "") or "").split(",") if g.strip())
-    return C.by_group(groups)
+    """--only 按分类挑;--codes 按编号挑,并整体前移到窗口开头(验证单项时不用陪跑十几分钟)。"""
+    groups, codes = _split(getattr(args, "only", "")), _split(getattr(args, "codes", ""))
+    if groups and codes:
+        raise LabError("--only 与 --codes 只能给一个")
+    try:
+        if codes:
+            return C.rebase(C.by_codes(codes))
+        return C.by_group(groups)
+    except ValueError as exc:
+        raise LabError(str(exc)) from exc
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -135,6 +148,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = add("run", cmd_run, "造故障")
     sp.add_argument("--only", default="", help="只跑这几类:%s" % ",".join(C.GROUPS))
+    sp.add_argument("--codes", default="",
+                    help="只跑这几项(如 K5,V6),整体前移到窗口第 5 秒起跑;与 --only 二选一")
     sp.add_argument("--window", type=int, default=C.WINDOW_S, help="故障窗口秒数,默认 1200")
     sp.add_argument("--quiet", type=int, default=C.BASELINE_QUIET_S, help="开始前的静默基线秒数")
 

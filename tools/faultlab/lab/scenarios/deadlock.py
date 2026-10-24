@@ -86,7 +86,9 @@ class Deadlocks(Base):
         def one(steps: List[str]) -> None:
             c = None
             try:
-                c = Conn(self.code + "/x")
+                # 撞车用的短命连接最多等锁 ROUND_TIMEOUT_S:万一撞上别的场景锁着的行,
+                # 这一轮作废就是了,不能挂到窗口结束(它们不归 Worker 管,停场景时不会被取消)。
+                c = Conn(self.code + "/x", lockwait_s=ROUND_TIMEOUT_S)
                 _tx(c, steps)
             except BaseException as exc:    # noqa: BLE001
                 errs.append(exc)

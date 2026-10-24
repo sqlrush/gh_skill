@@ -152,10 +152,12 @@ ALTER TABLE xmin_hold ADD PRIMARY KEY (id);
 
 -- V7:每次运行往这里导 50 万行、**不做 ANALYZE**,统计信息停在 0 行。
 --
--- **必须关掉表级 autovacuum,否则这个场景活不过一分钟:** autovacuum 里的自动
+-- **必须挡住自动 ANALYZE,否则这个场景活不过一分钟:** autovacuum 里的自动
 -- ANALYZE 会在变化量超过 10% 时自己来收集统计信息(autovacuum_analyze_scale_factor=0.1),
--- 导入完没多久统计信息就准了,S5 的「估错一个数量级」也就没了。关掉之后统计信息
--- 永远停在空表,这正是现场「导完不收集统计信息」的样子。
+-- 导入完没多久统计信息就准了,S5 的「估错一个数量级」也就没了。
+-- **光 autovacuum_enabled = false 不够:** og5 上实测,关了 autovacuum 的表照样被自动 ANALYZE
+-- (2026-10-24 那轮导入 80 秒后就有了统计信息)。所以再把表级的 analyze 触发线拉到永远够不着。
+-- 数值与 prepare.import_stage_options_sql() 一致,run 每次开跑前也会再设一遍。
 DROP TABLE IF EXISTS import_stage CASCADE;
 CREATE TABLE import_stage (
   id        bigint,
@@ -163,7 +165,8 @@ CREATE TABLE import_stage (
   cust_id   bigint,
   amount    numeric(12, 2),
   batch_at  timestamp
-) WITH (autovacuum_enabled = false);
+) WITH (autovacuum_enabled = false, autovacuum_analyze_threshold = 2000000000,
+        autovacuum_analyze_scale_factor = 100);
 
 -- ---------------------------------------------------------------- 锁与死锁用
 
@@ -202,7 +205,8 @@ CREATE TABLE wal_log (
   wrote_at  timestamp DEFAULT now()
 );
 
--- L2:100 行挤在同一个数据页上 —— 所有会话抢同一个缓冲区的内容锁
+-- L2:100 行挤在同一个数据页上 —— 所有会话抢同一个缓冲区的内容锁。
+-- 这里建的是普通表;prepare / run 随后会在 ustore 可用时把它换成 ustore 表(见 prepare.runtime_ddl)。
 DROP TABLE IF EXISTS hotpage CASCADE;
 CREATE TABLE hotpage AS
   SELECT g AS id, 0 AS cnt

@@ -39,10 +39,11 @@ SPECS: Dict[str, Spec] = {
     # 4000 行 102 秒就跑完了 —— 窗口中途跑完,「已经跑了十几分钟的 SQL」就没了。
     # 10 万行约 42 分钟,窗口内铁定跑不完,这才是它要造的现象。
     "S1": Spec("s1.sql", 100_000, "1MB", False, False, 0),
-    # S2 原本也设计成「跑不完」,实测 54 秒就跑完了(substr 取前 8 位只分出约 2000 组,
-    # LIKE 嵌套循环的实际规模远小于估计)。**不再假装它跑不完**:改成循环跑,
-    # 它的价值在于哈希聚合落盘,不在于单次时长 —— 跑不完的那个现象由 S1 负责。
-    "S2": Spec("s2.sql", 1_000_000, "4MB", True, True, 60),
+    # S2 设计成「跑不完」。第一版取编码前 8 位只分出约 2000 组,LIKE 嵌套循环才 2000 × 20 万,
+    # 一次 1~2 分钟就跑完了(2026-10-24 全量跑跑完 13 次)—— 手册、expected.yaml 却都按「一直 active」
+    # 写的。现在按完整编码归集(20 万组),嵌套循环 20 万 × 20 万,窗口里铁定跑不完;
+    # 落盘照旧发生在前半段的哈希聚合里,之后外层物化结果放不进 4MB work_mem,一直在读临时文件。
+    "S2": Spec("s2.sql", 1_000_000, "4MB", False, False, 0),
     "S3": Spec("s3.sql", 24_000, "16MB", True, True, 480),
     "S4": Spec("s4.sql", 9_000, "16MB", True, True, 180),
     "S5": Spec("s5.sql", 60_000, "16MB", True, True, 480),
@@ -129,7 +130,9 @@ class SlowQuery(Base):
         sql = sql_for(self.code, cap)
         self.log("规模 cap=%s,work_mem=%s,%s" % (
             cap, spec.work_mem, "循环跑" if spec.loop else "跑一次(预期跑不完)"))
-        self.worker("q", lambda c, stop: self._run(c, stop, spec, sql))
+        # 会跑完的那几条按排期停时**不打断最后一轮**(drain):打断了它就进不了执行历史,
+        # 而 topsql / slowsql / wdr 要看的正是执行历史。窗口结束时照样取消。
+        self.worker("q", lambda c, stop: self._run(c, stop, spec, sql), drain=spec.finishes)
 
     def _run(self, c: Conn, stop: threading.Event, spec: Spec, sql: str) -> None:
         c.set("work_mem", spec.work_mem)

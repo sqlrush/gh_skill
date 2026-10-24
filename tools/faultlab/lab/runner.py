@@ -19,7 +19,8 @@ from typing import Dict, List, Optional, Tuple
 
 from . import config as C
 from . import state
-from .db import REAL_SESSION, Conn, LabError, assert_expected_instance, omm_sql
+from .db import (MAINT_GUARDS, OBSERVER_GUARDS, REAL_SESSION, Conn, LabError,
+                 assert_expected_instance, omm_sql)
 from .scenarios import ALL as _IMPORT_ALL      # noqa: F401  —— 导入即注册全部场景
 from .scenarios.base import Base, build
 from .session import Ctx
@@ -148,15 +149,19 @@ def run(scenarios: Tuple[C.Scenario, ...] = (), window_s: int = C.WINDOW_S,
         raise LabError("排期表里同时吃 CPU 的会话峰值 %d 超过上限 %d —— 先改排期,别把库压死"
                        % (budget["peak"], budget["limit"]))
 
-    admin = Conn("runner")
+    # 编排器自己的连接按观测者设超时:它要跑每个场景的自证,不能自己排进某张表的锁队列里
+    # 把主循环卡住(V6 做 VACUUM FULL 时去量那张表的大小,就会被挡住)。
+    admin = Conn("runner", guards=OBSERVER_GUARDS)
     assert_expected_instance(admin)
     _pre_clean(admin)
+    _ensure_runtime_objects()
 
-    ctx = Ctx(log=lambda m: None)            # log 在下面接到时间线上
+    ctx = Ctx(log=lambda m: None, window_s=window_s)    # log 在下面接到时间线上
     t0 = time.time()
     tl = Timeline(t0)
     ctx.log = lambda m: tl.add("场景", m)
     live: Dict[str, Base] = {}
+    built: List[Base] = []                   # 起过的全部场景(按排期停掉的也在,收工时再停一遍)
     snaps: List[int] = []
     rc = 0
     try:
@@ -178,16 +183,17 @@ def run(scenarios: Tuple[C.Scenario, ...] = (), window_s: int = C.WINDOW_S,
         # 否则表里的「偏移」看着像排期全体晚了一分钟。
         tl.add("故障窗口开始", "排期表里的秒数从这一刻起算", _db_now(admin))
         _arm_watchdog(ctx, window_s)
-        rc = _drive(ctx, tl, admin, scenarios, live, snaps, t_window, window_s)
+        rc = _drive(ctx, tl, admin, scenarios, live, built, snaps, t_window, window_s)
     finally:
         tl.add("故障窗口结束", "", _db_now(admin))
         ctx.stop.set()          # 全局停止位:所有会话的循环下一轮就会退出
-        for sc in live.values():
+        for sc in built:
             for w in sc.workers:
                 w.signal()
-        for sc in live.values():
-            sc.stop()
-        tl.add("全部场景已停")
+        # **按排期停过的也要再停一遍:** 慢 SQL 停的时候让最后一轮跑完(drain),
+        # 那条语句现在可能还在跑;全局停时 stop_workers 会把它取消掉。
+        notes = [("%s:%s" % (sc.code, n)) for sc in built for n in (sc.stop(),) if n]
+        tl.add("全部场景已停", ";".join(notes))
         s = _snapshot(admin, tl, "故障结束")
         if s:
             snaps.append(s)
@@ -206,6 +212,21 @@ def run(scenarios: Tuple[C.Scenario, ...] = (), window_s: int = C.WINDOW_S,
         tl.close()
         admin.close()
     return rc
+
+
+def _ensure_runtime_objects() -> None:
+    """补建运行期对象(慢表达式函数、V6/L3/L5 的表、L2 的 ustore 热点页)。
+
+    已经有的不动;第一次跑新版本时要建 V6 那张带慢索引的表,约两分钟 —— 放在基线之前,
+    不占故障窗口的时间。
+    """
+    from . import prepare
+    c = Conn("prepare", guards=MAINT_GUARDS)
+    try:
+        for line in prepare.ensure_runtime_objects(c, rebuild=False):
+            print("  " + line, flush=True)
+    finally:
+        c.close()
 
 
 def _pre_clean(admin: Conn) -> None:
@@ -231,7 +252,8 @@ def _arm_watchdog(ctx: Ctx, window_s: int) -> None:
 
 
 def _drive(ctx: Ctx, tl: Timeline, admin: Conn, scenarios: Tuple[C.Scenario, ...],
-           live: Dict[str, Base], snaps: List[int], t_window: float, window_s: int) -> int:
+           live: Dict[str, Base], built: List[Base], snaps: List[int],
+           t_window: float, window_s: int) -> int:
     """主循环:到点起场景、到点停场景、按间隔打快照与报进度。"""
     pending = sorted(scenarios, key=lambda s: s.start_s)
     next_snap = C.SNAPSHOT_EVERY_S
@@ -244,14 +266,15 @@ def _drive(ctx: Ctx, tl: Timeline, admin: Conn, scenarios: Tuple[C.Scenario, ...
             meta = pending.pop(0)
             sc = build(ctx, meta)
             live[meta.code] = sc
+            built.append(sc)
             tl.add("起 " + meta.code, meta.title, _db_now(admin))
             _start_scenario(sc, tl)
         for code, sc in list(live.items()):
             meta = sc.meta
             if meta and meta.stop_s and off >= meta.stop_s:
-                sc.stop()
+                note = sc.stop()
                 del live[code]
-                tl.add("停 " + code, "按排期结束", _db_now(admin))
+                tl.add("停 " + code, "按排期结束" + (";" + note if note else ""), _db_now(admin))
         if off >= next_snap and next_snap < window_s:
             s = _snapshot(admin, tl, "窗口内 %d 分钟" % (next_snap // 60))
             if s:

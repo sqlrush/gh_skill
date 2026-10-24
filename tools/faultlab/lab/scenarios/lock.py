@@ -11,7 +11,7 @@ relation(表级锁:DDL / LOCK TABLE / 建索引)、extend(表扩展)、advisory(
 from __future__ import annotations
 
 import threading
-from typing import List
+from typing import List, Tuple
 
 from .. import config as C
 from ..db import Conn
@@ -291,21 +291,38 @@ class BatchForUpdate(Base):
 
     group = "lock"
     BATCH = 400
+    # **只用 acct 的 1001~2000 号行。** 原来批处理从 1 号开始扫、在线更新也满表乱跳,
+    # 一上来就撞上 K1 根会话锁着的 1~3 号行:批处理在 1 号行上一等就是 18 分钟,
+    # 抖动型变成了持续阻塞(2026-10-24 全量跑)。别的场景用到的行都在 1~200 号以内
+    # (K1 1~3、D 10~51、K10 100、K6 200、L3 已改用 xact_tick),这一段谁也不碰。
+    LO, HI = 1001, 2000
 
     def start(self) -> None:
         self.worker("batch", self._batch)
         for n in range(2):
             self.worker("online%d" % n, self._online, expect_errors=True)
 
+    @classmethod
+    def batch_range(cls, n: int) -> Tuple[int, int]:
+        """第 n 批锁哪一段:在 [LO, HI] 里循环,每批 BATCH 行。"""
+        span = cls.HI - cls.LO + 1
+        lo = cls.LO + (n * cls.BATCH) % span
+        return lo, min(lo + cls.BATCH - 1, cls.HI)
+
+    @classmethod
+    def online_id(cls, n: int) -> int:
+        """在线更新第 n 次改哪一行:同样只在 [LO, HI] 里跳。"""
+        return cls.LO + (n * 137) % (cls.HI - cls.LO + 1)
+
     def _batch(self, c: Conn, stop: threading.Event) -> None:
         pos = [0]
 
         def one_batch() -> None:
-            lo = pos[0] % 2000 + 1
-            pos[0] += self.BATCH
+            lo, hi = self.batch_range(pos[0])
+            pos[0] += 1
             c.exec("BEGIN")
             c.exec("SELECT id FROM %s.acct WHERE id BETWEEN %%s AND %%s ORDER BY id FOR UPDATE"
-                   % C.SCHEMA, (lo, lo + self.BATCH))
+                   % C.SCHEMA, (lo, hi))
             sleep_until(stop, 2.0)              # 批内处理时间
             c.exec("COMMIT")
 
@@ -320,8 +337,8 @@ class BatchForUpdate(Base):
         pos = [0]
 
         def touch() -> None:
-            pos[0] = (pos[0] + 137) % 2000 + 1
-            c.exec("UPDATE %s.acct SET bal = bal + 0.01 WHERE id = %%s" % C.SCHEMA, (pos[0],))
+            pos[0] += 1
+            c.exec("UPDATE %s.acct SET bal = bal + 0.01 WHERE id = %%s" % C.SCHEMA, (self.online_id(pos[0]),))
         until(stop, touch, period_s=0.3)
 
     def probe(self, admin: Conn) -> str:
@@ -334,6 +351,13 @@ class IndexBuild(Base):
 
     现实里的样子:白天「顺手加个索引」。建索引本身要几十秒到几分钟,这段时间里
     这张表只能读不能写,业务侧看到的是「插入全部超时」。
+
+    **建的是一条慢表达式索引,而且时段内只建一次、不删。** 原来是普通索引循环「建 → 等 20 秒 → 删」:
+    建只要 7 秒,写入被挡的时间不到三成;更糟的是 DROP INDEX 要整表排他锁,排在 S2/S3 读
+    order_items 的长查询后面,写入又排在 DROP 后面 —— 挡住写入的其实是 DROP 加长查询,
+    看起来像 K3 而不是 K5(2026-10-24 全量跑)。现在 CREATE INDEX 本身就要两分多钟
+    (每行算一次 fl_slow_key),整个时段都在建;时段一到,停场景时把它取消,不留索引、
+    也不在窗口里做 DROP。万一机器快、提前建完了,索引留着,由 cleanup 删(登记过)。
     """
 
     group = "lock"
@@ -344,19 +368,26 @@ class IndexBuild(Base):
         for n in range(2):
             self.worker("writer%d" % n, self._writer, expect_errors=True)
 
+    @classmethod
+    def index_sql(cls) -> str:
+        from ..prepare import slow_key_expr
+        return "CREATE INDEX %s ON %s.order_items ((%s))" % (
+            cls.IDX, C.SCHEMA, slow_key_expr("note", C.K5_SLOW_ITERS))
+
     def _build(self, c: Conn, stop: threading.Event) -> None:
         from .. import state
-
-        def cycle() -> None:
-            c.exec("DROP INDEX IF EXISTS %s.%s" % (C.SCHEMA, self.IDX))
-            state.add_residue("index", "%s.%s" % (C.SCHEMA, self.IDX))
-            self.log("开始建索引(期间 order_items 写不进)")
-            c.exec("CREATE INDEX %s ON %s.order_items (note, amount)" % (self.IDX, C.SCHEMA))
-            self.log("索引建完")
-            sleep_until(stop, 20)
-            c.exec("DROP INDEX IF EXISTS %s.%s" % (C.SCHEMA, self.IDX))
-            state.drop_residue("index", "%s.%s" % (C.SCHEMA, self.IDX))
-        until(stop, cycle, period_s=5)
+        c.set("query_dop", "1")
+        state.add_residue("index", "%s.%s" % (C.SCHEMA, self.IDX))   # 先登记:被 kill 也有人收
+        # **窗口里不做 DROP INDEX:** 它要整表排他锁,会排在 S2 读 order_items 的长查询后面。
+        # 上一次的索引还在,说明上次没清干净 —— 如实说,不在这里补删。
+        if c.one("SELECT count(*) FROM pg_class WHERE relname = %s", (self.IDX,)):
+            self.log("上一次的 %s 还在(上次清理没做完),这次不建 —— 先跑 cleanup" % self.IDX)
+            return
+        self.log("开始建索引(慢表达式,预计要建满整个时段;期间 order_items 写不进)")
+        c.exec(self.index_sql())                                      # 挂在这里,时段到了被取消
+        self.log("索引提前建完了 —— 写入从此不再被挡;索引留到 cleanup 再删")
+        while not stop.is_set():
+            stop.wait(HOLD_POLL_S)
 
     def _writer(self, c: Conn, stop: threading.Event) -> None:
         """往大表里写。id 用随机值,原因同 K6._child(固定 id 第二次跑就撞主键)。"""
@@ -368,11 +399,12 @@ class IndexBuild(Base):
               on_error=lambda exc: self.ctx.bump("K5_insert_errors"))
 
     def probe(self, admin: Conn) -> str:
-        building = admin.one(
-            "SELECT count(*) FROM pg_stat_activity "
-            " WHERE application_name = %s AND state = 'active' AND sessionid <> 0",
+        rows = admin.query(
+            "SELECT extract(epoch FROM now() - query_start)::int, substr(query, 1, 12) "
+            "  FROM pg_stat_activity WHERE application_name = %s AND state = 'active' AND sessionid <> 0",
             (C.APP_PREFIX + "K5/ddl",))
-        return "建索引会话 %s 个在跑,写入侧等锁 %d 个" % (building, self.waiting(admin))
+        building = "建索引已 %s 秒" % rows[0][0] if rows and "CREATE" in str(rows[0][1]).upper() else "没在建索引"
+        return "%s,写入侧等锁 %d 个" % (building, self.waiting(admin))
 
 
 @register("K3")

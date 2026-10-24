@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Optional
 
 from .. import config as C
@@ -91,34 +92,50 @@ class BloatNoAutovacuum(_Updater):
 
 @register("V5")
 class BloatThrottled(_Updater):
-    """autovacuum 开着,但被表级参数限到很慢 → 它一直在跑,却追不上更新速度。
+    """autovacuum 开着,但被表级参数限速 → 它一轮轮在跑,却追不上更新速度。
 
     **和 V1 的区别就是这套工具要分清的事:** 这里 autovacuum 是**开着**的,
     `last_autovacuum` 一直在更新,但死元组照样涨。只看「autovacuum 开没开」会误判成正常。
+
+    **限速不能狠到一轮都跑不完。** 原来是 cost_delay=100ms / cost_limit=10:每秒只有 100 点配额,
+    一轮要扫几千个页,3 分钟里一轮也没跑完 —— `last_autovacuum` 只在一轮**结束**时更新,
+    于是一直是「从未运行」,看起来和 V1 关掉了一样(2026-10-24 全量跑,autovacuum_count 始终 0)。
+    现在给默认速度的三成(cost_delay=20ms / cost_limit=60):一轮几十秒,时段内能跑完好几轮。
+    (十分之一也试过:og5 上单跑 V5 时,表在 3 分钟里胀到 112 MB,第一轮要 170 秒才跑完,
+    时段内只更新了一次 last_autovacuum。)
+    死元组照样清不掉 —— 回收水位被 V2/V3/K10 卡着,这本来也是现场「限速 + 长事务」叠在一起的样子。
     """
 
     group = "vacuum"
     table = "bloat_slow"
     rows = 200_000
+    COST_DELAY_MS = 20
+    COST_LIMIT = 60
 
     def start(self) -> None:
         c = Conn(self.code + "/setup")
         try:
-            # 限到几乎不干活:每清一点就睡 100 毫秒,一轮的配额只有 10
             c.exec("ALTER TABLE %s.%s SET (autovacuum_enabled = true, "
-                   "  autovacuum_vacuum_cost_delay = 100, autovacuum_vacuum_cost_limit = 10, "
-                   "  autovacuum_vacuum_scale_factor = 0.001)" % (C.SCHEMA, self.table))
+                   "  autovacuum_vacuum_cost_delay = %d, autovacuum_vacuum_cost_limit = %d, "
+                   "  autovacuum_vacuum_scale_factor = 0.001)"
+                   % (C.SCHEMA, self.table, self.COST_DELAY_MS, self.COST_LIMIT))
             state.add_residue("table_option", "%s.%s:autovacuum_cost" % (C.SCHEMA, self.table))
-            self.log("已把 %s 的 autovacuum 限速到 cost_delay=100ms / cost_limit=10" % self.table)
+            self._base = int(c.one("SELECT coalesce(autovacuum_count, 0) FROM pg_stat_user_tables "
+                                   " WHERE schemaname = %s AND relname = %s", (C.SCHEMA, self.table)) or 0)
+            self.log("已把 %s 的 autovacuum 限速到 cost_delay=%dms / cost_limit=%d"
+                     % (self.table, self.COST_DELAY_MS, self.COST_LIMIT))
         finally:
             c.close()
         self.worker("upd", self._update)
 
     def probe(self, admin: Conn) -> str:
-        last = admin.one(
-            "SELECT to_char(last_autovacuum, 'HH24:MI:SS') FROM pg_stat_user_tables "
-            " WHERE schemaname = %s AND relname = %s", (C.SCHEMA, self.table))
-        return "%s;最近一次 autovacuum %s(开着却追不上)" % (_dead_ratio(admin, self.table), last or "还没来过")
+        row = admin.query(
+            "SELECT to_char(last_autovacuum, 'HH24:MI:SS'), coalesce(autovacuum_count, 0) "
+            "  FROM pg_stat_user_tables WHERE schemaname = %s AND relname = %s", (C.SCHEMA, self.table))
+        last, count = (row[0] if row else (None, 0))
+        rounds = int(count or 0) - getattr(self, "_base", 0)
+        verdict = "开着、跑了 %d 轮还追不上" % rounds if rounds > 0 else "这段时间 autovacuum 还没跑完一轮"
+        return "%s;最近一次 autovacuum %s(%s)" % (_dead_ratio(admin, self.table), last or "从未", verdict)
 
 
 @register("V2")
@@ -195,29 +212,54 @@ class PreparedXactHold(Base):
 
 @register("V4")
 class ReplicationSlotHold(Base):
-    """建一个没人消费的复制槽 → WAL 只增不删,回收水位也被它压住。
+    """建一个没人消费的复制槽 → WAL 只增不删,回收水位(catalog_xmin)也被它压住。
 
     **带守卫:** 槽一旦留着,WAL 会一直涨。og5 的盘是和别的测试共用的,所以这里起一条
     看门线程,每分钟看一次 WAL 目录大小,超过 WAL_GUARD_BYTES 就立刻删槽并记一行日志。
     宁可让这个场景提前结束,也不能把别人的测试环境搞坏。
+
+    **为什么改成逻辑槽:** 原来建的是物理槽,没有备机连上来,它的 restart_lsn、xmin 一直是空的 ——
+    既不留 WAL 也不钉水位,等于什么都没造(2026-10-24 全量跑,V4 自证一直是 restart_lsn=None)。
+    逻辑槽一建好就有 restart_lsn 与 catalog_xmin(og5 的 wal_level=logical)。
+    逻辑槽建立时要等当时所有已分配事务号的事务结束,所以 V4 排在最前(+2 秒),
+    并给建槽语句 30 秒上限;建不成就退回「物理槽 + 推进到当前位置」,再不成如实说没造出来。
     """
 
     group = "vacuum"
     SLOT = "fl_slot_v4"
+    PLUGIN = "mppdb_decoding"            # openGauss 自带的逻辑解码插件
+    CREATE_TIMEOUT_S = 30
 
     def start(self) -> None:
         c = Conn(self.code + "/setup")
         try:
+            c.set("statement_timeout", "%ds" % self.CREATE_TIMEOUT_S)
             c.exec("SELECT pg_drop_replication_slot(%s) WHERE EXISTS "
                    "  (SELECT 1 FROM pg_replication_slots WHERE slot_name = %s)",
                    (self.SLOT, self.SLOT))
-            # openGauss 的物理槽要两个参数(第二个是「是否 dummy standby」)
-            c.exec("SELECT pg_create_physical_replication_slot(%s, false)", (self.SLOT,))
-            state.add_residue("slot", self.SLOT)
-            self.log("已建复制槽 %s(无人消费)" % self.SLOT)
+            state.add_residue("slot", self.SLOT)       # 先登记:建到一半被打断也有人收
+            self.log("已建复制槽 %s(%s,无人消费)" % (self.SLOT, self._create(c)))
         finally:
             c.close()
         self.worker("guard", self._guard)
+
+    def _create(self, c: Conn) -> str:
+        """先建逻辑槽;不行就物理槽 + 推进到当前 WAL 位置(让它有 restart_lsn)。返回建成了哪种。"""
+        try:
+            c.exec("SELECT * FROM pg_create_logical_replication_slot(%s, %s)", (self.SLOT, self.PLUGIN))
+            return "逻辑槽,插件 %s" % self.PLUGIN
+        except Exception as exc:                 # noqa: BLE001
+            why = str(exc).splitlines()[0][:80]
+            c.rollback()
+        # openGauss 的物理槽要两个参数(第二个是「是否 dummy standby」)
+        c.exec("SELECT pg_create_physical_replication_slot(%s, false)", (self.SLOT,))
+        try:
+            c.exec("SELECT pg_replication_slot_advance(%s, pg_current_xlog_location()::text)", (self.SLOT,))
+            return "逻辑槽建不成(%s),退回物理槽并推进到当前位置" % why
+        except Exception as exc:                 # noqa: BLE001
+            c.rollback()
+            return ("逻辑槽建不成(%s),物理槽也推进不了(%s)—— 槽在但不留 WAL、不钉水位,V4 这次没造出来"
+                    % (why, str(exc).splitlines()[0][:60]))
 
     def _guard(self, c: Conn, stop: threading.Event) -> None:
         # **看增量,不看总量。** 第一版比的是 pg_ls_waldir() 的总和,而 og5 上本来就
@@ -247,11 +289,19 @@ class ReplicationSlotHold(Base):
         return bool(c.one("SELECT count(*) FROM pg_proc WHERE proname = 'pg_ls_waldir'"))
 
     def probe(self, admin: Conn) -> str:
-        row = admin.query("SELECT slot_name, active, restart_lsn FROM pg_replication_slots "
-                          " WHERE slot_name = %s", (self.SLOT,))
+        row = admin.query(
+            "SELECT slot_type, active, restart_lsn, xmin, catalog_xmin, "
+            "       CASE WHEN restart_lsn IS NULL THEN NULL "
+            "            ELSE pg_xlog_location_diff(pg_current_xlog_location(), restart_lsn)::bigint END "
+            "  FROM pg_replication_slots WHERE slot_name = %s", (self.SLOT,))
         if not row:
             return "槽已不在(可能被守卫删了,见时间线)"
-        return "槽 %s 在、active=%s、restart_lsn=%s" % row[0]
+        kind, active, lsn, xmin, cxmin, held = row[0]
+        if lsn is None and xmin is None and cxmin is None:
+            return "槽 %s 在(%s、active=%s),但 restart_lsn / xmin / catalog_xmin 全空 —— 不留 WAL、不钉水位,没造出来" % (
+                self.SLOT, kind, active)
+        return "槽 %s(%s、active=%s)钉着 WAL %s MB,xmin=%s、catalog_xmin=%s" % (
+            self.SLOT, kind, active, (int(held) // 1048576) if held is not None else "?", xmin, cxmin)
 
 
 @register("V7")
@@ -259,56 +309,88 @@ class ImportNoAnalyze(Base):
     """批量导入 50 万行、**导完不收集统计信息** —— S5 的成因。
 
     这一项本身耗时很短(实测不到 1 秒),它造的是一个**状态**:统计信息与实际数据
-    差几十倍。表级 autovacuum 已经在建表时关掉了,所以这个状态不会被自动修正。
+    差几十倍。表级 autovacuum 关着、analyze 触发线拉到了永远够不着(prepare.import_stage_options_sql;
+    光关 autovacuum 挡不住自动 ANALYZE),所以这个状态不会被自动修正。
     """
 
     group = "vacuum"
 
     def start(self) -> None:
+        self._imported_at: Optional[str] = None
         self.worker("import", self._import)
 
     def _import(self, c: Conn, stop: threading.Event) -> None:
         from ..prepare import import_batch
         import_batch(c)
+        self._imported_at = str(c.one("SELECT to_char(now(), 'YYYY-MM-DD HH24:MI:SS.US')"))
         self.log("已导入 %d 行,**没有** ANALYZE" % C.IMPORT_ROWS)
 
     def probe(self, admin: Conn) -> str:
-        est = admin.one("SELECT reltuples::bigint FROM pg_class "
-                        " WHERE oid = '%s.import_stage'::regclass" % C.SCHEMA)
+        # 只算导入**之后**的自动 ANALYZE —— 之前那些(上一轮留下的时间戳)与这一轮无关
+        row = admin.query(
+            "SELECT c.reltuples::bigint, "
+            "       CASE WHEN s.last_autoanalyze > %s::timestamptz "
+            "            THEN to_char(s.last_autoanalyze, 'HH24:MI:SS') END "
+            "  FROM pg_class c JOIN pg_stat_user_tables s ON s.relid = c.oid "
+            " WHERE s.schemaname = %s AND s.relname = 'import_stage'",
+            (getattr(self, "_imported_at", None) or "infinity", C.SCHEMA))
         real = admin.one("SELECT count(*) FROM %s.import_stage" % C.SCHEMA)
-        return "统计信息里 %s 行、实际 %s 行" % (est, real)
+        est, auto = row[0] if row else (None, None)
+        # 自动 ANALYZE 抢先过(上次就是这样)的话要如实说:那时统计已经准了,S5 的错估不会出现
+        note = ";**已被自动 ANALYZE(%s)—— 统计不再过期,S5 不成立**" % auto if auto else ""
+        return "统计信息里 %s 行、实际 %s 行%s" % (est, real, note)
 
 
 @register("V6")
 class VacuumFullBlocks(Base):
-    """业务高峰做维护:对膨胀的表做 VACUUM FULL,这张表的读写全被挡住。
+    """业务高峰做维护:VACUUM FULL 一张表,这张表的读写全被挡住。
 
     VACUUM FULL 要整表排他锁、还要重写整张表 —— 空间是收回来了,代价是这段时间里
     谁也别想碰它。现实里的样子:发现表膨胀,白天就手工 VACUUM FULL,业务当场中断。
+
+    **对象换成了 maint_hist,而且整个时段反复做。** 原来对 bloat_hot 做一次,10 秒就完
+    (2026-10-24 全量跑),排查的人基本赶不上;想让它变长只能让表更大,而 bloat_hot 被回收水位
+    卡着,重写一次就是 500 多 MB 的 WAL(V4 的槽正钉着 WAL)。maint_hist 是 unlogged 表、
+    带一条慢表达式索引:重写不产生 WAL,重建那条索引要两分钟上下。时段一到,停场景时把
+    正在做的那次取消。代价是不再对 bloat_hot 做前后对比 —— 那本来也做不成:回收水位被
+    V2/V3/K10 卡着,VACUUM FULL 也收不回那些死元组(上次实测做完反而更大)。
     """
 
     group = "vacuum"
-    table = "bloat_hot"
+    table = "maint_hist"
 
     def start(self) -> None:
         self.worker("maint", self._maint, expect_errors=True)
-        self.worker("biz", self._biz, expect_errors=True)
+        self.worker("reader", self._read, expect_errors=True)
+        self.worker("writer", self._write, expect_errors=True)
 
     def _maint(self, c: Conn, stop: threading.Event) -> None:
-        self.log("开始 VACUUM FULL %s(期间这张表读写都进不去)" % self.table)
-        c.exec("VACUUM FULL %s.%s" % (C.SCHEMA, self.table))
-        self.log("VACUUM FULL 做完")
-        while not stop.is_set():
-            stop.wait(HOLD_POLL_S)
+        c.set("query_dop", "1")
 
-    def _biz(self, c: Conn, stop: threading.Event) -> None:
+        def once() -> None:
+            t0 = time.time()
+            self.log("开始 VACUUM FULL %s(期间这张表读写都进不去)" % self.table)
+            c.exec("VACUUM FULL %s.%s" % (C.SCHEMA, self.table))
+            self.log("VACUUM FULL 做完一次,%.0f 秒;接着再做" % (time.time() - t0))
+        until(stop, once, period_s=1.0)
+
+    def _read(self, c: Conn, stop: threading.Event) -> None:
         until(stop, lambda: c.query("SELECT count(*) FROM %s.%s WHERE id < 100"
                                     % (C.SCHEMA, self.table)), period_s=3)
 
+    def _write(self, c: Conn, stop: threading.Event) -> None:
+        pos = [0]
+
+        def touch() -> None:
+            pos[0] = pos[0] % C.MAINT_ROWS + 1
+            c.exec("UPDATE %s.%s SET cnt = cnt + 1 WHERE id = %%s" % (C.SCHEMA, self.table), (pos[0],))
+        until(stop, touch, period_s=2)
+
     def probe(self, admin: Conn) -> str:
-        running = admin.one(
-            "SELECT count(*) FROM pg_stat_activity "
-            " WHERE application_name = %s AND state = 'active' AND sessionid <> 0",
-            (C.APP_PREFIX + "V6/maint",))
-        return "维护会话 %s 个在跑,业务侧等锁 %d 个;%s" % (
-            running, self.waiting(admin), _dead_ratio(admin, self.table))
+        # 不量表大小:VACUUM FULL 拿着整表排他锁,pg_total_relation_size 会排在它后面
+        rows = admin.query(
+            "SELECT extract(epoch FROM now() - query_start)::int FROM pg_stat_activity "
+            " WHERE application_name = %s AND state = 'active' AND sessionid <> 0 "
+            "   AND query LIKE 'VACUUM FULL%%'", (C.APP_PREFIX + "V6/maint",))
+        doing = "VACUUM FULL 这一次已做 %s 秒" % rows[0][0] if rows else "此刻没在做 VACUUM FULL"
+        return "%s,业务侧等锁 %d 个" % (doing, self.waiting(admin))

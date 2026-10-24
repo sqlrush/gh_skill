@@ -92,12 +92,23 @@ def check() -> Dict[str, object]:
 
 
 def _data_state(c: Conn) -> str:
-    want = [t.name for t in C.TABLES]
     got = {r[0] for r in c.query(
         "SELECT tablename FROM pg_tables WHERE schemaname = %s", (C.SCHEMA,))}
-    missing = [t for t in want if t not in got]
+    rows = None
+    if "order_items" in got:
+        rows = c.one("SELECT reltuples::bigint FROM pg_class WHERE oid = '%s.order_items'::regclass"
+                     % C.SCHEMA)
+    return data_state_text(got, rows)
+
+
+def data_state_text(got, order_items_rows) -> str:
+    """数据备没备好(纯函数)。**运行期对象缺了不算没备好:** run 开跑前会自己补建
+    (prepare.ensure_runtime_objects),不该为它们把 900 MB 数据重造一遍。"""
+    missing = [t.name for t in C.TABLES if t.name not in C.RUNTIME_TABLES and t.name not in got]
     if missing:
         return "缺 %d 张表(%s…),要先跑 prepare" % (len(missing), ", ".join(missing[:4]))
-    rows = c.one("SELECT reltuples::bigint FROM pg_class WHERE oid = '%s.order_items'::regclass"
-                 % C.SCHEMA)
-    return "齐了(order_items 约 %s 行)" % rows
+    text = "齐了(order_items 约 %s 行)" % order_items_rows
+    later = [t for t in C.RUNTIME_TABLES if t not in got]
+    if later:
+        text += ";运行期对象还没建(%s)—— run 开跑前会自动补建,第一次约两分钟" % ", ".join(later)
+    return text
