@@ -337,11 +337,13 @@ LOCK_CHAIN_ROWS = 8
 
 
 def lock_dim(cov: timewin.Coverage, script_path, timeout: int, conn: str = "") -> DimResult:
-    """过去时段的锁阻塞:交给 gaussdb-lockwait --from/--to 读活跃会话采样(gs_asp),同一个评估窗口。
+    """过去时段的锁阻塞:交给 gaussdb-lockwait --from/--to 读活跃会话采样(ASP),同一个评估窗口。
 
     原来这一维标「回看不了：锁释放后不留痕迹」—— 不准确:锁视图确实不留,但 ASP 每个样本带
-    block_sessionid,落表后保留 asp_retention_days 天(2026-10-21 测试发现,见 lockwait/aspchain.py)。
-    ASP 没开 / 过了保留期 / 白名单缺脚本时,如实标回看不了并给原因,不当成「没有锁等待」。
+    block_sessionid(2026-10-21 测试发现)。样本在两处:最近几个小时只在内存里(dbe_perf.local_active_session),
+    内存写满才落进 gs_asp、保留 asp_retention_days 天;lockwait 两处一起读(2026-10-24 起,只读 gs_asp 时
+    刚过去的那段一律误报「回看不了」,这一维跟着不可用),见 lockwait/aspchain.py。
+    ASP 没开 / 过了保留期 / 两处都没覆盖到 / 白名单缺脚本时,如实标回看不了并给原因,不当成「没有锁等待」。
     """
     argv = [sys.executable, str(script_path), "--format", "json",
             "--from", cov.start.at.strftime("%Y-%m-%d %H:%M:%S"),
