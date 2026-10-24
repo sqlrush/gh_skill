@@ -47,9 +47,11 @@ for _anc in _HERE.parents:                      # locate common/ (repo root or i
 import common  # noqa: E402
 from common import access  # noqa: E402
 from common import cli  # noqa: E402
+from common import kbsection  # noqa: E402
 from common import proc_locate  # noqa: E402
 from common import procname  # noqa: E402
 from common.grmp.hints import ensure_hint  # noqa: E402
+from common.sqlrefs import extract_table_refs  # noqa: E402
 import procanalyze as pa  # noqa: E402
 import render  # noqa: E402
 import sysprocs  # noqa: E402
@@ -246,6 +248,66 @@ def tune_cursors(runner, db, qualified: str,
     return CursorTuneResult(proc=proc, cursors=cursors, skipped=skipped)
 
 
+# --- 客户知识库检索项 ----------------------------------------------------------
+
+# 结构发现的中文叫法(与 SKILL.md 第 7 步同一套说法):检索文本用中文,才对得上客户案例里的写法。
+_STRUCT_LABELS = {
+    "loop_sql": "循环里跑 SQL",
+    "per_row_dml": "循环内逐行 DML",
+    "exception_in_loop": "循环内 EXCEPTION 块",
+    "dynamic_sql": "动态 SQL(EXECUTE)",
+}
+_KB_TABLES_MAX = 8          # 检索文本里最多带几张表:够对上案例里的对象名,又不把查询词稀释掉
+
+
+def _proc_name(p: pa.ProcDef) -> str:
+    return procname.qualified(p.schema, getattr(p, "package", ""), p.name)
+
+
+def _proc_tables(p: pa.ProcDef) -> list:
+    """过程体里引用的表。去掉与过程变量同名的 —— `SELECT … INTO v_cnt` 会被当成表名摘出来。"""
+    local = {str(v).lower() for v in (p.vars or {})}
+    return [t for t in extract_table_refs(p.body) if t.rsplit(".", 1)[-1] not in local][:_KB_TABLES_MAX]
+
+
+def kb_items_collect(pe: ProcEvidence) -> list:
+    """collect 给知识库检索的「发现」:过程本身(名字 + 涉及的表)一项 + 每类结构发现各一项(纯函数)。
+
+    同一类结构发现在过程里出现多处只查一次(检索文本一样,参照也一样),证据带第一处的源码行。
+    """
+    name = _proc_name(pe.proc)
+    tables = " ".join(_proc_tables(pe.proc))
+    items = [kbsection.Item(code="PROC", dimension="proctune", metric="存储过程", value=name,
+                            evidence=f"{name} {tables}".strip())]
+    by_kind: dict = {}
+    for f in pe.structure:
+        by_kind.setdefault(f.kind, []).append(f)
+    for kind, fs in by_kind.items():
+        label = _STRUCT_LABELS.get(kind, kind)
+        items.append(kbsection.Item(code=f"PROC_{kind.upper()}", dimension="proctune", metric=label,
+                                    value=f"{len(fs)} 处", evidence=f"{label} {fs[0].snippet} {name}".strip()))
+    return items
+
+
+def kb_items_tune(tr: CursorTuneResult) -> list:
+    """tune-cursor 给知识库检索的「发现」:游标计划里的每类确定性发现一项(各游标合并),
+    证据带涉及的表 —— 与 sqltune 的 PLAN_* 同一口径(纯函数)。过程本身那一项 collect 已经查过。"""
+    name = _proc_name(tr.proc)
+    by_kind: dict = {}
+    for ce in tr.cursors:
+        tables = ", ".join(f"{t.schema}.{t.name}" if t.schema else t.name for t in ce.evidence.tables)
+        for f in ce.evidence.findings:
+            by_kind.setdefault(f.kind, []).append((ce.name, f, tables))
+    items = []
+    for kind, hits in by_kind.items():
+        cursors = "、".join(dict.fromkeys(c for c, _f, _t in hits))
+        _c, f, tables = hits[0]
+        items.append(kbsection.Item(code=f"PLAN_{kind.upper()}", dimension="plan", metric=kind,
+                                    value=f"游标 {cursors}", evidence=f"{f.detail} {tables} {name}".strip(),
+                                    severity=f.severity))
+    return items
+
+
 # --- reports (port of cli/proc.go) -------------------------------------------
 
 def _arg_string(args: list) -> str:
@@ -282,6 +344,8 @@ def proc_collect_report(pe: ProcEvidence) -> str:
     out += "\n## Key Parameters (GUC)\n\n"
     out += render.table(["NAME", "SETTING", "UNIT"],
                         [[g.name, g.setting, g.unit] for g in pe.gucs])
+    # 客户知识库对这个过程与它的结构发现怎么说;--format json 不带(形状不变)
+    out += "\n" + kbsection.markdown(kb_items_collect(pe))
     return out
 
 
@@ -323,6 +387,8 @@ def cursor_tune_report(tr: CursorTuneResult) -> str:
     else:
         rows = [[s.name, s.kind, s.skip_reason] for s in tr.skipped]
         out += render.table(["Name", "Kind", "Reason"], rows)
+    # 客户知识库对游标计划里的发现怎么说;--format json 不带(形状不变)
+    out += "\n" + kbsection.markdown(kb_items_tune(tr))
     return out
 
 

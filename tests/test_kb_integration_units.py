@@ -1,7 +1,10 @@
-"""health / sqltune 脚本层接入「客户知识库参照」——接入不可静默(无库)。
+"""诊断 skill 脚本层接入「客户知识库参照」——接入不可静默(无库)。
 
-两条断言贯穿:① 知识库不存在时小节仍在,只是「未接入(原因)」;② 有命中时每条 finding 一段,
-且小节位置正确(health:两段固定小节之后、维度正文之前;sqltune:证据之后、结论性小节之前)。
+九个接入的脚本:health / sqltune / lockwait,以及走 common/kbsection.py 的 waitevent / vacuum / wdr /
+memanalyze / proctune / sqlreview。两条断言贯穿:① 知识库不存在时小节仍在,只是「未接入(原因)」,
+主报告照常;② 有命中时每条 finding 一段,且小节位置正确(health:两段固定小节之后、维度正文之前;
+sqltune:证据之后、结论性小节之前;其余见各用例)。另钉一条:被 health 当子进程拉起的 waitevent / vacuum
+走 --format json,JSON 里不检索 —— health 自己对汇总后的发现查一次,不能同一份发现查两遍。
 """
 import importlib
 import pathlib
@@ -162,3 +165,223 @@ def test_lockwait_report_renders_hits_before_detail(monkeypatch, load):
     out = lockwait.render_markdown(rep)
     assert "## 客户知识库参照" in out and "### 对 🟠 LOCK_ROOT_IDLE_XACT" in out
     assert out.index("## 客户知识库参照") < out.index("## 阻塞明细")
+
+
+# ---------------------------------------------------------------- 公共入口 common/kbsection.py
+
+def _recording(calls):
+    """替身 from_findings:记下每次检索收到的发现,再给命中。"""
+    def fake(findings, kb_dir=None):
+        calls.append(list(findings))
+        return _canned(findings, kb_dir)
+    return fake
+
+
+def test_kbsection_degrades_when_common_kb_is_missing(monkeypatch):
+    from common import kbsection
+    monkeypatch.setitem(sys.modules, "common.kb", None)          # 旧安装:import common.kb 失败
+    text, d = kbsection.section([_finding()])
+    assert text.startswith("## 客户知识库参照\n> 知识库未接入(common/kb 未安装")
+    assert d["status"]["attached"] is False and d["items"] == []
+
+
+def test_kbsection_queries_identical_findings_once(monkeypatch):
+    """vacuum 的 R4 在每张命中表上各报一条一模一样的:只查一次,参照不重复 N 遍。"""
+    from common import kbsection
+    calls = []
+    monkeypatch.setattr(kbquery, "from_findings", _recording(calls))
+    out = kbsection.markdown([_finding("VAC_XMIN"), _finding("VAC_XMIN"), _finding("VAC_FREQ")])
+    assert [f.code for f in calls[0]] == ["VAC_XMIN", "VAC_FREQ"]
+    assert out.count("### 对 🟠 VAC_XMIN") == 1
+
+
+# ---------------------------------------------------------------- waitevent
+
+def _wait_finding():
+    return Finding(dimension="DB Time", code="WAIT_LWLOCK_HEAVY", severity=Severity.WARN, metric="轻量锁等待占比",
+                   value="45.0%", threshold="30%", evidence="WALInsertLock 等待占 DB time 45%")
+
+
+def test_waitevent_markdown_has_kb_section_with_hits(monkeypatch, load):
+    waitevent = load("gaussdb-waitevent", "waitevent")
+    monkeypatch.setattr(kbquery, "from_findings", _canned)
+    out = waitevent.render_markdown(waitevent.WaitReport(windows=[], findings=[_wait_finding()]))
+    assert out.startswith("# DB Time 分解与等待事件下钻")
+    assert "## 客户知识库参照" in out and "### 对 🟠 WAIT_LWLOCK_HEAVY" in out
+    assert out.index("gaussdb-lockwait") < out.index("## 客户知识库参照")      # 放在报告末尾
+
+
+def test_waitevent_markdown_unattached_still_renders(monkeypatch, load):
+    monkeypatch.setenv("GSDB_KB_DIR", "/nonexistent/kb")
+    waitevent = load("gaussdb-waitevent", "waitevent")
+    out = waitevent.render_markdown(waitevent.WaitReport(windows=[], findings=[_wait_finding()]))
+    assert "没有可用窗口" in out and "> 知识库未接入(" in out
+
+
+def test_waitevent_json_for_health_does_not_query_the_kb(monkeypatch, load, capsys):
+    """health 以 --format json 拉起本脚本:JSON 里不检索,markdown 里检索一次。"""
+    waitevent = load("gaussdb-waitevent", "waitevent")
+    calls = []
+    monkeypatch.setattr(kbquery, "from_findings", _recording(calls))
+    monkeypatch.setattr(waitevent.access, "for_conn", lambda *a, **k: object())
+    monkeypatch.setattr(waitevent, "collect",
+                        lambda runner, **k: waitevent.WaitReport(windows=[], findings=[_wait_finding()]))
+    assert waitevent.main(["-c", "x", "--format", "json"]) == 0
+    import json
+    assert json.loads(capsys.readouterr().out)["findings"][0]["code"] == "WAIT_LWLOCK_HEAVY"
+    assert calls == []
+    assert waitevent.main(["-c", "x"]) == 0
+    assert "## 客户知识库参照" in capsys.readouterr().out and len(calls) == 1
+
+
+# ---------------------------------------------------------------- vacuum
+
+def test_vacuum_markdown_places_kb_section_before_manual_cleanup(monkeypatch, load):
+    vacuum = load("gaussdb-vacuum", "vacuum")
+    monkeypatch.setattr(kbquery, "from_findings", _canned)
+    out = vacuum.render_markdown(vacuum.VacuumReport(findings=[_finding("VACUUM_DEAD_RATIO")]))
+    assert "### 对 🟠 VACUUM_DEAD_RATIO" in out
+    assert out.index("## autovacuum 近期运行情况") < out.index("## 客户知识库参照") < out.index("## 手工清理评估")
+
+
+def test_vacuum_markdown_unattached_still_renders(monkeypatch, load):
+    monkeypatch.setenv("GSDB_KB_DIR", "/nonexistent/kb")
+    vacuum = load("gaussdb-vacuum", "vacuum")
+    out = vacuum.render_markdown(vacuum.VacuumReport(findings=[_finding("VACUUM_DEAD_RATIO")]))
+    assert "# 死元组 / autovacuum 健康度评估" in out and "## 手工清理评估" in out
+    assert "> 知识库未接入(" in out
+
+
+def test_vacuum_json_for_health_does_not_query_the_kb(monkeypatch, load, capsys):
+    vacuum = load("gaussdb-vacuum", "vacuum")
+    calls = []
+    monkeypatch.setattr(kbquery, "from_findings", _recording(calls))
+    monkeypatch.setattr(vacuum.access, "for_conn", lambda *a, **k: object())
+    monkeypatch.setattr(vacuum, "collect", lambda *a, **k: vacuum.VacuumReport(findings=[_finding("VACUUM_DEAD_RATIO")]))
+    assert vacuum.main(["-c", "x", "--format", "json"]) == 0
+    assert "客户知识库" not in capsys.readouterr().out and calls == []
+
+
+# ---------------------------------------------------------------- wdr(collect 的证据包)
+
+def _wdr_ev(model):
+    f = model.Finding(model.DIM_DBSTAT, "WDR_DEADLOCK", model.Severity.WARN, "死锁数", "6", "≥5", "e")
+    return model.Evidence(conn="og", window=model.Window(begin_id=1, end_id=2, scope="node"),
+                          dims=[], findings=[f], overall=model.Severity.WARN)
+
+
+def test_wdr_evidence_places_kb_section_after_findings(monkeypatch, load):
+    report = load("gaussdb-wdr", "report")
+    model = sys.modules["model"]
+    monkeypatch.setattr(kbquery, "from_findings", _canned)
+    ev = _wdr_ev(model)
+    out = report.render_evidence(ev)
+    assert "### 对 🟠 WDR_DEADLOCK" in out
+    assert out.index("## Deterministic Findings") < out.index("## 客户知识库参照") < out.index("## Collection Notes")
+    assert "kb_refs" not in report.render_evidence_json(ev)          # 证据包 JSON 是 render 的输入,形状不变
+
+
+def test_wdr_evidence_unattached_still_renders(monkeypatch, load):
+    monkeypatch.setenv("GSDB_KB_DIR", "/nonexistent/kb")
+    report = load("gaussdb-wdr", "report")
+    out = report.render_evidence(_wdr_ev(sys.modules["model"]))
+    assert "WDR_DEADLOCK" in out and "## Collection Notes" in out and "> 知识库未接入(" in out
+
+
+# ---------------------------------------------------------------- memanalyze
+
+def _mem_finding():
+    return Finding(dimension="SQL", code="MEM_SQL_SPILL", severity=Severity.WARN, metric="落盘",
+                   value="512MB", threshold="0", evidence="排序落盘 512MB")
+
+
+def test_memanalyze_places_kb_section_after_findings(monkeypatch, load):
+    report = load("gaussdb-memanalyze", "report")
+    model = sys.modules["model"]
+    monkeypatch.setattr(kbquery, "from_findings", _canned)
+    dim = model.DimResult(dimension="SQL 级", available=True, headline="h")
+    out = report.render_markdown(model.MemEvidence(conn="og", dims=[dim], findings=[_mem_finding()]))
+    assert "### 对 🟠 MEM_SQL_SPILL" in out
+    assert out.index("## Deterministic Findings") < out.index("## 客户知识库参照") < out.index("## SQL 级")
+    assert "kb_refs" not in report.render_json(model.MemEvidence(conn="og", findings=[_mem_finding()]))
+
+
+def test_memanalyze_unattached_still_renders(monkeypatch, load):
+    monkeypatch.setenv("GSDB_KB_DIR", "/nonexistent/kb")
+    report = load("gaussdb-memanalyze", "report")
+    out = report.render_markdown(sys.modules["model"].MemEvidence(conn="og", findings=[_mem_finding()]))
+    assert "MEM_SQL_SPILL" in out and "> 知识库未接入(" in out
+
+
+# ---------------------------------------------------------------- proctune
+
+def _proc(pa):
+    body = ("BEGIN\n  FOR r IN SELECT id FROM cbst.acct LOOP\n"
+            "    SELECT count(*) INTO v_cnt FROM cbst.acct_dtl WHERE acct_id = r.id;\n"
+            "    UPDATE cbst.acct_dtl SET flag = 1 WHERE acct_id = r.id;\n  END LOOP;\nEND")
+    return pa.ProcDef(schema="cbst", name="p_settle", lang="plpgsql", args=[], source=body, body=body,
+                      vars={"v_cnt": "integer"}, rollback_safe=True)
+
+
+def test_proctune_collect_items_and_section(monkeypatch, load):
+    proctune = load("gaussdb-proctune", "proctune")
+    pa = sys.modules["procanalyze"]
+    proc = _proc(pa)
+    pe = proctune.ProcEvidence(proc=proc, structure=pa.scan_structure(proc.body), embedded=[],
+                               runtime_note="n", gucs=[])
+    items = proctune.kb_items_collect(pe)
+    assert items[0].code == "PROC" and "cbst.p_settle" in items[0].evidence
+    assert "cbst.acct_dtl" in items[0].evidence and "v_cnt" not in items[0].evidence   # INTO 变量不当表名
+    codes = [i.code for i in items]
+    assert "PROC_PER_ROW_DML" in codes and len(codes) == len(set(codes))              # 同类只查一次
+    calls = []
+    monkeypatch.setattr(kbquery, "from_findings", _recording(calls))
+    out = proctune.proc_collect_report(pe)
+    assert out.index("## Key Parameters (GUC)") < out.index("## 客户知识库参照")
+    assert "### 对 🟠 PROC" in out and [f.code for f in calls[0]] == codes
+
+
+def test_proctune_tune_cursor_section_and_unattached(monkeypatch, load):
+    monkeypatch.setenv("GSDB_KB_DIR", "/nonexistent/kb")
+    proctune = load("gaussdb-proctune", "proctune")
+    pa, ev_mod = sys.modules["procanalyze"], sys.modules["evidence"]
+    ev = ev_mod.Evidence(sql="SELECT 1", version="v", plan="Seq Scan", analyzed=False,
+                         tables=[ev_mod.TableInfo("cbst", "acct_dtl", 1, 1, "r", 1.0)],
+                         findings=[ev_mod.Finding("seq_scan", "warn", "Seq Scan on acct_dtl", "加索引")])
+    ce = proctune.CursorEvidence(name="c1", kind="explicit", orig_sql="SELECT 1", var_subs=[], evidence=ev)
+    tr = proctune.CursorTuneResult(proc=_proc(pa), cursors=[ce])
+    items = proctune.kb_items_tune(tr)
+    assert [i.code for i in items] == ["PLAN_SEQ_SCAN"] and "cbst.acct_dtl" in items[0].evidence
+    out = proctune.cursor_tune_report(tr)
+    assert "## Cursor c1" in out and "## Skipped Cursors" in out and "> 知识库未接入(" in out
+
+
+# ---------------------------------------------------------------- sqlreview
+
+def _review(model):
+    def f(loc):
+        return model.Finding(rule_id="SEL001", rule_name="禁止 SELECT *", severity=model.Severity.WARN,
+                             message="SELECT * 读出全部列", location=loc, snippet="SELECT * FROM cbst.acct")
+    adv = model.Finding(rule_id="IDX005", rule_name="索引列数", severity=model.Severity.INFO, message="待判断",
+                        location="cbst.acct", advisory=True)
+    return model.ReviewResult(source="file:a.sql", findings=(f("stmt#1"), f("stmt#2"), adv), statements=2)
+
+
+def test_sqlreview_one_item_per_rule_and_section_at_end(monkeypatch, load):
+    report = load("gaussdb-sqlreview", "report")
+    res = _review(sys.modules["model"])
+    items = report.kb_items(res)
+    assert [i.code for i in items] == ["SEL001", "IDX005"]
+    assert items[0].value == "2 处" and "stmt#1 stmt#2" in items[0].evidence and items[1].severity == "advisory"
+    monkeypatch.setattr(kbquery, "from_findings", _canned)
+    out = report.render_markdown(res)
+    assert out.index("## Advisory") < out.index("## 客户知识库参照")
+    assert "### 对 🟠 SEL001" in out and "### 对 🟠 IDX005" in out
+    assert "客户知识库" not in report.render_json(res)
+
+
+def test_sqlreview_unattached_still_renders(monkeypatch, load):
+    monkeypatch.setenv("GSDB_KB_DIR", "/nonexistent/kb")
+    report = load("gaussdb-sqlreview", "report")
+    out = report.render_markdown(_review(sys.modules["model"]))
+    assert "# SQL 规范审查" in out and "SEL001" in out and "> 知识库未接入(" in out

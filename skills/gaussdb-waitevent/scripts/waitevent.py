@@ -51,6 +51,7 @@ for parent in _HERE.parents:
 import common  # noqa: E402
 from common import access  # noqa: E402
 from common import cli  # noqa: E402
+from common import kbsection  # noqa: E402
 from common.finding import findings_to_json  # noqa: E402
 # 结果值全是字符串：bool("f") 是 True、int("3704.0") 会抛异常。
 # 类型还原一律走这里，不用裸 int()/float()/bool()。
@@ -231,6 +232,9 @@ def render_markdown(rep: WaitReport) -> str:
         "「持续存在的问题」与「某个窗口内的一次性尖峰」。\n"
         "> 锁的详细堵塞关系（谁堵了谁、阻塞链的根在哪）见 `gaussdb-lockwait`，"
         "本报告只给锁/轻量锁耗时占比。\n")
+    # 客户知识库对这些发现怎么说(各窗口的发现合在一起查)。只在 markdown 里查:health 用 --format json
+    # 拉本脚本,它会对汇总后的发现统一检索,JSON 里再查就是同一份发现查两遍(见 common/kbsection.py)。
+    parts.append(kbsection.markdown(rep.findings))
     return "\n".join(parts)
 
 

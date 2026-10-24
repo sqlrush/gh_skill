@@ -54,6 +54,7 @@ for _anc in _HERE.parents:                      # locate common/
 import common  # noqa: E402
 from common import access  # noqa: E402
 from common import cli  # noqa: E402
+from common import kbsection  # noqa: E402
 from common import kernel_funcs as kf  # noqa: E402
 from common.finding import findings_to_json  # noqa: E402
 from common.grmp.hints import with_hint  # noqa: E402
@@ -424,6 +425,9 @@ def render_markdown(rep: VacuumReport) -> str:
     out = ["# 死元组 / autovacuum 健康度评估\n"]
     out.append(_risk_table_section(rep))
     out.append(_autovac_status_section(rep))
+    # 客户知识库对这些发现怎么说 —— 放在「手工清理评估」之前:处置以客户的先例与口径为首选依据。
+    # 只在 markdown 里查:health 用 --format json 拉本脚本,会对汇总后的发现统一检索(见 common/kbsection.py)。
+    out.append("\n" + kbsection.markdown(rep.findings))
     out.append(_manual_cleanup_section(rep))
     return "\n".join(out)
 
