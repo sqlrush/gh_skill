@@ -405,6 +405,17 @@ def test_file_mode_reports_a_graph_that_could_not_be_loaded(tmp_path):
     assert "Neo4j 不可用" in st.graph
 
 
+def test_graph_label_explains_legacy_edges_without_status(tmp_path):
+    """旧版索引写进 Neo4j 的边不带 status,一律不进路径;状态行要说出来——否则路径全是「无」却看不出为什么。"""
+    class LegacyGraph(FakeGraph):
+        def counts(self): return {"edges": 7, "edges.confirmed": 0, "edges.no_status": 7}
+
+    st = _session(tmp_path, _rich_pg(), LegacyGraph()).status()
+    assert st.graph.startswith("Neo4j 0 条已确认边") and "7 条边是旧版索引写的" in st.graph
+    assert "kb.py" not in st.graph                      # 状态行进诊断报告,不带导入命令
+    assert _session(tmp_path, _rich_pg(), FakeGraph()).status().graph == "Neo4j 6 条已确认边"
+
+
 # ---------------------------------------------------------------- render
 
 def test_render_unattached_is_title_plus_reason_only(tmp_path):

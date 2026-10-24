@@ -7,7 +7,7 @@
 由 render.py 写成「知识库未接入(原因)」——skill 本身照常。
 
 检索层的两条纪律:
-  · 向量给入口(像什么),图给链路(现象→根因→处置,只走 confidence=1 且生效的边);
+  · 向量给入口(像什么),图给链路(现象→根因→处置,只走 accepted、confidence=1 且生效的边);
   · 分数阈值——低于门槛整类返回空,由渲染层明写「无」,不凑数。
 """
 from __future__ import annotations
@@ -350,9 +350,15 @@ class KbSession:
             n = self.graph.counts().get("edges.confirmed", 0)
             return f"图文件 {n} 条已确认边" + (f"({self.graph_reason})" if self.graph_reason else "")
         try:
-            return f"Neo4j {self.graph.counts().get('edges.confirmed', 0)} 条已确认边"
+            c = self.graph.counts()
         except sg.GraphStoreError as exc:
             return f"不可用({exc})"
+        label = f"Neo4j {c.get('edges.confirmed', 0)} 条已确认边"
+        if c.get("edges.no_status"):
+            # 旧版索引写的边不带 status,不进路径(拿不准就不进);不点明的话,路径小节全是「无」却看不出原因。
+            # 措辞不带命令:状态行会进诊断报告,而诊断环境里没有导入命令。
+            label += f"({c['edges.no_status']} 条边是旧版索引写的、不带 status,不进路径;重建索引后恢复)"
+        return label
 
     # --- 检索 -------------------------------------------------------------
 

@@ -52,8 +52,8 @@ class Triple:
 
     @property
     def in_path(self) -> bool:
-        """能否进入确定性推理(路径小节)。"""
-        return self.status == "accepted" and self.confidence >= 1.0
+        """能否进入确定性推理(路径小节)。组图后边上带着 status,路径查询按同一口径(sg.confirmed)。"""
+        return sg.confirmed(self.status, self.confidence)
 
 
 # ---------------------------------------------------------------- canonical
@@ -152,6 +152,9 @@ def parse_triples(data, aliases: Dict[str, str], file: str) -> Tuple[List[Triple
         source = str(raw.get("source") or "").strip()
         if not source:
             errors.append(f"{where}: 缺 source(出处必填,没出处的边不入图)")
+        # 没写 status 按 accepted:这是三元组文件一直以来的格式约定(Triple 的缺省也是它)——
+        # kb.py apply 落盘时三种状态都显式写,省略 status 的只有用户自己手写进来的边,视同他确认过。
+        # 派生索引(Neo4j)里没有 status 的边则相反,按候选处理,见 store_graph.EdgeRow。
         status = str(raw.get("status") or "accepted").strip()
         if status not in STATUSES:
             errors.append(f"{where}: status `{status}` 只能是 {'/'.join(STATUSES)}")

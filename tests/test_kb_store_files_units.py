@@ -279,10 +279,60 @@ def test_file_graph_paths_honor_validity_window(tmp_path):
     assert paths[0].rootcause.startswith("autovacuum")               # 案例支持数相同时按 id 稳定排序
 
 
-def test_file_graph_paths_lower_min_confidence_admits_candidates(tmp_path):
+def test_file_graph_paths_lower_min_confidence_still_excludes_candidates(tmp_path):
+    """调低置信度门槛只放宽 accepted 边,候选边无论置信度多少都不进路径。"""
     g = sf.FileStore.load(_kb(tmp_path)).graph
     paths = g.paths(["symptom:单条_update_偶发秒级"], today="2026-09-05", min_confidence=0.5)
-    assert any(p.rootcause == "网络抖动" for p in paths)
+    assert paths and all(p.rootcause != "网络抖动" for p in paths)
+
+
+def _set_candidate_edge(kb: pathlib.Path, confidence: str, status: str) -> None:
+    """把夹具里那条 现象 -caused_by-> 网络抖动 的候选边改成给定的置信度与状态(模拟手工改 graph/*.yaml)。"""
+    path = kb / "graph" / "cbst.yaml"
+    text = path.read_text(encoding="utf-8")
+    old = "  confidence: 0.6\n  status: candidate\n"
+    assert text.count(old) == 1
+    path.write_text(text.replace(old, f"  confidence: {confidence}\n  status: {status}\n"), encoding="utf-8")
+
+
+def test_hand_edited_candidate_at_full_confidence_stays_out_of_paths(tmp_path):
+    """手工把候选边的 confidence 写成 1.0:status 仍是 candidate,不得混进「本行处置路径」,
+    也不算进状态行的「已确认边」;同一现象下 accepted 且 1.0 的链照常出现。"""
+    kb = _kb(tmp_path)
+    _set_candidate_edge(kb, "1.0", "candidate")
+    g = sf.FileStore.load(kb).graph
+    paths = g.paths(["symptom:单条_update_偶发秒级"], today="2026-09-05")
+    assert [p.rootcause for p in paths] == ["autovacuum 尾部回收持 8 级锁"]
+    assert all(p.rootcause != "网络抖动" for p in g.paths(["symptom:单条_update_偶发秒级"], today="2026-09-05",
+                                                         min_confidence=0.0))
+    assert g.counts()["edges.caused_by.confirmed"] == 3              # 4 条 caused_by,候选那条不算
+
+
+def test_accepted_edge_at_full_confidence_enters_paths(tmp_path):
+    """对照:同一条边改成 accepted + 1.0(用户在选择列表里接受了),就进路径。"""
+    kb = _kb(tmp_path)
+    _set_candidate_edge(kb, "1.0", "accepted")
+    g = sf.FileStore.load(kb).graph
+    paths = g.paths(["symptom:单条_update_偶发秒级"], today="2026-09-05")
+    assert {p.rootcause for p in paths} == {"autovacuum 尾部回收持 8 级锁", "网络抖动"}
+    assert next(p for p in paths if p.rootcause == "网络抖动").action == "换网线"
+    assert g.counts()["edges.caused_by.confirmed"] == 4
+
+
+def test_candidate_constrains_edge_does_not_add_a_clause(tmp_path):
+    """对象 → 条款同样是确定性引用:候选的 constrains 边即使 1.0 也不出条款。"""
+    kb = _kb(tmp_path)
+    (kb / "graph" / "extra.yaml").write_text(
+        "- src: {kind: clause, name: GS-VAC-009, canonical: \"clause:GS-VAC-009\"}\n"
+        "  rel: constrains\n"
+        "  dst: {kind: object, name: cbst.other_tbl}\n"
+        "  confidence: 1.0\n"
+        "  status: candidate\n"
+        "  source: rules/vacuum.yaml\n", encoding="utf-8")
+    g = sf.FileStore.load(kb).graph
+    assert g.clauses_for(["object:cbst.other_tbl"]) == {}
+    assert g.clauses_for(["object:cbst.cosp_asyn_task_dtl"]) == {
+        "object:cbst.cosp_asyn_task_dtl": ["clause:GS-VAC-002"]}
 
 
 def test_file_graph_clauses_for_and_counts(tmp_path):

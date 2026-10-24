@@ -15,6 +15,7 @@ sys.path.insert(0, str(_ROOT))
 from common.kb import store_graph as sg  # noqa: E402
 
 pytestmark = pytest.mark.live
+OK = sg.PATH_STATUS          # 用户接受过的边;EdgeRow 缺省是 candidate(不进路径)
 
 
 @pytest.fixture
@@ -40,13 +41,18 @@ def _seed(g: sg.GraphStore):
         sg.NodeRow(id="clause:GS-VAC-002", kind="clause", name="小表 autovacuum 阈值"),
     ], kb_version="2026.09")
     g.upsert_edges([
-        sg.EdgeRow("case:S1-A", "exhibits", "symptom:update_slow", 1.0, "cases/S1-A.md#现场", "S1-A"),
-        sg.EdgeRow("case:S1-B", "exhibits", "symptom:update_slow", 1.0, "cases/S1-B.md#现场", "S1-B"),
-        sg.EdgeRow("symptom:update_slow", "caused_by", "rootcause:autovac_lock", 1.0, "cases/S1-A.md#判断", "S1-A"),
-        sg.EdgeRow("symptom:update_slow", "caused_by", "rootcause:autovac_lock", 1.0, "cases/S1-B.md#判断", "S1-B"),
-        sg.EdgeRow("rootcause:autovac_lock", "handled_by", "action:raise_threshold", 1.0, "cases/S1-A.md#处置", "S1-A"),
-        sg.EdgeRow("case:S1-A", "involves", "object:cbst.cosp_asyn_task_dtl", 1.0, "cases/S1-A.md#判断", "S1-A"),
-        sg.EdgeRow("clause:GS-VAC-002", "constrains", "object:cbst.cosp_asyn_task_dtl", 1.0, "rules/vacuum.yaml", ""),
+        sg.EdgeRow("case:S1-A", "exhibits", "symptom:update_slow", 1.0, "cases/S1-A.md#现场", "S1-A", status=OK),
+        sg.EdgeRow("case:S1-B", "exhibits", "symptom:update_slow", 1.0, "cases/S1-B.md#现场", "S1-B", status=OK),
+        sg.EdgeRow("symptom:update_slow", "caused_by", "rootcause:autovac_lock", 1.0, "cases/S1-A.md#判断", "S1-A",
+                   status=OK),
+        sg.EdgeRow("symptom:update_slow", "caused_by", "rootcause:autovac_lock", 1.0, "cases/S1-B.md#判断", "S1-B",
+                   status=OK),
+        sg.EdgeRow("rootcause:autovac_lock", "handled_by", "action:raise_threshold", 1.0, "cases/S1-A.md#处置", "S1-A",
+                   status=OK),
+        sg.EdgeRow("case:S1-A", "involves", "object:cbst.cosp_asyn_task_dtl", 1.0, "cases/S1-A.md#判断", "S1-A",
+                   status=OK),
+        sg.EdgeRow("clause:GS-VAC-002", "constrains", "object:cbst.cosp_asyn_task_dtl", 1.0, "rules/vacuum.yaml", "",
+                   status=OK),
     ])
 
 
@@ -96,18 +102,39 @@ def test_paths_exclude_unconfirmed_edges(graph):
     """confidence 0.7 的边不得进入路径——这是"图不掺假"的守卫。"""
     _seed(graph)
     graph.upsert_edges([sg.EdgeRow("rootcause:autovac_lock", "handled_by", "action:raise_threshold",
-                                   0.7, "cases/S1-C.md#处置", "S1-C")])
+                                   0.7, "cases/S1-C.md#处置", "S1-C", status=OK)])
     hits = graph.paths(["symptom:update_slow"], today="2026-09-02")
     assert all("S1-C" not in s for h in hits for s in h.sources)
     graph.upsert_nodes([sg.NodeRow(id="action:guess", kind="action", name="猜的处置")])
-    graph.upsert_edges([sg.EdgeRow("rootcause:autovac_lock", "handled_by", "action:guess", 0.9, "cases/S1-D.md#处置", "S1-D")])
+    graph.upsert_edges([sg.EdgeRow("rootcause:autovac_lock", "handled_by", "action:guess", 0.9, "cases/S1-D.md#处置", "S1-D",
+                                   status=OK)])
     assert all(h.action_id != "action:guess" for h in graph.paths(["symptom:update_slow"], today="2026-09-02"))
+
+
+def test_paths_exclude_candidate_edges_even_at_full_confidence(graph):
+    """手工把候选边的 confidence 写成 1.0:status 仍是 candidate,不得进路径,也不算已确认。"""
+    _seed(graph)
+    graph.upsert_nodes([sg.NodeRow(id="action:unconfirmed", kind="action", name="未确认的处置")])
+    graph.upsert_edges([sg.EdgeRow("rootcause:autovac_lock", "handled_by", "action:unconfirmed", 1.0,
+                                   "cases/S1-E.md#处置", "S1-E", status="candidate")])
+    hits = graph.paths(["symptom:update_slow"], today="2026-09-02")
+    assert [h.action_id for h in hits] == ["action:raise_threshold"]
+    assert graph.counts()["edges.confirmed"] == 7
+
+
+def test_legacy_edges_without_status_stay_out_of_paths(graph):
+    """旧版索引写的边没有 status 属性:拿不准就不进路径,counts 另报 edges.no_status。"""
+    _seed(graph)
+    graph.run("MATCH ()-[e:HANDLED_BY]->() REMOVE e.status")
+    assert graph.paths(["symptom:update_slow"], today="2026-09-02") == []
+    assert graph.counts()["edges.no_status"] == 1
 
 
 def test_paths_respect_validity_window(graph):
     _seed(graph)
     graph.upsert_edges([sg.EdgeRow("rootcause:autovac_lock", "handled_by", "action:raise_threshold",
-                                   1.0, "cases/S1-A.md#处置", "S1-A", valid_from="2020-01-01", valid_to="2021-01-01")])
+                                   1.0, "cases/S1-A.md#处置", "S1-A", valid_from="2020-01-01", valid_to="2021-01-01",
+                                   status=OK)])
     assert graph.paths(["symptom:update_slow"], today="2026-09-02") == []
     assert graph.paths(["symptom:update_slow"], today="2020-06-01")
 

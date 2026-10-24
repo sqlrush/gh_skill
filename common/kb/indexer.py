@@ -35,6 +35,9 @@ CHUNK_LEN = 800
 CHUNK_OVERLAP = 100
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.M)
 VECTOR_NODE_KINDS = ("symptom", "rootcause", "action")
+# 案例自带的边(involves 对象 / references 条款)取自案例 frontmatter:案例文件是用户在选择列表里确认后才落盘的,
+# 所以记 accepted;能不能进确定性推理仍看置信度(结论强度 推测 0.6 / 待验证 0.3 的照样进不去)。
+_CASE_EDGE_STATUS = sg.PATH_STATUS
 
 
 @dataclass(frozen=True)
@@ -252,7 +255,10 @@ def build_docs(kb: pathlib.Path, cases: Sequence[kbcases.Case]) -> List[Tuple[sp
 
 def build_graph(cases: Sequence[kbcases.Case], triples: Sequence[gf.Triple], kb_version: str
                 ) -> Tuple[List[sg.NodeRow], List[sg.EdgeRow], List[spg.NodeVectorRow]]:
-    """三元组(accepted + candidate)+ 案例自带的确定性边(案例节点、involves 对象)。rejected 不入。"""
+    """三元组(accepted + candidate)+ 案例自带的确定性边(案例节点、involves 对象)。rejected 不入。
+
+    每条边都带上 status:路径查询要靠它把候选边挡在外面(只看置信度的话,手工改成 1.0 的候选边会混进去)。
+    """
     nodes: Dict[str, sg.NodeRow] = {}
     edges: List[sg.EdgeRow] = []
     signals_by_symptom: Dict[str, List[str]] = {}
@@ -266,11 +272,13 @@ def build_graph(cases: Sequence[kbcases.Case], triples: Sequence[gf.Triple], kb_
             kind = "guc" if re.match(r"^[a-z_]+$", obj) and not "." in obj and obj.endswith(("_threshold", "_factor", "_limit", "_timeout", "_size", "_commit", "_workers", "_naptime", "_delay", "_cost")) else "object"
             oid = gf.canonical_id(kind, obj, {})
             nodes.setdefault(oid, sg.NodeRow(id=oid, kind=kind, name=obj))
-            edges.append(sg.EdgeRow(cid, "involves", oid, c.confidence, f"{c.path.name}#frontmatter", c.id))
+            edges.append(sg.EdgeRow(cid, "involves", oid, c.confidence, f"{c.path.name}#frontmatter", c.id,
+                                    status=_CASE_EDGE_STATUS))
         for rid in c.rules:
             kid = f"clause:{rid}"
             nodes.setdefault(kid, sg.NodeRow(id=kid, kind="clause", name=rid))
-            edges.append(sg.EdgeRow(cid, "references", kid, c.confidence, f"{c.path.name}#frontmatter", c.id))
+            edges.append(sg.EdgeRow(cid, "references", kid, c.confidence, f"{c.path.name}#frontmatter", c.id,
+                                    status=_CASE_EDGE_STATUS))
 
     for t in triples:
         if t.status == "rejected":
@@ -278,7 +286,7 @@ def build_graph(cases: Sequence[kbcases.Case], triples: Sequence[gf.Triple], kb_
         for ref in (t.src, t.dst):
             nodes.setdefault(ref.id, sg.NodeRow(id=ref.id, kind=ref.kind, name=ref.name, canonical=ref.id))
         edges.append(sg.EdgeRow(t.src.id, t.rel, t.dst.id, t.confidence, t.source, t.case_id,
-                                t.valid_from, t.valid_to))
+                                t.valid_from, t.valid_to, status=t.status))
         if t.rel == "exhibits" and t.dst.kind == "symptom" and t.case_id in by_id:
             c = by_id[t.case_id]
             sigs = signals_by_symptom.setdefault(t.dst.id, [])
@@ -361,7 +369,7 @@ def run_index(kb: pathlib.Path, pg: "SqliteStore", graph: Optional[sg.GraphStore
             graph.rebuild()
             graph.upsert_nodes(nodes, kb_version)
             n_edges = graph.upsert_edges(edges)
-            n_conf = sum(1 for e in edges if e.confidence >= 1.0)
+            n_conf = sum(1 for e in edges if sg.confirmed(e.status, e.confidence))
             graph_state = "ok"
         except sg.GraphStoreError as exc:
             graph_state = "unavailable"

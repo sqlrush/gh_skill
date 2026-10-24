@@ -6,7 +6,7 @@
   · 词法打分是 BM25(信号 token 加权),归一到 0..1,与 SQLite 索引同一套算式(bm25.py),
     query.py 的绝对/相对门槛照常生效;
   · 图用 indexer.build_graph 组出的节点与边(案例自带的 involves/references + graph/*.yaml 三元组),
-    路径推理与 GraphStore.paths 的 Cypher 逐条对应:只走 confidence ≥ min 且在有效期内的边。
+    路径推理与 GraphStore.paths 的 Cypher 逐条对应:只走 accepted、confidence ≥ min 且在有效期内的边。
 没有向量:capabilities().vector=False,向量检索恒空,状态行会写「向量:未启用(文件模式)」。
 对外只暴露 SqliteStore / GraphStore 在检索侧用到的那一小截接口,KbSession 不感知差别。
 """
@@ -51,7 +51,8 @@ class Lexicon:
 # ---------------------------------------------------------------- graph
 
 def _edge_valid(e: sg.EdgeRow, today: str, min_confidence: float) -> bool:
-    return (e.confidence >= min_confidence
+    # status 与置信度同一口径(sg.confirmed):手工把候选边的 confidence 改成 1.0,它也不进路径
+    return (sg.confirmed(e.status, e.confidence, min_confidence)
             and (not e.valid_to or e.valid_to > today)
             and (not e.valid_from or e.valid_from <= today))
 
@@ -119,7 +120,7 @@ class FileGraph:
         wanted = set(node_ids)
         out: Dict[str, List[str]] = {}
         for e in self._edges:
-            if e.rel != "constrains" or e.dst not in wanted or e.confidence < min_confidence:
+            if e.rel != "constrains" or e.dst not in wanted or not sg.confirmed(e.status, e.confidence, min_confidence):
                 continue
             k = self._nodes.get(e.src)
             if k is None or k.kind != "clause":
@@ -135,10 +136,10 @@ class FileGraph:
         for e in self._edges:
             out[f"edges.{e.rel}"] = out.get(f"edges.{e.rel}", 0) + 1
             out.setdefault(f"edges.{e.rel}.confirmed", 0)
-            if e.confidence >= 1.0:
+            if sg.confirmed(e.status, e.confidence):
                 out[f"edges.{e.rel}.confirmed"] += 1
         out["edges"] = len(self._edges)
-        out["edges.confirmed"] = sum(1 for e in self._edges if e.confidence >= 1.0)
+        out["edges.confirmed"] = sum(1 for e in self._edges if sg.confirmed(e.status, e.confidence))
         return out
 
 

@@ -40,7 +40,7 @@ symptom:cache_low: [缓存命中率低, "缓存命中率低,报表时段 blks_re
   rel: caused_by
   dst: {kind: rootcause, name: autovacuum 尾部回收持 8 级锁}
   confidence: 1.0            # 用户在选择列表接受 = 1.0;模型自报封顶 0.9;结论强度映射 已确认 1.0 / 推测 0.6 / 待验证 0.3
-  status: accepted           # accepted | candidate | rejected(rejected 不入图)
+  status: accepted           # accepted | candidate | rejected(rejected 不入图);省略 = accepted(手写的边视同用户确认)
   source: cases/S2-20250224-CBST-偶现单条update慢.md#判断   # 出处必填
   case: S2-20250224-CBST-偶现单条update慢
   valid_from: 2025-02-24     # 可空;valid_to 过期的边不进路径
@@ -50,5 +50,13 @@ symptom:cache_low: [缓存命中率低, "缓存命中率低,报表时段 blks_re
 
 ## 路径查询(检索层用)
 
-`(:Symptom)-[:CAUSED_BY]->(:RootCause)-[:HANDLED_BY]->(:Action)`,只走 `confidence ≥ 1.0` 且在生效期内的边,
-按 现象/根因/处置 三元组聚合,来源合并、案例去重计数。candidate 边永远不出现在「本行历史路径」里。
+`(:Symptom)-[:CAUSED_BY]->(:RootCause)-[:HANDLED_BY]->(:Action)`,只走 **`status: accepted` 且 `confidence ≥ 1.0`**、
+在生效期内的边,按 现象/根因/处置 三元组聚合,来源合并、案例去重计数。Neo4j 与图文件两种模式同一口径。
+
+candidate 边永远不出现在「本行历史路径」里——**手工把它的 `confidence` 改成 1.0 也不会**:路径看的是 status,
+置信度只是第二道条件。候选边要进路径,得**用户确认**后把 `status` 改成 `accepted`(confidence 记 1.0)——
+这是用户的决定,不要替他改。
+对象 → 条款(`constrains`)的确定性引用同样只认 accepted 边。
+
+旧版 `kb.py index` 写进 Neo4j 的边没有 status 属性,一律按「不进路径」处理(拿不准就不进);
+状态行会写「N 条边是旧版索引写的、不带 status」,重跑一次 `kb.py index`(图整体重建)即恢复。

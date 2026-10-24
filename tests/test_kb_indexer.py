@@ -155,6 +155,22 @@ def test_build_graph_drops_rejected(tmp_path):
     assert not any(e.rel == "handled_by" for e in edges)
 
 
+def test_build_graph_carries_status_onto_edges(tmp_path):
+    """status 必须随边进图:路径查询靠它挡候选边。手工把候选边写成 1.0 时,置信度已经区分不出来了。"""
+    kb = _fixture_kb(tmp_path)
+    (kb / "graph" / "cbst.yaml").write_text(TRIPLES.replace("confidence: 1.0\n  source: cases/" + CASE_ID + ".md#处置",
+                                                            "confidence: 1.0\n  status: candidate\n  source: cases/" + CASE_ID + ".md#处置"),
+                                            encoding="utf-8")
+    cases, _ = kbcases.load_cases(kb)
+    triples, _ = gf.load_triples(kb, [c.id for c in cases])
+    _, edges, _ = indexer.build_graph(cases, triples, "")
+    by_rel = {e.rel: e for e in edges}
+    assert by_rel["handled_by"].status == "candidate" and by_rel["handled_by"].confidence == 1.0
+    assert by_rel["caused_by"].status == "accepted"                  # 没写 status 的三元组按 accepted(文件格式约定)
+    assert by_rel["involves"].status == "accepted" and by_rel["references"].status == "accepted"   # 案例自带的边
+    assert not sg.confirmed(by_rel["handled_by"].status, by_rel["handled_by"].confidence)
+
+
 # ---------------------------------------------------------------- live
 
 class _FakeEmbedder:
