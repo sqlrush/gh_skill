@@ -134,3 +134,10 @@ def test_stale_stats_declares_the_page_gate_param():
     params = {p.key for p in load_script(_REG / "health/stale_stats.yaml").params}
     assert params == {"min_rows", "min_pages", "schema_filter", "limit"}
 
+
+def test_overview_counts_connections_like_conn_states():
+    """2026-10-24 faultlab 第二轮:Connections 维度已按 sessionid <> 0 数出 51,Overview 仍用
+    sum(numbackends) 写 53 —— 线程池空闲条目也算了进去。两处同一口径。"""
+    sql = _flat(_sql("health/overview.yaml"))
+    assert "sum(numbackends)" not in sql
+    assert "(select count(*) from pg_stat_activity where sessionid <> 0)::bigint as numbackends" in sql

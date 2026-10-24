@@ -183,7 +183,7 @@ LIMIT {{limit}};
 SELECT
   CASE WHEN sum(blks_hit)+sum(blks_read)=0 THEN 100
        ELSE round(100.0*sum(blks_hit)/(sum(blks_hit)+sum(blks_read)),2) END AS cache_hit_pct,
-  sum(numbackends)::bigint AS numbackends,
+  (SELECT count(*) FROM pg_stat_activity WHERE sessionid <> 0)::bigint AS numbackends,
   (SELECT setting::bigint FROM pg_settings WHERE name='max_connections') AS max_conn,
   pg_is_in_recovery() AS in_recovery,
   (SELECT COALESCE(EXTRACT(EPOCH FROM now()-min(xact_start)),0)::bigint

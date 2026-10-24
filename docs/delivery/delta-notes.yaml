@@ -119,7 +119,9 @@ changed:
     内核后台线程的 client_port 都是空，照样排除。另排除执行本查询的会话自身，多返回一列 waiting
     （是否在等锁，供「执行中的长 SQL」区分等锁的语句）。只读。
   health.overview: >-
-    **修正漏报**：「最老事务」子查询认客户端会话的条件改法同 health.long_xact，其余列不变。只读。
+    **修正漏报与计数**：「最老事务」子查询认客户端会话的条件改法同 health.long_xact；连接数改数
+    pg_stat_activity 里 sessionid <> 0 的条目（原 sum(numbackends) 把线程池空闲工作线程也算进去，
+    与 health.conn_states 同一口径）。输出列不变。只读。
   health.conn_concentration: >-
     **修正漏报**：活跃连接集中度认客户端会话的条件改法同 health.long_xact，其余不变。只读。
   health.conn_states: >-

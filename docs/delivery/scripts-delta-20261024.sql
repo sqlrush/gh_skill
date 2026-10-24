@@ -71,12 +71,12 @@ LIMIT {{limit}};
  WHERE script_name = 'health.long_xact';
 
 -- [health.overview]
---   **修正漏报**：「最老事务」子查询认客户端会话的条件改法同 health.long_xact，其余列不变。只读。
+--   **修正漏报与计数**：「最老事务」子查询认客户端会话的条件改法同 health.long_xact；连接数改数 pg_stat_activity 里 sessionid <> 0 的条目（原 sum(numbackends) 把线程池空闲工作线程也算进去， 与 health.conn_states 同一口径）。输出列不变。只读。
 UPDATE grmp.script_config
    SET script_content   = 'SELECT
   CASE WHEN sum(blks_hit)+sum(blks_read)=0 THEN 100
        ELSE round(100.0*sum(blks_hit)/(sum(blks_hit)+sum(blks_read)),2) END AS cache_hit_pct,
-  sum(numbackends)::bigint AS numbackends,
+  (SELECT count(*) FROM pg_stat_activity WHERE sessionid <> 0)::bigint AS numbackends,
   (SELECT setting::bigint FROM pg_settings WHERE name=''max_connections'') AS max_conn,
   pg_is_in_recovery() AS in_recovery,
   (SELECT COALESCE(EXTRACT(EPOCH FROM now()-min(xact_start)),0)::bigint
@@ -388,7 +388,7 @@ ORDER BY xmin_age_s DESC NULLS FIRST;
 --     ('health.conn_concentration', '07030bd38aa881cc62fabe97048cf2ce'),
 --     ('health.conn_states', 'b843857b8e76773764b5dd4ed2dd9664'),
 --     ('health.long_xact', '70fe0100346efef8bcb44d22c3763cbb'),
---     ('health.overview', 'ca8ae273218345e5f87edb731f5576fe'),
+--     ('health.overview', 'a7a54d7c41074216f82238a15facb14c'),
 --     ('health.stale_stats', '99b65a580c9e88b75c377e10b8cb4765'),
 --     ('lockwait.asp_pairs', 'fd806c01d2358444d164368fd20da27a'),
 --     ('lockwait.asp_sessions', '2b32f4b336b18b64a2e4b4d0c1c93a92'),
