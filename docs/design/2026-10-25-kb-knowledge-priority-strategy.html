@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>知识从哪来、听谁的：知识库与模型自带知识的取舍策略（技术说明 2026-10-25）</title>
+<style>
+:root{--ink:#1b2430;--ink2:#4a5566;--mute:#7a8596;--line:#d9dfe8;--bg:#f6f8fb;--card:#fff;
+  --blue:#2f6fdb;--blue-l:#e7effc;--navy:#123a73;--amber:#b7791f;--amber-l:#fbf1dc;--gray-l:#eef1f5;
+  --green:#1f8a5b;--green-l:#e3f4ec;--red:#c0392b;--red-l:#fbe7e5;--violet:#6b4fd8;--violet-l:#efebfd;--teal:#0f7c86;--teal-l:#e0f3f4}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.75 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1160px;margin:0 auto;padding:32px 28px 80px}
+header{background:linear-gradient(120deg,#0f2f5f,#2f6fdb 62%,#5b8def);color:#fff;border-radius:16px;padding:32px 36px;margin-bottom:24px}
+header h1{margin:0 0 8px;font-size:29px;letter-spacing:.4px}
+header .sub{opacity:.93;font-size:15.5px}
+header .meta{margin-top:14px;font-size:13px;opacity:.85}
+nav{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 22px;margin-bottom:22px;font-size:14px}
+nav a{color:var(--blue);text-decoration:none;margin-right:16px;white-space:nowrap;line-height:2}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:26px 32px;margin-bottom:22px}
+h2{margin:0 0 14px;font-size:22px;border-left:5px solid var(--blue);padding-left:12px}
+h3{margin:24px 0 10px;font-size:17px;color:var(--navy)}
+p{margin:8px 0}
+ul,ol{margin:8px 0;padding-left:22px} li{margin:4px 0}
+table{border-collapse:collapse;width:100%;margin:12px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:8px 10px;vertical-align:top;text-align:left}
+th{background:#f0f4fa;font-weight:600}
+td.c,th.c{text-align:center}
+code{background:#f0f3f7;border-radius:4px;padding:1px 5px;font-size:13px;font-family:Menlo,Consolas,monospace}
+pre{background:#0f1b2d;color:#dce6f5;border-radius:10px;padding:14px 16px;font-size:12.5px;line-height:1.65;overflow:auto;font-family:Menlo,Consolas,monospace;margin:10px 0;white-space:pre-wrap}
+pre .c{color:#7f93b0} pre .k{color:#8fc1ff} pre .y{color:#f3cf7a}
+.callout{border-radius:10px;padding:12px 16px;margin:12px 0;font-size:14.5px}
+.callout.blue{background:var(--blue-l);border:1px solid #c9daf6}
+.callout.amber{background:var(--amber-l);border:1px solid #efd9a8}
+.callout.green{background:var(--green-l);border:1px solid #bfe3d1}
+.callout.red{background:var(--red-l);border:1px solid #f0c4be}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:14px 0}
+.kpi{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.kpi .v{font-size:26px;font-weight:700;color:var(--navy)} .kpi .v small{font-size:14px;font-weight:600;margin-left:3px}
+.kpi .l{font-size:13px;color:var(--ink2)}
+figure{margin:16px 0 8px}
+figure svg{width:100%;height:auto;display:block;background:#fbfcfe;border:1px solid var(--line);border-radius:12px}
+figcaption{font-size:13px;color:var(--mute);margin-top:6px;text-align:center}
+.chip{display:inline-block;font-size:12px;padding:0 8px;border-radius:9px;white-space:nowrap;vertical-align:1px;font-weight:600}
+.chip.code{background:var(--green-l);color:var(--green)} .chip.prompt{background:var(--amber-l);color:var(--amber)} .chip.check{background:var(--violet-l);color:var(--violet)}
+.chip.gap{background:var(--red-l);color:var(--red)} .chip.plan{background:var(--teal-l);color:var(--teal)}
+.L{display:inline-block;font-weight:700;font-size:12px;border-radius:5px;padding:0 6px;color:#fff;margin-right:4px}
+.L0{background:#123a73}.L1{background:#2f6fdb}.L2{background:#1f8a5b}.L3{background:#7a8596}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.chat{border:1px solid var(--line);border-radius:14px;padding:16px 18px;background:#fff;font-size:14.5px}
+.chat .q{background:#eef3fb;border-radius:12px;padding:10px 14px;margin-bottom:12px;color:var(--ink)}
+.chat .a p{margin:6px 0}
+.seg-kb{color:#2f6fdb}
+.seg-off{color:#0f7c86;border-bottom:1px dashed #0f7c86}
+.seg-script{background:#f3f4f6;border-radius:6px;padding:1px 6px}
+.seg-model{color:var(--ink)}
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:13px;color:var(--ink2);margin:8px 0}
+.legend span::before{content:"";display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:-1px;background:var(--c)}
+.note{font-size:13px;color:var(--mute)}
+.steps{counter-reset:s;list-style:none;padding-left:0}
+.steps li{counter-increment:s;padding-left:34px;position:relative;margin:10px 0}
+.steps li::before{content:counter(s);position:absolute;left:0;top:1px;width:24px;height:24px;border-radius:50%;background:var(--blue-l);color:var(--blue);font-weight:700;display:grid;place-items:center;font-size:13px}
+@media (max-width:900px){.kpis{grid-template-columns:repeat(2,1fr)}.two{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>知识从哪来、听谁的</h1>
+  <div class="sub">GaussDB 智能体:客户知识库、官方文档集与模型自带知识,在最终回答里的取舍策略</div>
+  <div class="meta">技术说明 · 2026-10-25 · 适用 agent v1.5(开发中,含官方文档集 G25132C)· 写明现状、实现位置、已知缺口与改进建议</div>
+</header>
+
+<nav>
+  <a href="#s0">0 一页结论</a><a href="#s1">1 总体流程</a><a href="#s2">2 四级优先级</a><a href="#s3">3 检索关</a>
+  <a href="#s4">4 适用性与可信度</a><a href="#s5">5 生成关</a><a href="#s6">6 核对关</a><a href="#s7">7 冲突怎么处理</a>
+  <a href="#s8">8 一次回答的完整走查</a><a href="#s9">9 现状缺口与改进建议</a><a href="#s10">附 实现位置</a>
+</nav>
+
+<!-- ================================================================ 0 -->
+<section id="s0">
+<h2>0 · 一页结论</h2>
+<div class="callout blue"><b>不是「加权混合」,而是「分级取用」。</b>模型不会把知识库和自己的知识按某个比例揉在一起;
+回答里的每一句话都应当能说清来自哪一级——上一级说了的,下一级不许改;上一级没说的,下一级才补,而且要标明出处或声明「通用做法」。</div>
+<div class="kpis">
+  <div class="kpi"><div class="v">4<small>级</small></div><div class="l">skill 规则与脚本判定 › 客户知识库 › 官方文档集 › 模型自带知识</div></div>
+  <div class="kpi"><div class="v">3<small>道关</small></div><div class="l">检索关(代码)· 生成关(提示词)· 核对关(代码)</div></div>
+  <div class="kpi"><div class="v">2<small>个候选池</small></div><div class="l">客户知识与官方文档分开检索,官方文档挤不掉客户先例</div></div>
+  <div class="kpi"><div class="v">3<small>种适用性</small></div><div class="l">适用 / 不适用 / 未知;不适用的不得作为依据</div></div>
+</div>
+<table>
+<tr><th style="width:150px">关</th><th>做什么</th><th style="width:170px">由谁保证</th></tr>
+<tr><td><b>检索关</b></td><td>决定哪些知识<b>能进入</b>模型的上下文:相关度门槛、每类条数上限、客户池与官方池分开、按画像打适用性标签</td><td><span class="chip code">代码</span> 确定性</td></tr>
+<tr><td><b>生成关</b></td><td>规定模型<b>怎么用</b>这些知识:按 L0→L3 逐层读、引用前读全文、出自知识库的话标蓝、无先例时声明「通用做法」、不得编造</td><td><span class="chip prompt">提示词</span> 契约注入 9 个诊断 skill + AGENTS.md</td></tr>
+<tr><td><b>核对关</b></td><td>事后<b>查有没有编</b>:回答里的 ID 逐个到库里核对,找不到的标「疑似编造」</td><td><span class="chip check">代码</span> cite-check</td></tr>
+</table>
+<p class="note">图例:<span class="chip code">代码</span> 由脚本强制,模型绕不过去;<span class="chip prompt">提示词</span> 靠模型遵守,有失守的可能;
+<span class="chip check">核对</span> 生成后检查;<span class="chip gap">缺口</span> 现状没覆盖;<span class="chip plan">建议</span> 待确认的改进。</p>
+</section>
+
+<!-- ================================================================ 1 -->
+<section id="s1">
+<h2>1 · 总体流程:一个问题从进来到出答案</h2>
+<figure>
+<svg viewBox="0 0 1100 470" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,PingFang SC,Microsoft YaHei,sans-serif">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#8a97ab"/></marker>
+  </defs>
+  <!-- 输入 -->
+  <rect x="20" y="40" width="150" height="74" rx="12" fill="#eef3fb" stroke="#c9daf6"/>
+  <text x="95" y="70" text-anchor="middle" font-size="15" font-weight="700" fill="#123a73">用户提问</text>
+  <text x="95" y="94" text-anchor="middle" font-size="12.5" fill="#4a5566">或 诊断发现(findings)</text>
+  <!-- 诊断脚本 -->
+  <rect x="210" y="22" width="190" height="110" rx="12" fill="#fff" stroke="#9fd2b9" stroke-width="2"/>
+  <text x="305" y="50" text-anchor="middle" font-size="15" font-weight="700" fill="#1f8a5b">① 诊断 skill 脚本</text>
+  <text x="305" y="74" text-anchor="middle" font-size="12.5" fill="#4a5566">取数 → 规则判定</text>
+  <text x="305" y="94" text-anchor="middle" font-size="12.5" fill="#4a5566">发现什么 · severity</text>
+  <rect x="262" y="104" width="86" height="20" rx="10" fill="#e3f4ec"/><text x="305" y="118" text-anchor="middle" font-size="11.5" fill="#1f8a5b" font-weight="700">代码 · 第 1 级</text>
+  <!-- 检索 -->
+  <rect x="440" y="10" width="250" height="210" rx="12" fill="#fff" stroke="#9fd2b9" stroke-width="2"/>
+  <text x="565" y="38" text-anchor="middle" font-size="15" font-weight="700" fill="#1f8a5b">② 知识库检索</text>
+  <rect x="458" y="52" width="214" height="60" rx="9" fill="#e7effc" stroke="#c9daf6"/>
+  <text x="565" y="76" text-anchor="middle" font-size="13" font-weight="700" fill="#2f6fdb">客户池(第 2 级)</text>
+  <text x="565" y="98" text-anchor="middle" font-size="11.5" fill="#4a5566">规范 · 案例 · 路径 · 手册 · 缺陷 · 基线…</text>
+  <rect x="458" y="122" width="214" height="60" rx="9" fill="#e0f3f4" stroke="#a8d8dc"/>
+  <text x="565" y="146" text-anchor="middle" font-size="13" font-weight="700" fill="#0f7c86">官方池(第 3 级)</text>
+  <text x="565" y="168" text-anchor="middle" font-size="11.5" fill="#4a5566">官方文档集 G25132C · 每类 ≤ 2 条</text>
+  <rect x="522" y="192" width="86" height="20" rx="10" fill="#e3f4ec"/><text x="565" y="206" text-anchor="middle" font-size="11.5" fill="#1f8a5b" font-weight="700">代码</text>
+  <!-- 标签 -->
+  <rect x="730" y="22" width="170" height="110" rx="12" fill="#fff" stroke="#9fd2b9" stroke-width="2"/>
+  <text x="815" y="50" text-anchor="middle" font-size="15" font-weight="700" fill="#1f8a5b">③ 打标签</text>
+  <text x="815" y="74" text-anchor="middle" font-size="12.5" fill="#4a5566">适用性(三态)</text>
+  <text x="815" y="94" text-anchor="middle" font-size="12.5" fill="#4a5566">可信度(已确认 / 推测…)</text>
+  <rect x="772" y="104" width="86" height="20" rx="10" fill="#e3f4ec"/><text x="815" y="118" text-anchor="middle" font-size="11.5" fill="#1f8a5b" font-weight="700">代码</text>
+  <!-- 小节 -->
+  <rect x="930" y="22" width="150" height="110" rx="12" fill="#fff" stroke="#c9daf6" stroke-width="2"/>
+  <text x="1005" y="52" text-anchor="middle" font-size="14" font-weight="700" fill="#123a73">「客户知识库参照」</text>
+  <text x="1005" y="76" text-anchor="middle" font-size="12.5" fill="#4a5566">L0 摘要 + 每条发现的</text>
+  <text x="1005" y="96" text-anchor="middle" font-size="12.5" fill="#4a5566">L1 专题与条目摘要</text>
+  <text x="1005" y="118" text-anchor="middle" font-size="11.5" fill="#7a8596">写进技能输出</text>
+  <!-- 箭头上排 -->
+  <path d="M170,77 L206,77" stroke="#8a97ab" stroke-width="2" marker-end="url(#ar)"/>
+  <path d="M400,77 L436,77" stroke="#8a97ab" stroke-width="2" marker-end="url(#ar)"/>
+  <path d="M690,77 L726,77" stroke="#8a97ab" stroke-width="2" marker-end="url(#ar)"/>
+  <path d="M900,77 L926,77" stroke="#8a97ab" stroke-width="2" marker-end="url(#ar)"/>
+  <!-- 下排 模型 -->
+  <path d="M1005,132 L1005,268 L930,268" stroke="#8a97ab" stroke-width="2" fill="none" marker-end="url(#ar)"/>
+  <rect x="610" y="240" width="316" height="130" rx="12" fill="#fff" stroke="#efd9a8" stroke-width="2"/>
+  <text x="768" y="268" text-anchor="middle" font-size="15" font-weight="700" fill="#b7791f">④ 模型组织回答</text>
+  <text x="768" y="292" text-anchor="middle" font-size="12.5" fill="#4a5566">按层读:要引用就 <tspan font-weight="700">show</tspan> 读 L2 全文(≤5 条)</text>
+  <text x="768" y="312" text-anchor="middle" font-size="12.5" fill="#4a5566">冲突 / 要原文 / 高风险 → <tspan font-weight="700">evidence</tspan> 读 L3</text>
+  <text x="768" y="332" text-anchor="middle" font-size="12.5" fill="#4a5566">无先例 → 自带知识,声明「通用做法」</text>
+  <rect x="711" y="342" width="114" height="20" rx="10" fill="#fbf1dc"/><text x="768" y="356" text-anchor="middle" font-size="11.5" fill="#b7791f" font-weight="700">提示词 · 第 4 级</text>
+  <!-- 回答 -->
+  <path d="M610,305 L560,305" stroke="#8a97ab" stroke-width="2" marker-end="url(#ar)"/>
+  <rect x="300" y="240" width="256" height="130" rx="12" fill="#fff" stroke="#c9daf6" stroke-width="2"/>
+  <text x="428" y="268" text-anchor="middle" font-size="15" font-weight="700" fill="#123a73">⑤ 回答(分来源标记)</text>
+  <rect x="320" y="282" width="12" height="12" rx="3" fill="#2f6fdb"/><text x="340" y="293" font-size="12.5" fill="#4a5566">蓝字 = 客户知识库(带 ID 与出处)</text>
+  <rect x="320" y="304" width="12" height="12" rx="3" fill="#9aa4b2"/><text x="340" y="315" font-size="12.5" fill="#4a5566">普通 = 脚本结论 / 模型分析</text>
+  <rect x="320" y="326" width="12" height="12" rx="3" fill="#f0f3f7" stroke="#9aa4b2"/><text x="340" y="337" font-size="12.5" fill="#4a5566">「本行无先例,以下为通用做法」</text>
+  <text x="428" y="360" text-anchor="middle" font-size="11.5" fill="#c0392b">官方文档的标记方式未单独规定(见第 9 节)</text>
+  <!-- 核对 -->
+  <path d="M300,305 L250,305" stroke="#8a97ab" stroke-width="2" marker-end="url(#ar)"/>
+  <rect x="40" y="250" width="206" height="110" rx="12" fill="#fff" stroke="#cdbff6" stroke-width="2"/>
+  <text x="143" y="278" text-anchor="middle" font-size="15" font-weight="700" fill="#6b4fd8">⑥ 核对</text>
+  <text x="143" y="302" text-anchor="middle" font-size="12.5" fill="#4a5566">cite-check:回答里的 ID</text>
+  <text x="143" y="322" text-anchor="middle" font-size="12.5" fill="#4a5566">库里没有 → 疑似编造,删掉</text>
+  <rect x="100" y="332" width="86" height="20" rx="10" fill="#efebfd"/><text x="143" y="346" text-anchor="middle" font-size="11.5" fill="#6b4fd8" font-weight="700">代码</text>
+  <!-- 底部说明 -->
+  <text x="550" y="420" text-anchor="middle" font-size="13" fill="#4a5566">上一级说了的,下一级不许改;上一级没说的,下一级才补——每一句都能指回一级来源</text>
+  <text x="550" y="446" text-anchor="middle" font-size="12" fill="#7a8596">第 1–3 级的「能进来什么」由代码决定;第 4 级与「怎么写」由提示词约束;最后由 cite-check 兜底</text>
+</svg>
+<figcaption>图 1 · 诊断 skill 与纯问答走同一条链:诊断类由脚本先跑出发现,纯问答由 <code>kb.py query --q</code> 拿到同一格式的「客户知识库参照」</figcaption>
+</figure>
+</section>
+
+<!-- ================================================================ 2 -->
+<section id="s2">
+<h2>2 · 四级优先级</h2>
+<div class="two">
+<figure>
+<svg viewBox="0 0 520 380" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,PingFang SC,Microsoft YaHei,sans-serif">
+  <polygon points="200,20 320,20 350,100 170,100" fill="#1f8a5b"/>
+  <text x="260" y="56" text-anchor="middle" font-size="15" font-weight="700" fill="#fff">① skill 规则</text>
+  <text x="260" y="80" text-anchor="middle" font-size="12" fill="#e3f4ec">脚本判定 · severity</text>
+  <polygon points="168,108 352,108 382,188 138,188" fill="#2f6fdb"/>
+  <text x="260" y="144" text-anchor="middle" font-size="15" font-weight="700" fill="#fff">② 客户知识库</text>
+  <text x="260" y="168" text-anchor="middle" font-size="12" fill="#e7effc">贵行规范 · 案例 · 手册 · 画像 · 基线…</text>
+  <polygon points="136,196 384,196 414,276 106,276" fill="#0f7c86"/>
+  <text x="260" y="232" text-anchor="middle" font-size="15" font-weight="700" fill="#fff">③ 官方文档集</text>
+  <text x="260" y="256" text-anchor="middle" font-size="12" fill="#e0f3f4">GaussDB 产品文档(标准知识库)</text>
+  <polygon points="104,284 416,284 446,364 74,364" fill="#b7791f"/>
+  <text x="260" y="320" text-anchor="middle" font-size="15" font-weight="700" fill="#fff">④ 模型自带知识</text>
+  <text x="260" y="344" text-anchor="middle" font-size="12" fill="#fbf1dc">只补空白 · 必须声明「通用做法」</text>
+  <text x="470" y="60" font-size="12" fill="#1f8a5b">最高</text><text x="470" y="340" font-size="12" fill="#b7791f">最低</text>
+  <path d="M480,72 L480,322" stroke="#9aa4b2" stroke-width="2" stroke-dasharray="4 4"/>
+</svg>
+<figcaption>图 2 · 越往上越「硬」:上一级覆盖到的,下一级不得推翻</figcaption>
+</figure>
+<div>
+<h3 style="margin-top:6px">为什么是这个顺序</h3>
+<ul>
+<li><b>脚本判定最硬</b>:它基于实测数据与确定性规则,可复现、可审计。知识库管的是「客户怎么说、以前怎么处置」,管不着「技能怎么工作」。</li>
+<li><b>客户知识高于官方文档</b>:客户的规范是在官方行为之上的「本行约束」(变更窗口、审批、阈值),官方文档只说明产品默认怎么工作。
+例如产品提供 <code>pg_terminate_backend</code> 终止会话,而本行规范规定「数据库侧不 kill 业务会话,交应用方处理」——两者都对,但执行时以本行为准。</li>
+<li><b>官方文档高于模型记忆</b>:模型的训练数据混着 openGauss、PostgreSQL 与各版本 GaussDB 的说法,版本口径不可控;
+官方文档集有明确的产品系列与版本,并逐条对本实例画像判断适用性。</li>
+<li><b>模型自带知识兜底</b>:知识库覆盖不到的地方(本行无先例、官方文档没写)仍要给出可用的建议,但必须如实声明来源。</li>
+</ul>
+</div>
+</div>
+<table>
+<tr><th style="width:50px">级</th><th style="width:230px">来源</th><th>能做什么</th><th>不能做什么</th><th style="width:170px">由谁保证</th></tr>
+<tr><td class="c">①</td><td>skill 的 SKILL.md、references/ 方法论、脚本的确定性判定</td><td>决定「发现了什么问题」「严重程度」</td><td>—</td><td><span class="chip code">代码</span></td></tr>
+<tr><td class="c">②</td><td>客户知识库(规范 / 修正 / 案例 / 本行历史路径 / 手册 / 缺陷 / 基线 / 画像 / Wiki / 客户摘录的产品文档)</td><td>处置建议的<b>首选依据</b>:措辞、步骤、变更窗口、审批都按客户的来;有手册先给手册</td>
+<td>不能补报脚本没报的违规,不能抹掉脚本报了的,<b>不改 severity</b>;库内:修正 &gt; 条款 &gt; 其余</td><td><span class="chip prompt">提示词</span> + <span class="chip code">代码</span>(检索排序)</td></tr>
+<tr><td class="c">③</td><td>官方文档集(G25132C,6,023 条)</td><td>说明产品怎么工作:参数含义与默认值、视图字段、错误码、官方排障思路</td>
+<td>与客户规范、案例不一致时<b>不得覆盖</b>,只能并列呈现交用户裁决;「不适用本环境」的不得作为依据</td><td><span class="chip code">代码</span>(单独候选池、排在客户之后)+ L0 提示</td></tr>
+<tr><td class="c">④</td><td>模型自带知识</td><td>知识库「无对应条款 / 无相似案例」时给出通用做法、补充解释与分析</td>
+<td>不得冒充客户规范或案例;<b>绝不允许编一条客户规范或案例</b>;不标蓝</td><td><span class="chip prompt">提示词</span> + <span class="chip check">cite-check</span></td></tr>
+</table>
+</section>
+
+<!-- ================================================================ 3 -->
+<section id="s3">
+<h2>3 · 检索关:什么知识能进上下文 <span class="chip code">代码</span></h2>
+<p>模型只能用「看得见」的知识。检索关决定看得见什么——这是整套策略里最硬的一环,完全由代码执行。</p>
+<figure>
+<svg viewBox="0 0 1100 400" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,PingFang SC,Microsoft YaHei,sans-serif">
+  <defs><marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#8a97ab"/></marker></defs>
+  <rect x="20" y="160" width="150" height="80" rx="12" fill="#eef3fb" stroke="#c9daf6"/>
+  <text x="95" y="192" text-anchor="middle" font-size="14" font-weight="700" fill="#123a73">查询</text>
+  <text x="95" y="214" text-anchor="middle" font-size="12" fill="#4a5566">分词 + 向量(bge-m3)</text>
+  <!-- 客户池 -->
+  <path d="M170,190 L230,110" stroke="#8a97ab" stroke-width="2" marker-end="url(#ar2)" fill="none"/>
+  <rect x="234" y="40" width="330" height="140" rx="12" fill="#e7effc" stroke="#c9daf6"/>
+  <text x="399" y="66" text-anchor="middle" font-size="14" font-weight="700" fill="#2f6fdb">客户池 · index/store.sqlite</text>
+  <text x="250" y="92" font-size="12.5" fill="#4a5566">关键词 BM25 前 30 ∥ 向量 前 30</text>
+  <text x="250" y="114" font-size="12.5" fill="#4a5566">→ RRF 融合(k=60,按名次归一)</text>
+  <text x="250" y="136" font-size="12.5" fill="#4a5566">→ 绝对门槛 → 本池内相对门槛</text>
+  <text x="250" y="158" font-size="12.5" fill="#4a5566">规模:随客户导入增长,通常远小于官方池</text>
+  <!-- 官方池 -->
+  <path d="M170,210 L230,290" stroke="#8a97ab" stroke-width="2" marker-end="url(#ar2)" fill="none"/>
+  <rect x="234" y="222" width="330" height="140" rx="12" fill="#e0f3f4" stroke="#a8d8dc"/>
+  <text x="399" y="248" text-anchor="middle" font-size="14" font-weight="700" fill="#0f7c86">官方池 · docsets/G25132C/index.sqlite</text>
+  <text x="250" y="274" font-size="12.5" fill="#4a5566">关键词 前 12 ∥ 向量 前 12(同一嵌入模型才用)</text>
+  <text x="250" y="296" font-size="12.5" fill="#4a5566">→ RRF → 同一套门槛(相对门槛只在本池比)</text>
+  <text x="250" y="318" font-size="12.5" fill="#4a5566">错误码一码一块,只走关键词</text>
+  <text x="250" y="340" font-size="12.5" fill="#4a5566">规模:42,919 向量块 + 16,160 关键词块</text>
+  <!-- 分类配额 -->
+  <path d="M564,110 L640,170" stroke="#8a97ab" stroke-width="2" marker-end="url(#ar2)" fill="none"/>
+  <path d="M564,292 L640,232" stroke="#8a97ab" stroke-width="2" marker-end="url(#ar2)" fill="none"/>
+  <rect x="644" y="70" width="230" height="260" rx="12" fill="#fff" stroke="#9fd2b9" stroke-width="2"/>
+  <text x="759" y="98" text-anchor="middle" font-size="14" font-weight="700" fill="#1f8a5b">按类配额</text>
+  <text x="664" y="126" font-size="12.5" fill="#4a5566">贵行规范 ≤ 3(修正优先)</text>
+  <text x="664" y="150" font-size="12.5" fill="#4a5566">历史相似案例 ≤ 3</text>
+  <text x="664" y="174" font-size="12.5" fill="#4a5566">本行历史路径 ≤ 2(只含已确认边)</text>
+  <text x="664" y="198" font-size="12.5" fill="#4a5566">原始工单 ≤ 2 · 指南/修正 ≤ 2</text>
+  <text x="664" y="222" font-size="12.5" fill="#4a5566">手册/缺陷/基线/产品文档/</text>
+  <text x="664" y="242" font-size="12.5" fill="#4a5566">Wiki/画像 每类 ≤ 2</text>
+  <text x="664" y="270" font-size="12.5" fill="#0f7c86" font-weight="700">官方文档进「产品文档」一类</text>
+  <text x="664" y="292" font-size="12.5" fill="#4a5566">不适用的排到同类末尾、写理由</text>
+  <text x="664" y="314" font-size="12.5" fill="#4a5566">别的系统的基线直接不出</text>
+  <path d="M874,200 L930,200" stroke="#8a97ab" stroke-width="2" marker-end="url(#ar2)"/>
+  <rect x="934" y="150" width="146" height="100" rx="12" fill="#eef3fb" stroke="#c9daf6"/>
+  <text x="1007" y="186" text-anchor="middle" font-size="13.5" font-weight="700" fill="#123a73">进上下文</text>
+  <text x="1007" y="210" text-anchor="middle" font-size="12" fill="#4a5566">每条只是摘要</text>
+  <text x="1007" y="230" text-anchor="middle" font-size="12" fill="#4a5566">全文要 show</text>
+  <text x="550" y="390" text-anchor="middle" font-size="12.5" fill="#c0392b">如果混在一个池:官方文档块数是客户知识的几百倍,「锁等待」这类问题的前 30 名会被官方文档占满,客户先例进不了候选</text>
+</svg>
+<figcaption>图 3 · 两个候选池分开检索、分开设相对门槛,最后按「类」配额合流</figcaption>
+</figure>
+
+<h3>相关度门槛(过不了就写「无」,不硬凑)</h3>
+<table>
+<tr><th style="width:190px">门槛</th><th style="width:300px">数值</th><th>作用</th></tr>
+<tr><td>向量相似度直通</td><td><code>vector_min = 0.45</code></td><td>语义足够像,直接算相关</td></tr>
+<tr><td>词法原始分下限</td><td><code>lexical_min = 0.01</code></td><td>防「排第一但其实不相关」</td></tr>
+<tr><td>强 token + 覆盖</td><td>强 token ≥ 1,且命中 ≥ 2 个查询词或覆盖率 ≥ <code>0.12</code></td><td>强 token = 标识符(带 _ . :)、≥6 字符的词、连成 ≥4 字的中文短语;泛词(wait / lock / stat…)不算</td></tr>
+<tr><td>相对门槛</td><td><code>relative_floor = 0.45</code></td><td>词法分低于本池同类最高分的 45%、向量又不够像的,剔除</td></tr>
+<tr><td>分类型门槛(RRF 归一分)</td><td>条款 / 案例 / 路径 0.25,其余 0.20</td><td>低于门槛整类返回「无」</td></tr>
+<tr><td>短问题放宽(仅纯问答)</td><td>≤ 3 个词且全部命中</td><td>「死锁」「连接数」这类短问题能查到;诊断发现生成的长查询不放宽</td></tr>
+</table>
+<p class="note">数值来自 <code>common/kb/config.py</code> 的 Thresholds,可在 kb.yaml 的 thresholds 下按客户调整;图检索另有 3 秒时间预算,超时就不走路径、照常出结果。</p>
+</section>
+
+<!-- ================================================================ 4 -->
+<section id="s4">
+<h2>4 · 适用性与可信度:代码打标签,模型按标签用</h2>
+<figure>
+<svg viewBox="0 0 1100 300" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,PingFang SC,Microsoft YaHei,sans-serif">
+  <defs><marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#8a97ab"/></marker></defs>
+  <rect x="20" y="30" width="230" height="100" rx="12" fill="#fff" stroke="#c9daf6" stroke-width="2"/>
+  <text x="135" y="58" text-anchor="middle" font-size="14" font-weight="700" fill="#123a73">条目声明的边界</text>
+  <text x="135" y="82" text-anchor="middle" font-size="12.5" fill="#4a5566">产品系列 · 版本范围 · 适用系统</text>
+  <text x="135" y="104" text-anchor="middle" font-size="12" fill="#7a8596">官方文档:GaussDB 集中式 / 505.2</text>
+  <rect x="20" y="170" width="230" height="100" rx="12" fill="#fff" stroke="#c9daf6" stroke-width="2"/>
+  <text x="135" y="198" text-anchor="middle" font-size="14" font-weight="700" fill="#123a73">本实例的环境画像</text>
+  <text x="135" y="222" text-anchor="middle" font-size="12.5" fill="#4a5566">按当前连接别名匹配(如 cbst)</text>
+  <text x="135" y="244" text-anchor="middle" font-size="11.5" fill="#7a8596">EP-CBST · GaussDB 集中式 505.2.0</text>
+  <path d="M250,80 L330,140" stroke="#8a97ab" stroke-width="2" marker-end="url(#ar3)" fill="none"/>
+  <path d="M250,220 L330,160" stroke="#8a97ab" stroke-width="2" marker-end="url(#ar3)" fill="none"/>
+  <rect x="334" y="100" width="190" height="100" rx="50" fill="#e3f4ec" stroke="#9fd2b9" stroke-width="2"/>
+  <text x="429" y="142" text-anchor="middle" font-size="14" font-weight="700" fill="#1f8a5b">比对(judge)</text>
+  <text x="429" y="166" text-anchor="middle" font-size="12" fill="#4a5566">拿不准一律「未知」,不猜</text>
+  <path d="M524,130 L600,60" stroke="#8a97ab" stroke-width="2" marker-end="url(#ar3)" fill="none"/>
+  <path d="M524,150 L600,150" stroke="#8a97ab" stroke-width="2" marker-end="url(#ar3)" fill="none"/>
+  <path d="M524,170 L600,240" stroke="#8a97ab" stroke-width="2" marker-end="url(#ar3)" fill="none"/>
+  <rect x="604" y="30" width="476" height="60" rx="10" fill="#e3f4ec" stroke="#9fd2b9"/>
+  <text x="624" y="56" font-size="13.5" font-weight="700" fill="#1f8a5b">适用</text>
+  <text x="624" y="78" font-size="12.5" fill="#4a5566">不打标签,可以作为依据(没声明边界的条目也算适用,免得满屏「未知」)</text>
+  <rect x="604" y="120" width="476" height="60" rx="10" fill="#fbe7e5" stroke="#f0c4be"/>
+  <text x="624" y="146" font-size="13.5" font-weight="700" fill="#c0392b">〔不适用本环境:条目是 openGauss,本环境是 GaussDB 集中式〕</text>
+  <text x="624" y="168" font-size="12.5" fill="#4a5566">降到同类末尾、写明理由;不得作为依据,最多说「这是另一产品 / 版本的行为」</text>
+  <rect x="604" y="210" width="476" height="60" rx="10" fill="#fbf1dc" stroke="#efd9a8"/>
+  <text x="624" y="236" font-size="13.5" font-weight="700" fill="#b7791f">〔未知本环境:未登记画像 / 版本写法解析不了 / 测试开关〕</text>
+  <text x="624" y="258" font-size="12.5" fill="#4a5566">可以引用,但必须说明「适用性未知」</text>
+</svg>
+<figcaption>图 4 · 适用性只有三态;已知缺陷另给一句结论:「本环境 X 受影响 / 不受影响 / 是否受影响未知」</figcaption>
+</figure>
+<div class="callout amber"><b>测试开关(仅测试环境):</b>测试库画像是 openGauss 5.0.3,而官方文档集是 GaussDB 505.2——按规则全部「不适用」,测不出官方文档的作用。
+所以测试期间在 kb.yaml 打开 <code>test_switches.docset_applicability_unknown</code>,官方文档一律按「未知」处理;<code>health</code> 每次提示、L0 里写明,
+打标准知识库包时开关开着会被拒绝,带不进正式版本。</div>
+<h3>可信度标签(引用时必须带上)</h3>
+<table>
+<tr><th style="width:170px">知识</th><th style="width:300px">标签</th><th>模型怎么用</th></tr>
+<tr><td>案例</td><td>结论强度:已确认 / 推测 / 待验证</td><td>非「已确认」的引用时带上标签;依据它给高风险操作建议前要读 L3 原文</td></tr>
+<tr><td>Wiki 经验</td><td>已验证 / 未验证 / 已过时</td><td>同上;「已过时」的不作为依据</td></tr>
+<tr><td>已知缺陷</td><td>厂商结论:已确认 / 待确认</td><td>如实转述;受不受影响以「本环境 X 受影响 / 不受影响」为准</td></tr>
+<tr><td>本行历史路径</td><td>只收客户在选择列表里确认过的因果边</td><td>可直接引用;候选边进不了路径</td></tr>
+<tr><td>原始工单</td><td>未结构化</td><td>只能说「有一单类似,未结构化」</td></tr>
+<tr><td>官方文档的摘要</td><td>脚本摘要 / 「摘要由模型依据原页撰写(脚本已核对其中的参数名、数值都出自原页)」</td><td>摘要只用来决定读不读;具体数值、步骤以 <code>show</code> 读到的原文为准</td></tr>
+</table>
+</section>
+
+<!-- ================================================================ 5 -->
+<section id="s5">
+<h2>5 · 生成关:模型怎么用这些知识 <span class="chip prompt">提示词</span></h2>
+<p>这一关写在「知识库契约」里(注入 health / lockwait / waitevent / vacuum / wdr / memanalyze / sqltune / proctune / sqlreview 9 个诊断 skill 的固定标记区),
+纯问答的规则在 AGENTS.md 与 gaussdb-kb 的 SKILL.md。</p>
+<h3>5.1 按层读:看得越深,用得越准</h3>
+<figure>
+<svg viewBox="0 0 1100 230" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,PingFang SC,Microsoft YaHei,sans-serif">
+  <defs><marker id="ar4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#8a97ab"/></marker></defs>
+  <g>
+    <rect x="20" y="30" width="245" height="160" rx="12" fill="#fff" stroke="#123a73" stroke-width="2"/>
+    <rect x="20" y="30" width="245" height="34" rx="12" fill="#123a73"/><text x="142" y="53" text-anchor="middle" font-size="14" font-weight="700" fill="#fff">L0 总索引(脚本已读)</text>
+    <text x="36" y="88" font-size="12.5" fill="#4a5566">本实例画像、八类各多少</text>
+    <text x="36" y="110" font-size="12.5" fill="#4a5566">为 0 的如实说「本行未登记」</text>
+    <text x="36" y="132" font-size="12.5" fill="#4a5566">官方文档集一行、测试开关提示</text>
+    <text x="36" y="170" font-size="12" fill="#7a8596">≤ 3,000 字 · 每次诊断都带</text>
+  </g>
+  <path d="M265,110 L291,110" stroke="#8a97ab" stroke-width="2" marker-end="url(#ar4)"/>
+  <g>
+    <rect x="295" y="30" width="245" height="160" rx="12" fill="#fff" stroke="#2f6fdb" stroke-width="2"/>
+    <rect x="295" y="30" width="245" height="34" rx="12" fill="#2f6fdb"/><text x="417" y="53" text-anchor="middle" font-size="14" font-weight="700" fill="#fff">L1 专题导航(脚本已选)</text>
+    <text x="311" y="88" font-size="12.5" fill="#4a5566">先看「候选原因」与「区分证据」</text>
+    <text x="311" y="110" font-size="12.5" fill="#4a5566">同现象多根因:按区分证据取证</text>
+    <text x="311" y="132" font-size="12.5" fill="#4a5566">条目只给摘要;官方文档另起一节</text>
+    <text x="311" y="170" font-size="12" fill="#7a8596">≤ 6,000 字 · kb.py topic / doc</text>
+  </g>
+  <path d="M540,110 L566,110" stroke="#8a97ab" stroke-width="2" marker-end="url(#ar4)"/>
+  <g>
+    <rect x="570" y="30" width="245" height="160" rx="12" fill="#fff" stroke="#1f8a5b" stroke-width="2"/>
+    <rect x="570" y="30" width="245" height="34" rx="12" fill="#1f8a5b"/><text x="692" y="53" text-anchor="middle" font-size="14" font-weight="700" fill="#fff">L2 条目(引用前必读)</text>
+    <text x="586" y="88" font-size="12.5" fill="#4a5566">处置步骤、审批、版本结论、基线</text>
+    <text x="586" y="110" font-size="12.5" fill="#4a5566">必须出自 show 读过的条目</text>
+    <text x="586" y="132" font-size="12.5" fill="#4a5566">每次回答最多 5 条</text>
+    <text x="586" y="170" font-size="12" fill="#7a8596">长条目先给小节清单,--section 展开</text>
+  </g>
+  <path d="M815,110 L841,110" stroke="#8a97ab" stroke-width="2" marker-end="url(#ar4)"/>
+  <g>
+    <rect x="845" y="30" width="235" height="160" rx="12" fill="#fff" stroke="#7a8596" stroke-width="2"/>
+    <rect x="845" y="30" width="235" height="34" rx="12" fill="#7a8596"/><text x="962" y="53" text-anchor="middle" font-size="14" font-weight="700" fill="#fff">L3 原始证据(四种情况)</text>
+    <text x="861" y="88" font-size="12.5" fill="#4a5566">① 两条知识冲突 ② 用户要原文</text>
+    <text x="861" y="110" font-size="12.5" fill="#4a5566">③ 依据未验证却要给高风险建议</text>
+    <text x="861" y="132" font-size="12.5" fill="#4a5566">④ 核对照片 / 日志里的数字</text>
+    <text x="861" y="170" font-size="12" fill="#7a8596">kb.py evidence <ID></text>
+  </g>
+  <text x="550" y="218" text-anchor="middle" font-size="12.5" fill="#4a5566">摘要只够说「有一条相关规定 / 一单类似案例」;要写具体怎么做,必须下到 L2</text>
+</svg>
+<figcaption>图 5 · 渐进式披露既控制上下文长度,也控制「用多深的知识说多硬的话」</figcaption>
+</figure>
+<h3>5.2 写法规则</h3>
+<table>
+<tr><th style="width:240px">情形</th><th>必须怎么写</th></tr>
+<tr><td>引用客户知识库</td><td>带类型与 ID 与出处(〔规范 GS-…〕〔案例 S2-…〕〔手册 RB-…〕);整句包进 <code>&lt;font color=#2f6fdb&gt;…&lt;/font&gt;</code> 显示为<span class="seg-kb">蓝字</span>。
+一个标签只包一句 / 一个列表项 / 一个表格单元格;标签里不加粗、不放行内代码(会盖掉蓝色);代码块里不放标签</td></tr>
+<tr><td>知识库没有对应内容</td><td>如实说「<b>本行无先例,以下为通用做法</b>」,后面的内容不标蓝;<b>绝不允许编一条客户规范或案例</b></td></tr>
+<tr><td>某类为 0</td><td>说「本行未登记」,不用通用知识冒充</td></tr>
+<tr><td>知识库与脚本判定不一致</td><td>两边并列呈现,交用户裁决;不选边、不假装一致;severity 以脚本为准</td></tr>
+<tr><td>贵行基线</td><td>只说明「这个数在本行平时是多少」,与脚本阈值并列,不改 severity</td></tr>
+<tr><td>脚本结论、自己的分析、通用经验</td><td>不标蓝;拿不准是否出自知识库的,不标</td></tr>
+<tr><td>知识库未接入 / 目录不存在</td><td>照常按 skill 自身知识作答,不提知识库、不说「查过知识库」</td></tr>
+</table>
+</section>
+
+<!-- ================================================================ 6 -->
+<section id="s6">
+<h2>6 · 核对关:事后查有没有编 <span class="chip check">代码</span></h2>
+<div class="two">
+<div>
+<p><code>kb.py cite-check --text "&lt;回答&gt;"</code> 从回答里抽出所有知识 ID(规范 GS- / 案例 S1–S4- / 手册 RB- / 缺陷 KD- / 基线 BL- / 产品文档 PD-(含官方 PD-G25132C-NNNNN)/ Wiki WK- / 画像 EP-),逐个到库里核对:</p>
+<table>
+<tr><th>结果</th><th>含义</th><th>处理</th></tr>
+<tr><td>✓ 存在 / 前缀匹配</td><td>库里有</td><td>保留</td></tr>
+<tr><td>⚠ 已废止</td><td>条款在 archive/</td><td>不得据此判定,改引现行条款</td></tr>
+<tr><td>⚠ 不唯一</td><td>前缀命中多条</td><td>写全 ID</td></tr>
+<tr><td>✗ 未找到</td><td><b>疑似编造</b>(退出码 2)</td><td>从回答里删掉</td></tr>
+</table>
+</div>
+<div>
+<p>其它「看得见」的防线:</p>
+<ul>
+<li><b>蓝字</b>:用户一眼看出哪些话来自客户知识库;没有 ID 的蓝字本身就可疑。</li>
+<li><b>状态行</b>:每节开头写明模式(向量 / 文件)、向量覆盖率、图来源;降级如实写,不藏。</li>
+<li><b>测试开关</b>:L0、health 都提示;打包时拒绝。</li>
+<li><b>导入侧</b>:模型精修的摘要,脚本逐个核对其中的参数名、视图名、等待事件名、数值都原样出自原页,对不上整条退回;validate 有错误、测试开关开着,都不许打包。</li>
+</ul>
+<div class="callout red" style="margin-top:12px"><b>核对关管不到的:</b>没标蓝、也没写「通用做法」的那些话,究竟是模型自带知识还是脚本结论——目前没有机器检查。见第 9 节。</div>
+</div>
+</div>
+</section>
+
+<!-- ================================================================ 7 -->
+<section id="s7">
+<h2>7 · 冲突怎么处理</h2>
+<table>
+<tr><th style="width:250px">冲突</th><th>谁说了算</th><th style="width:300px">回答里怎么写</th></tr>
+<tr><td>脚本判定 vs 知识库条款阈值</td><td>判定与 severity 以脚本为准</td><td>两边并列:「脚本按 X 判为 warn;贵行规范 GS-… 的阈值是 Y」,交用户裁决</td></tr>
+<tr><td>客户规范 / 案例 vs 官方文档</td><td><b>客户为准</b>(本行约束在官方行为之上)</td><td>先写客户的(蓝),再写官方的并注明「官方默认 / 官方说明」</td></tr>
+<tr><td>修正(errata)vs 条款</td><td>修正为准</td><td>引修正,并说明它修正了哪条</td></tr>
+<tr><td>两条知识说法冲突</td><td>不自行裁决</td><td>读 L3 原文核对后并列呈现</td></tr>
+<tr><td>同一现象本行有过多种根因</td><td>按「区分证据」取证后再选</td><td>说明凭什么判断是这个根因,不照搬相似案例的处置</td></tr>
+<tr><td>条目「不适用本环境」</td><td>不作为依据</td><td>最多一句「这是 openGauss / 其他版本的行为」</td></tr>
+<tr><td>官方文档 vs 模型记忆</td><td>官方文档为准(有明确版本)</td><td>引官方条目 ID;模型记忆中的其它版本说法不写,或注明「其他版本」</td></tr>
+<tr><td>知识库为空 / 无对应</td><td>模型自带知识</td><td>「本行无先例,以下为通用做法」</td></tr>
+</table>
+</section>
+
+<!-- ================================================================ 8 -->
+<section id="s8">
+<h2>8 · 一次回答的完整走查(示例)</h2>
+<p class="note">条目取自测试样例库(sample-kb,CBST 为虚构系统)与官方文档集 G25132C 的真实条目;会话数、pid、时长为示意。</p>
+<div class="two">
+<div>
+<h3 style="margin-top:4px">脚本给模型的上下文(节选)</h3>
+<pre><span class="c">## 客户知识库参照</span>
+<span class="k">&gt; 本实例(cbst):EP-CBST《CBST 核心账务系统画像》</span>
+<span class="k">&gt;   GaussDB 集中式 505.2.0,一主两备</span>
+<span class="k">&gt; 八类各登记多少(略)· 官方文档集 G25132C 6,023 条</span>
+<span class="y">&gt; ⚠ 测试开关开着:官方文档集按「适用性未知」处理</span>
+<span class="c">### 发现:LOCK_WAIT_LONG 最长等锁 95 秒(critical)</span>
+- 专题:锁与阻塞(kb.py topic lock)
+- 候选原因(本行确认过):应用连接池归还连接时
+  未提交事务(1 案)
+- 贵行规范 GS-XACT-001:长事务与空闲事务一律经应用
+  运维平台定位并由应用方处理,数据库侧不 kill 业务会话
+- 历史相似 S2-20250120-CBST-空闲事务持锁阻塞(已确认)
+- 处置手册 RB-LCK-001:阻塞链处置:定位根会话并交应用方处理
+- 产品文档 PD-0001 openGauss 的 lockwait_timeout 默认值
+  <span class="y">〔不适用本环境:条目是 openGauss,本环境是 GaussDB 集中式〕</span>
+- 产品文档 PD-G25132C-02895 lockwait_timeout
+  <span class="y">〔未知本环境:测试开关〕</span>默认值 1200000(20min)…</pre>
+<p class="note">诊断 skill 的脚本输出自带这一节;纯问答由 <code>kb.py query --q</code> 拿到同样格式。测试开关关掉后,PD-G25132C-02895 按 EP-CBST 判为适用,不再带标签。</p>
+</div>
+<div>
+<h3 style="margin-top:4px">模型的回答(按来源着色)</h3>
+<div class="legend"><span style="--c:#9aa4b2">脚本结论</span><span style="--c:#2f6fdb">客户知识库</span><span style="--c:#0f7c86">官方文档(建议的标记)</span><span style="--c:#1b2430">模型分析</span></div>
+<div class="chat">
+<div class="q">锁等待一直报超时,根会话能不能直接 kill?lockwait_timeout 要不要调?</div>
+<div class="a">
+<p><span class="seg-script">当前 3 个会话在等锁,最长 95 秒;根会话 pid 4211 处于 idle in transaction 已 14 分钟(脚本判定 LOCK_WAIT_LONG,critical)。</span></p>
+<p class="seg-kb">按贵行规范〔规范 GS-XACT-001〕,空闲事务一律经应用运维平台定位并由应用方处理,数据库侧不 kill 业务会话(出处:《运维规范》v5 §6.2)。</p>
+<p class="seg-kb">按处置手册〔手册 RB-LCK-001〕,先把根会话的 application_name / client_addr 交应用运维平台;超过 10 分钟未解除,值班经理审批后才可在数据库侧终止根会话(出处:CBST 运维手册 v3 §4.2)。</p>
+<p class="seg-kb">本行有过同类问题〔案例 S2-20250120-CBST-空闲事务持锁阻塞〕,根因是应用连接池归还连接时未提交事务(结论:已确认)。</p>
+<p><span class="seg-off">官方文档〔产品文档 PD-G25132C-02895〕:lockwait_timeout 是单个锁的最长等待时间,默认 1200000 毫秒(20min),USERSET 类型;适用性未知(测试开关)。</span></p>
+<p class="seg-model">分析:调小 lockwait_timeout 只会让等锁的会话更早报错,不会释放根会话持有的锁,不建议靠调参解决;根会话已超过 10 分钟,可以按手册走审批。</p>
+</div></div>
+<p class="note">PD-0001 是 openGauss 的行为、不适用本环境,回答里没有用它。现状:客户知识库的句子是蓝字;官方文档的句子<b>标不标蓝没有明确规定</b>(上图青色是建议的单独标记,见第 9 节)。</p>
+</div>
+</div>
+<h3>这一问各级分别贡献了什么</h3>
+<table>
+<tr><th style="width:120px">级</th><th>贡献</th><th style="width:250px">来源可追溯</th></tr>
+<tr><td>① 脚本</td><td>事实:谁在等、等多久、根会话是谁;严重级别 critical(≥ 60 秒)</td><td>技能报告(可复现)</td></tr>
+<tr><td>② 客户</td><td>本行的约束(数据库侧不 kill,交应用方)、例外流程(10 分钟 + 值班经理审批)、先例根因</td><td>GS-XACT-001、RB-LCK-001、S2-20250120-… + 出处</td></tr>
+<tr><td>③ 官方</td><td>参数本身怎么工作(含义、默认值、单位、类型)</td><td>PD-G25132C-02895 + CHM 原页</td></tr>
+<tr><td>④ 模型</td><td>把上面三者串成判断(「调参治标不治本」);不标蓝</td><td>无先例时要声明「本行无先例,以下为通用做法」</td></tr>
+</table>
+</section>
+
+<!-- ================================================================ 9 -->
+<section id="s9">
+<h2>9 · 现状缺口与改进建议</h2>
+<table>
+<tr><th style="width:40px">#</th><th style="width:300px">缺口 <span class="chip gap">缺口</span></th><th>影响</th><th style="width:330px">建议 <span class="chip plan">建议</span></th></tr>
+<tr><td class="c">1</td><td><b>第 4 级主要靠提示词约束</b>:模型可能把自带知识混进来而不声明「通用做法」</td><td>用户分不清一句话是脚本事实、客户知识还是模型说的;cite-check 只能查编造的 ID,查不了「未声明的自带知识」</td>
+<td>加一道生成后检查:回答里出现<b>具体参数值、阈值、命令、操作步骤</b>,却既无知识库引用、也无「通用做法」声明的,提示补来源或改为声明</td></tr>
+<tr><td class="c">2</td><td><b>官方文档的位置没写进契约</b>:「以客户为准」只写在导入说明与 L0 里;标蓝规则没说官方文档标不标</td><td>模型可能把官方文档也标成蓝字,用户把「官方说法」当成「本行规定」</td>
+<td>契约补第 3 级;官方文档用<b>单独的标记</b>(如青色或〔官方〕前缀),与客户知识区分开</td></tr>
+<tr><td class="c">3</td><td><b>兜底声明两种说法</b>:AGENTS.md「以下内容未在本地规范文档中找到,仅供参考」vs 契约「本行无先例,以下为通用做法」</td><td>回答风格不一致,也不便于机器检查</td>
+<td>统一成一种,并与需求 3 合并:标明「<b>由大模型生成,需结合业务情况评估</b>」</td></tr>
+<tr><td class="c">4</td><td><b>信息不足时不乱答</b>(需求 3)尚未落地</td><td>知识库与脚本都没覆盖时,模型仍可能给出看似确定的结论</td>
+<td>契约加「信息不足判定」:缺关键证据时先说缺什么、要什么数据,不给确定结论</td></tr>
+<tr><td class="c">5</td><td><b>内核调整的证据门槛</b>(需求 1)尚未落地</td><td>sqltune、健康检查等可能建议改内核参数,而证据不足</td>
+<td>脚本侧加证据门槛:只有指定指标越线(并附数值)时才允许出现内核参数建议;否则只给 SQL / 应用层建议</td></tr>
+<tr><td class="c">6</td><td><b>证据链</b>(需求 2):诊断结论到知识库原文的链接</td><td>用户要逐条点开核对比较麻烦</td>
+<td>引用时附可点的大盘直达链接(大盘「目录」页签已支持 <code>#outline=I:&lt;ID&gt;</code> 定位到 L2、再点到 L3)</td></tr>
+</table>
+<div class="callout green"><b>建议的落地顺序:</b>① 契约统一(第 2、3 条)+ 官方单独标记 → ② 信息不足约束与「大模型生成」标注(需求 3)→
+③ 生成后来源检查(第 1 条)→ ④ 内核调整证据门槛(需求 1)→ ⑤ 证据链直达链接(需求 2)。前两步只改契约与 SKILL.md,约 1 天;后三步各需脚本改动与回归。</div>
+</section>
+
+<!-- ================================================================ 10 -->
+<section id="s10">
+<h2>附 · 实现位置</h2>
+<table>
+<tr><th style="width:360px">文件</th><th>管什么</th></tr>
+<tr><td><code>common/kb/query.py</code></td><td>两个候选池、RRF 融合、相关度门槛、按类配额、适用性标签、测试开关</td></tr>
+<tr><td><code>common/kb/config.py</code></td><td>Thresholds(门槛与配额)、test_switches</td></tr>
+<tr><td><code>common/kb/versions.py</code></td><td>适用性三态判断、缺陷受影响判断</td></tr>
+<tr><td><code>common/kb/layers.py</code>、<code>common/kb/docnav.py</code></td><td>L0 / L1 生成(官方文档单独一节、代表条目)</td></tr>
+<tr><td><code>skills/gaussdb-kb/references/kb-contract.md</code></td><td>知识库契约:优先级链、按层读、标蓝、无先例声明、冲突并列(注入 9 个诊断 skill)</td></tr>
+<tr><td><code>skills/gaussdb-kb/SKILL.md</code>、<code>references/docset.md</code></td><td>纯问答的读法与引用要求;官方文档集「以客户为准」</td></tr>
+<tr><td><code>AGENTS.md</code>(平台)</td><td>先查知识库;兜底声明</td></tr>
+<tr><td><code>skills/gaussdb-kb/scripts/kb_cite.py</code></td><td>cite-check 引用核对</td></tr>
+</table>
+</section>
+
+</div>
+</body>
+</html>
