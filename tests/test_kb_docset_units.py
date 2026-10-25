@@ -290,3 +290,33 @@ def test_model_summary_must_come_from_the_page():
 def test_cite_check_knows_docset_ids():
     kc = _load("kb_cite")
     assert kc.TYPED_RE.search("见〔产品文档 PD-G25132C-02268〕").group(0) == "PD-G25132C-02268"
+
+
+def test_old_index_without_novec_upgrades_in_place(tmp_path):
+    """2026-10-25 测试环境:旧索引没有 novec 列,一次 index 里 setup 跑两遍,第二遍又去加列 → duplicate column。"""
+    import sqlite3
+    from common.kb import store_sqlite as ssq
+    path = tmp_path / "store.sqlite"
+    conn = sqlite3.connect(path)
+    for sql in ssq._SCHEMA:
+        conn.execute(sql.replace(", novec INTEGER NOT NULL DEFAULT 0", ""))
+    conn.execute("INSERT INTO kb_meta (key, value) VALUES ('schema_version', ?)", (ssq.SCHEMA_VERSION,))
+    conn.commit()
+    conn.close()
+    store = ssq.SqliteStore.open_writer(path, dims=4)
+    store.setup()
+    store.setup()                                   # 第二遍不许再加列
+    store.rebuild()                                 # 删表重建后也不许
+    store.publish()
+    ro = ssq.SqliteStore.open_readonly(path, dims=4)
+    assert ro.lexical_only_count() == 0 and ro.coverage() == (0, 0 if not ro.capabilities().vector else 0)
+    ro.close()
+
+
+def test_inbox_clean_accepts_docset_batches(kb, tmp_path):
+    """2026-10-25 测试环境:docset 批次没有 source.md,inbox-clean 拒绝清理,221 MB 的解包目录留在收件目录里。"""
+    ki = _load("kb_items")
+    _import(kb, tmp_path)
+    assert (kb / "inbox" / "ds" / "scan.json").is_file()
+    ki.clean_inbox(kb, "ds")
+    assert not (kb / "inbox" / "ds").exists() and (kb / "docsets" / "T25" / "plan" / "plan.yaml").is_file(), "配方已在文档集里"

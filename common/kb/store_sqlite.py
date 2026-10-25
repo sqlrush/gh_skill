@@ -222,8 +222,10 @@ class SqliteStore:
         if self._has_table("kb_meta") and self._meta_get("schema_version") not in (None, SCHEMA_VERSION):
             self._drop_all()
         self._transaction([(sql, ()) for sql in _SCHEMA])
+        self.__dict__.pop("_novec_col", None)     # 表可能刚建 / 刚删过:按现状重查,不用上一次的缓存
         if not self._has_novec():                 # 2026-10-25 前建的库没有 novec 列:补上(默认 0,行为不变)
             self._transaction([("ALTER TABLE kb_chunks ADD COLUMN novec INTEGER NOT NULL DEFAULT 0", ())])
+            self._novec_col = True
         caps = self.capabilities()
         self._meta_set("schema_version", SCHEMA_VERSION)
         self._meta_set("engine", ENGINE)

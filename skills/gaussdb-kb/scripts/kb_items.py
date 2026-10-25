@@ -447,8 +447,9 @@ def clean_inbox(kb: pathlib.Path, slug: str, discard: bool = False) -> str:
     if items and not discard:
         raise ItemCmdError(f"inbox/{slug} 还有 {len(items)} 单工单没处理(propose → review → apply 之后再清;"
                            f"确认这批导错了要整批丢弃,加 --discard,原件快照仍在 sources/)")
-    if not any((target / f).exists() for f in ("source.md", "outline.md", "manifest.json")):
-        raise ItemCmdError(f"inbox/{slug} 不像 ingest 产生的批次目录(没有 source.md / manifest.json),不删")
+    # 官方文档集的批次(docset scan 产生):有 scan.json;apply 之后配方已复制进 docsets/<代号>/plan/,解包的 CHM 可以删
+    if not any((target / f).exists() for f in ("source.md", "outline.md", "manifest.json", "scan.json")):
+        raise ItemCmdError(f"inbox/{slug} 不像 ingest 产生的批次目录(没有 source.md / manifest.json / scan.json),不删")
     shutil.rmtree(target)
     return f"inbox/{slug}"
 
