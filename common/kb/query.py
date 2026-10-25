@@ -272,6 +272,8 @@ class KbSession:
         self.alias = ""                 # 当前连接别名(诊断 skill 的会话),用来匹配环境画像
         self._catalog = None
         self._triples = None
+        # 官方文档集:各自的索引、单独的候选池(几万块官方文档不许把贵行的规范与案例挤出候选)
+        self.docsets: List[Tuple[Any, "ssq.SqliteStore", bool]] = []
 
     # --- 八类知识 / 分层(条目元数据从文件现读;拿不到就当没有,检索照常)---------------
 
@@ -330,12 +332,38 @@ class KbSession:
         elif self.alias:
             lines.append(f"> 本实例({self.alias}):未登记环境画像——条目的产品系列 / 版本适用性按「未知」处理")
         c = kbcat.type_counts(cat)
+        official = len(cat.from_docset())
         parts = [("规范", c.get("norm", 0) + c.get("errata", 0)), ("案例", c.get("case", 0)), ("画像", c.get("profile", 0)),
                  ("基线", c.get("baseline", 0)), ("缺陷", c.get("defect", 0)), ("手册", c.get("runbook", 0)),
                  ("产品文档", c.get("product", 0)), ("Wiki", c.get("wiki", 0))]
-        lines.append("> 已登记:" + " · ".join(f"{k} {v}" for k, v in parts)
+        lines.append("> 已登记:" + " · ".join(f"{k} {v}" + (f"(含官方文档集 {official})" if k == "产品文档" and official else "")
+                                             for k, v in parts)
                      + "(为 0 的如实说「本行未登记」)· 总索引 `kb.py overview`")
+        if official and self.cfg is not None and self.cfg.docset_applicability_unknown:
+            lines.append("> ⚠ 测试开关开着:官方文档集对所有实例都按「适用性未知」处理(只许在测试环境)")
         return tuple(lines)
+
+    def _open_docsets(self) -> None:
+        """装好的官方文档集逐套只读打开;向量只在该套是用同一个嵌入模型算的时候用(否则只走关键词,说明原因)。"""
+        if self.cfg is None:
+            return
+        from . import docset as kbdocset
+        for ds in kbdocset.installed(self.cfg.kb_dir):
+            if not ds.index_path.is_file():
+                self.notes.append(f"官方文档集 {ds.code}:还没建索引,检索不到")
+                continue
+            try:
+                store = ssq.SqliteStore.open_readonly(ds.index_path, dims=self.cfg.embeddings.dims)
+            except spg.StoreError as exc:
+                self.notes.append(f"官方文档集 {ds.code}:{exc}")
+                continue
+            model = store.meta_get("embed_model") or ""
+            vec_ok = bool(self.embedder is not None and store.capabilities().vector and model
+                          and model == self.embedder.model)
+            if self.embedder is not None and model and model != self.embedder.model:
+                self.notes.append(f"官方文档集 {ds.code}:向量是 {model} 算的,本库配的是 {self.embedder.model},"
+                                  "这套文档本次只走关键词(导入环境跑 `kb.py index` 会按本库模型重算)")
+            self.docsets.append((ds, store, vec_ok))
 
     @classmethod
     def open(cls, kb_dir: Optional[pathlib.Path] = None,
@@ -365,7 +393,9 @@ class KbSession:
                 notes.append(f"向量:未启用({exc})")
         else:
             notes.append("向量:未启用(%s)" % (pg.vector_note or "sqlite-vec 不可用"))
-        return cls(cfg, pg, graph, embedder, notes=notes, graph_reason=graph_reason)
+        session = cls(cfg, pg, graph, embedder, notes=notes, graph_reason=graph_reason)
+        session._open_docsets()
+        return session
 
     @classmethod
     def _open_files(cls, cfg: kbconfig.KbConfig, reason: str) -> "KbSession":
@@ -374,14 +404,28 @@ class KbSession:
             fs = sf.FileStore.load(cfg.kb_dir)
         except Exception as exc:
             return cls(cfg, None, None, None, reason=f"{reason};文件模式加载失败:{exc}")
-        if not fs.has_index():
+        from . import docset as kbdocset
+        has_docsets = bool(kbdocset.installed(cfg.kb_dir))
+        if not fs.has_index() and not has_docsets:
             # 装完还没导入任何材料:整节写「未接入(空库)」就够了,不要给每条发现挂一串「无」。
             return cls(cfg, None, None, None, reason=f"知识库是空的(还没导入任何规范或工单;{reason})")
-        return cls(cfg, fs, fs.graph, None, reason=reason, notes=["向量:未启用(文件模式无向量)"])
+        # 客户库还没索引、但标准知识库(官方文档集)装好了:官方文档照样能查,向量按配置用(客户池走文件模式)
+        embedder: Optional[Embedder] = None
+        if has_docsets:
+            try:
+                embedder = Embedder.from_config(cfg)
+            except (EmbedError, kbconfig.KbConfigError):
+                embedder = None
+        session = cls(cfg, fs, fs.graph, embedder, reason=reason, notes=["向量:未启用(文件模式无向量)"])
+        session._open_docsets()
+        return session
 
     def close(self) -> None:
         if self.pg is not None:
             self.pg.close()
+        for _ds, store, _v in self.docsets:
+            store.close()
+        self.docsets = []
 
     @property
     def attached(self) -> bool:
@@ -483,6 +527,8 @@ class KbSession:
                 seen_docs[hit.doc_id] = score
                 by_kind.setdefault(hit.kind, [])
                 by_kind[hit.kind] = [(s, h) for s, h in by_kind[hit.kind] if h.doc_id != hit.doc_id] + [(score, hit)]
+        for score, hit in self._docset_hits(tokens, emb, free_text, th):
+            by_kind.setdefault("product", []).append((score, hit))
         for k in by_kind:
             by_kind[k].sort(key=lambda p: (-p[0], p[1].doc_id))
 
@@ -542,6 +588,25 @@ class KbSession:
             self._log_miss(key, q_text)
         return refs
 
+    def _docset_hits(self, tokens: Sequence[str], emb: Optional[List[float]], free_text: bool, th: Any
+                     ) -> List[Tuple[float, spg.Hit]]:
+        """官方文档集的候选池:每套单独取「关键词前 12 + 向量前 12」,门槛与客户池同一套,相对门槛只在本池里比。"""
+        out: List[Tuple[float, spg.Hit]] = []
+        for ds, store, vec_ok in self.docsets:
+            lex = self._safe(lambda: store.search_chunks_lexical(tokens, k=12)) or []
+            vec = self._safe(lambda: store.search_chunks_vector(emb, k=12)) if emb is not None and vec_ok else None
+            fused = rrf([lex, vec] if vec is not None else [lex])
+            survivors = [(s, h, ls, vs) for (s, h, ls, vs) in fused.values() if self._relevant(tokens, h, ls, vs, free_text)]
+            best = max((ls for _s, _h, ls, _vs in survivors), default=0.0)
+            seen: Dict[str, Tuple[float, spg.Hit]] = {}
+            for s, h, ls, vs in survivors:
+                if vs < th.vector_min and ls < best * th.relative_floor:
+                    continue
+                if s > seen.get(h.doc_id, (-1.0, h))[0]:
+                    seen[h.doc_id] = (s, h)
+            out += list(seen.values())
+        return out
+
     def _typed_refs(self, by_kind: Dict[str, List[Tuple[float, spg.Hit]]], th: Any, free_text: bool) -> Tuple[Ref, ...]:
         """六类类型化条目:每类最多 top_typed 条;按本实例画像标适用性——不适用的降到同类末尾、写明理由,不丢。
         别的系统的基线与本实例无关,直接不出;画像只在纯问答里出(诊断时 L0 已经写了本实例的画像)。"""
@@ -561,6 +626,9 @@ class KbSession:
                 if kind == "defect":
                     meta["_applies"] = kbversions.defect_verdict(meta, pmeta)
                     verdict = kbversions.Verdict(kbversions.APPLICABLE)
+                elif meta.get("docset") and self.cfg is not None and self.cfg.docset_applicability_unknown:
+                    verdict = kbversions.Verdict(kbversions.UNKNOWN, "测试开关:官方文档适用性按未知处理")
+                    meta["_applies"] = verdict.label
                 else:
                     verdict = kbversions.judge(meta, pmeta)
                     meta["_applies"] = verdict.label

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from . import catalog as kbcat
+from . import docnav
 from . import graphfiles as gf
 from . import topics as kbtopics
 from . import types as kbtypes
@@ -153,8 +154,12 @@ def _entry_block(entries: Sequence[kbcat.Entry], caps: Optional[Dict[str, int]])
 def render_l1(view: TopicView, version: str, show_all: bool = False) -> str:
     t = view.topic
     counts: Dict[str, int] = {}
-    for e in view.entries:
+    own = [e for e in view.entries if not e.meta.get("docset")]          # 官方文档集另起一节(docnav.topic_block)
+    for e in own:
         counts[e.short] = counts.get(e.short, 0) + 1
+    official = len(view.entries) - len(own)
+    if official:
+        counts["官方文档"] = official
     head = [f"# {kbtopics.name_of(t.slug, [t])}(L1 专题导航 · `{t.slug}`)", "",
             f"{GENERATED_MARK}。版本 {version} · 条目 {len(view.entries)}"
             + ("(" + " · ".join(f"{k} {v}" for k, v in counts.items()) + ")" if counts else ""), ""]
@@ -172,17 +177,18 @@ def render_l1(view: TopicView, version: str, show_all: bool = False) -> str:
             cause_lines += ["", f"> ⚠ 同一现象在本行有过不止一种根因:{'、'.join(view.lookalikes)}。"
                                 "先按区分证据取证,不要看到一单相似就照搬它的处置。"]
         cause_lines.append("")
-    foot = ["## 读法", "要引用哪条先 `kb.py show <ID>`(处置步骤、审批、版本结论不许只凭这里的摘要写);"
-                     "核对原文 `kb.py evidence <ID>`。"]
+    foot = docnav.topic_block(view.entries, t.slug, t) + [
+        "## 读法", "要引用哪条先 `kb.py show <ID>`(处置步骤、审批、版本结论不许只凭这里的摘要写);"
+                 "核对原文 `kb.py evidence <ID>`。"]
     def build(caps: Optional[Dict[str, int]], causes: List[str]) -> str:
-        lines, hidden = _entry_block(view.entries, caps)
+        lines, hidden = _entry_block(own, caps)
         tail = [f"(其余 {hidden} 条:`kb.py topic {t.slug} --all`)"] if hidden else []
         return "\n".join(head + causes + ["## 相关条目(摘要)", ""] + (lines or ["(暂无)"]) + tail + [""] + foot) + "\n"
 
     if show_all:
         return build(None, cause_lines)[:ALL_LIMIT]
     # 超上限就每类少显示一条,直到放得下;每类至少留一条。仍放不下(摘要太长)再硬截。
-    caps = {e.type: _TYPE_CAPS.get(e.type, _DEFAULT_CAP) for e in view.entries}
+    caps = {e.type: _TYPE_CAPS.get(e.type, _DEFAULT_CAP) for e in own}
     while True:
         text = build(caps, cause_lines)
         if len(text) <= L1_LIMIT or all(v <= 1 for v in caps.values()):
@@ -203,7 +209,9 @@ def _section_first(e: kbcat.Entry, name: str, limit: int = 30) -> str:
 
 
 def render_l0(kb: pathlib.Path, cat: kbcat.Catalog, version: str, today: Optional[str] = None) -> str:
+    from . import docset as kbdocset
     counts = kbcat.type_counts(cat)
+    official = len(cat.from_docset())
     cases = cat.of_type(kbtypes.CASE)
     confirmed = sum(1 for e in cases if e.verification == "已确认")
     rows = [
@@ -214,7 +222,8 @@ def render_l0(kb: pathlib.Path, cat: kbcat.Catalog, version: str, today: Optiona
         ("指标口径与正常基线", counts.get("baseline", 0), ""),
         ("已知缺陷与版本例外", counts.get("defect", 0), ""),
         ("处置与恢复手册", counts.get("runbook", 0), ""),
-        ("高斯产品文档", counts.get("product", 0), ""),
+        ("高斯产品文档", counts.get("product", 0),
+         f"客户摘录 {counts.get('product', 0) - official}、官方文档集 {official}(见下)" if official else ""),
         ("存量 Wiki 经验", counts.get("wiki", 0), ""),
     ]
     out = ["# 知识库总索引(L0)", "",
@@ -227,7 +236,8 @@ def render_l0(kb: pathlib.Path, cat: kbcat.Catalog, version: str, today: Optiona
     raw = _raw_count(kb)
     if raw:
         out.append(f"| 原始工单(未结构化,L3) | {raw} | 只能说「有一单类似,未结构化」 |")
-    out += ["", "## 适用环境", ""]
+    out += [""] + docnav.l0_rows(cat, kbdocset.installed(kb))
+    out += ["## 适用环境", ""]
     profiles = cat.profiles()
     if profiles:
         out += ["| 系统 | 产品与版本 | 部署 | 连接别名 | 批量窗口 | 画像 |", "|---|---|---|---|---|---|"]
@@ -245,7 +255,8 @@ def render_l0(kb: pathlib.Path, cat: kbcat.Catalog, version: str, today: Optiona
             continue
         mix: Dict[str, int] = {}
         for e in ents:
-            mix[e.short] = mix.get(e.short, 0) + 1
+            key = "官方" if e.meta.get("docset") else e.short
+            mix[key] = mix.get(key, 0) + 1
         out.append(f"| {t.name} | {' '.join(t.synonyms[:3])} | {' '.join(f'{k}{v}' for k, v in mix.items())} | "
                    f"`kb.py topic {t.slug}` |")
     other = cat.in_topic(kbtopics.OTHER)

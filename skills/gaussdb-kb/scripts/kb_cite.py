@@ -25,7 +25,7 @@ from common.kb import cases as kbcases
 CLAUSE_RE = re.compile(r"GS-[A-Z]{2,4}-\d{3}")
 CASE_RE = re.compile(r"S[1-4]-\d{8}-[A-Za-z0-9_]+-[^\s,，;;:：、。!?！?()（）\[\]【】〔〕《》〈〉\"'`<>*]*")
 _ELLIPSIS_RE = re.compile(r"(?:…|\.{2,})+$")
-TYPED_RE = re.compile(r"(?<![A-Za-z0-9_-])(?:WK-\d{4}|PD-\d{4}|KD-\d{4}|RB-[A-Z]{2,4}-\d{3}"
+TYPED_RE = re.compile(r"(?<![A-Za-z0-9_-])(?:WK-\d{4}|PD-[A-Z][A-Z0-9]{1,9}-\d{5}|PD-\d{4}|KD-\d{4}|RB-[A-Z]{2,4}-\d{3}"
                       r"|BL-[A-Z0-9_]+-[A-Z0-9_]+|EP-[A-Z0-9_]+)(?![A-Za-z0-9_])")
 
 STATUS_MARK = {"存在": "✓", "前缀匹配": "✓", "已废止": "⚠", "不唯一": "⚠", "未找到": "✗"}

@@ -775,7 +775,7 @@ def validate_typed(kb: pathlib.Path, findings: list) -> None:
 
     _items, item_findings = kbtypes.load_items(kb)
     findings.extend(item_findings)
-    cat = kbcat.load(kb)
+    cat = kbcat.load(kb, with_docsets=False)
     findings.extend(("warn", w) for w in cat.warnings)
     owner: dict[str, str] = {}
     for e in cat.entries:
@@ -1056,6 +1056,7 @@ def cmd_contract(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     import kb_cases
     import kb_cite
+    import kb_docset
     import kb_items
     import kb_read
     import kb_store
@@ -1080,12 +1081,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_index.add_argument("--rebuild", action="store_true", help="清两库重灌(文件是真相)")
     p_index.add_argument("--fill-missing", action="store_true",
                          help="端点试探失败时也逐批重试补没向量的块(端点正常时 index 本来就会补)")
+    p_index.add_argument("--budget", type=float, default=kb_docset.DEFAULT_BUDGET_S,
+                         help=f"官方文档集建索引的时限(秒,默认 {kb_docset.DEFAULT_BUDGET_S});没建完退出 2,再跑一次接着来;0 = 不限")
     p_index.set_defaults(func=cmd_index_all)
     kb_store.add_subcommands(sub)
     kb_cases.add_subcommands(sub)
     kb_cite.add_subcommands(sub)
     kb_read.add_subcommands(sub)
     kb_items.add_subcommands(sub)
+    kb_docset.add_subcommands(sub)
 
     p_validate = sub.add_parser("validate", help="校验 ID/schema/INDEX 一致性")
     p_validate.add_argument("--kb")
@@ -1110,6 +1114,11 @@ def cmd_ingest_any(args: argparse.Namespace) -> int:
     import kb_cases
     kb = resolve_kb_dir(args.kb)
     kb.mkdir(parents=True, exist_ok=True)
+    from common.kb import chmdoc
+    if pathlib.Path(args.file).exists() and chmdoc.is_docset_source(pathlib.Path(args.file)):
+        import kb_docset                     # 官方文档包(CHM):走文档集路径,不是条款化
+        ensure_kb_skeleton(kb)
+        return kb_docset.cmd_scan(argparse.Namespace(file=args.file, slug=args.slug, kb=args.kb))
     kind = args.kind or ("tickets" if pathlib.Path(args.file).suffix.lower() in (".xlsx", ".csv") else "spec")
     with kblock.hold(kb):
         if kind == "tickets":
@@ -1130,11 +1139,18 @@ def cmd_index_all(args: argparse.Namespace) -> int:
 def _index_all_locked(args: argparse.Namespace, kb: pathlib.Path) -> int:
     import kb_store
 
+    import kb_docset
     rc = cmd_index(args)
     if rc != 0:
         return rc
     try:
-        return kb_store.cmd_index(args)
+        rc = kb_store.cmd_index(args)
+        budget = getattr(args, "budget", kb_docset.DEFAULT_BUDGET_S)
+        rc_docs = kb_docset.index_docsets(kb, budget, rebuild=getattr(args, "rebuild", False))
+        if rc_docs:
+            from common.kb import layers as kblayers
+            kblayers.write_layers(kb, read_version(kb))       # 文档集的索引状态写进 L0
+        return max(rc, rc_docs)
     except kb_store.StoreCmdError as exc:
         # 索引写不进去:文件索引已经建好,检索会自动退到文件模式。两句都要说——
         # 只报错会让人以为知识库废了,只报「还能用」会把一个真故障藏起来。
@@ -1150,6 +1166,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     import kb_cases
     import kb_cite
+    import kb_docset
     import kb_items
     import kb_read
     import kb_store
@@ -1160,7 +1177,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"错误:{exc}", file=sys.stderr)   # 别人正在写:退出码 2(有活没干完),不是 1(坏了)
         return 2
     except (KbError, kb_store.StoreCmdError, kb_cases.CaseCmdError, kb_cite.CiteCmdError,
-            kb_read.ReadCmdError, kb_items.ItemCmdError, kbconfig.KbConfigError) as exc:
+            kb_read.ReadCmdError, kb_items.ItemCmdError, kbconfig.KbConfigError) + kb_docset.ERRORS as exc:
         print(f"错误:{exc}", file=sys.stderr)
         return 1
 

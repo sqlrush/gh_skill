@@ -1,7 +1,7 @@
 ---
 name: gaussdb-kb
-version: 3.0.0
-description: "客户知识库(原 kbimport):把客户的 GaussDB/OpenGauss 规范文档(txt/md/docx/doc/pdf)、故障工单/问题分析报告(md/docx/csv/xlsx)、手册 / Wiki / 产品文档 / 环境画像导入知识库——每条知识打上八类类型之一(规范、案例、画像、基线、缺陷、手册、产品文档、Wiki),规范条款化进 rules/errata,工单结构化成案例并抽成图谱关系,其余六类按模板写成类型化条目;知识库按 L0 总索引 → L1 专题导航 → L2 条目 → L3 原始证据分层,查询时逐层下钻(overview / topic / show / evidence),关键数据写入前一律生成编号选择列表交用户确认;向量进知识库目录里的 SQLite 索引(sqlite-vec,不用配)、关系写进图文件 graph/*.yaml(配了 Neo4j 再同步进图库,可选;没有图库时路径直接走图文件),各诊断 skill 按发现检索并优先引用客户先例。脚本负责转换、快照、校验、索引、检索、契约注入;你负责条款分类、案例抽取、呈现选择列表与收集确认。用户说「导入规范 / 导入工单 / 建知识库 / 把 xxx 加进知识库 / 更新规范库 / 知识库里有没有类似案例 / 让 skill 按我们的经验来」即用。"
+version: 3.1.0
+description: "客户知识库(原 kbimport):把 GaussDB 官方产品文档(CHM,导成标准知识库的官方文档集)、客户的 GaussDB/OpenGauss 规范文档(txt/md/docx/doc/pdf)、故障工单/问题分析报告(md/docx/csv/xlsx)、手册 / Wiki / 产品文档 / 环境画像导入知识库——每条知识打上八类类型之一(规范、案例、画像、基线、缺陷、手册、产品文档、Wiki),规范条款化进 rules/errata,工单结构化成案例并抽成图谱关系,其余六类按模板写成类型化条目;知识库按 L0 总索引 → L1 专题导航 → L2 条目 → L3 原始证据分层,查询时逐层下钻(overview / topic / show / evidence),关键数据写入前一律生成编号选择列表交用户确认;向量进知识库目录里的 SQLite 索引(sqlite-vec,不用配)、关系写进图文件 graph/*.yaml(配了 Neo4j 再同步进图库,可选;没有图库时路径直接走图文件),各诊断 skill 按发现检索并优先引用客户先例。脚本负责转换、快照、校验、索引、检索、契约注入;你负责条款分类、案例抽取、呈现选择列表与收集确认。用户说「导入规范 / 导入工单 / 建知识库 / 把 xxx 加进知识库 / 更新规范库 / 知识库里有没有类似案例 / 让 skill 按我们的经验来」即用。"
 allowed-tools: ["exec", "read", "write"]
 compatibility: opencode
 metadata:
@@ -116,6 +116,29 @@ python3 {baseDir}/scripts/kb.py health
 
 案例格式见 `{baseDir}/references/case-format.md`,图的 kind/rel 见 `{baseDir}/references/graph-schema.md`。
 
+## 2.4 官方文档集(GaussDB 官方产品文档 CHM → 标准知识库)
+
+华为官方文档(`.chm`,或含 `.hhc` 目录文件的 `.zip`)**不走 2.5 节逐条写草稿**:几千页由脚本按目录切分、写条目,
+你负责**逐项向用户确认**、核对映射、抽读样例、精修重点页摘要、验收检索。格式与命令细节见 `{baseDir}/references/docset.md`。
+
+1. **扫描**:`kb.py ingest <CHM>`(或 `kb.py docset scan <CHM>`)——解包、读目录,打印范围清单与「要用户确认的」四项,退出 2。
+   **四项逐项问用户,不要替用户定**:范围(全部 / 去掉哪几章)· 产品系列与适用版本范围、部署形态 · 文档版本 / 内核版本 / 发布日期 · 文档集代号。
+2. **配方**:用户答完后 `kb.py docset plan <批次> --code <代号> --product "<产品系列>" --versions <版本> --deployment "<部署>"
+   --doc-version <文档版本> --kernel-version <内核版本> --as-of <YYYY-MM-DD> [--exclude "<目录前缀>"]`。
+   输出专题映射表(按目录,每行条目数与专题分布)与样例条目。**逐行核对映射**:明显归错的(如「告警处理」归到「锁与阻塞」)
+   用 `--override "<目录>=<专题>,…"` 改(空 = 不归专题),再跑一次 plan;**把映射表与样例给用户确认**,不确认不 apply。
+3. **落盘**:`kb.py docset apply <批次>` → `docsets/<代号>/`(条目、原页、配方;ID `PD-<代号>-NNNNN` 永不复用)。
+4. **索引**:`kb.py index` 带时限(默认 100 秒),**没建完退出 2——重复跑到退出 0**(每次接着上次的,不会重来)。
+   然后 `kb.py docset validate <代号>`,`[error]` 必须清零。
+5. **摘要精修**(用户同意才做):`kb.py docset summaries <代号> --next 10` 取一批重点页,按要求写成 JSON 文件,
+   `--apply <文件>` 写回;脚本核对摘要里的参数名、视图名、数值都出自原页,**退回的按提示改了再交**,直到「全部完成」;最后再 `kb.py index`。
+6. **验收**:`kb.py query --q "<问题>"` 各问几条——官方文档该命中的(如某个 GUC 参数的默认值、某个错误码)、
+   客户案例该排在前面的(如「死锁」「锁等待」);`kb.py doc <代号>` 看目录导航、`kb.py topic lock` 看 L1;结果交用户。
+   处理完 `kb.py inbox-clean <批次>`。
+
+官方文档条目是「高斯产品文档」类型,只说明产品怎么工作;**贵行规范、案例与之不一致时以贵行为准**,并列呈现交用户裁决。
+换下一版文档:另起代号导入,旧的 `kb.py docset retire <代号>` 整体退役。`docset pack / install` 是发布与部署用的(标准知识库包)。
+
 ## 2.5 类型化条目(手册 / 缺陷 / 基线 / 产品文档 / Wiki / 画像)
 
 1. **骨架**:`python3 {baseDir}/scripts/kb.py template <runbook|defect|baseline|product|wiki|profile>` 打印必填项、建议项、**可选取值**和 frontmatter + 小节——字段要求以它为准,命令用法看 `kb.py <命令> --help`,**不要去读脚本源码**;
@@ -148,7 +171,8 @@ python3 {baseDir}/scripts/kb.py query --q "<用户的问题>" [--alias <当前�
 |---|---|---|
 | L0 | `kb.py overview [--alias og5]` | 想知道库里有什么、本实例是什么环境 |
 | L1 | `kb.py topic <专题>` | 看某个专题的候选原因、区分证据、相关条目;`--list` 列专题 |
-| L2 | `kb.py show <ID> [--alias og5]` | **引用某条的步骤、审批、版本结论之前必读**;每次回答最多 5 条 |
+| L1 | `kb.py doc <代号> [章节] [--topic <专题>]` | 官方文档集按原书目录下钻(参数、视图、故障处理…) |
+| L2 | `kb.py show <ID> [--alias og5]` | **引用某条的步骤、审批、版本结论之前必读**;每次回答最多 5 条。官方文档长条目先给小节清单,`--section` / `--grep` 再看 |
 | L3 | `kb.py evidence <ID>` | 两条知识冲突、用户要原文、依据未验证却要给高风险建议、核对照片 / 日志里的数字 |
 
 条目带〔不适用本环境:…〕的不得作为依据;〔未知本环境…〕的引用时说明适用性未知。**引用必带 ID 与出处**;写着「无」就如实说「本行无先例,以下为通用做法」;

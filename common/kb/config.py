@@ -233,6 +233,13 @@ class KbConfig:
     embeddings: EmbeddingConfig
     thresholds: Thresholds
     defaults: Dict[str, Any]
+    # 测试开关(只许在测试环境的 kb.yaml 里开;health 每次提示,标准知识库打包时开着就拒绝)
+    #   docset_applicability_unknown: true —— 官方文档集对任何实例都显示「适用性未知」(2026-10-25 用户选 c)
+    test_switches: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def docset_applicability_unknown(self) -> bool:
+        return bool(self.test_switches.get("docset_applicability_unknown"))
 
 
 def _reject_secrets(node: Any, path: str) -> None:
@@ -320,4 +327,19 @@ def load(kb_dir: pathlib.Path) -> KbConfig:
         embeddings=_embeddings(raw.get("embeddings")),
         thresholds=_thresholds(raw.get("thresholds")),
         defaults=dict(raw.get("defaults") or {}),
+        test_switches=_test_switches(raw.get("test_switches")),
     )
+
+
+TEST_SWITCHES = ("docset_applicability_unknown",)
+
+
+def _test_switches(raw: Any) -> Dict[str, Any]:
+    if not raw:
+        return {}
+    if not isinstance(raw, dict):
+        raise KbConfigError("kb.yaml test_switches 必须是键值映射")
+    unknown = [k for k in raw if k not in TEST_SWITCHES]
+    if unknown:
+        raise KbConfigError(f"kb.yaml test_switches 不认识 {'、'.join(map(str, unknown))}(只有 {'、'.join(TEST_SWITCHES)})")
+    return {k: v for k, v in raw.items() if v}

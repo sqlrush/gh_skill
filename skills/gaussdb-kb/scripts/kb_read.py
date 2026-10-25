@@ -4,7 +4,9 @@
     topic [<专题>] [--all]   L1 专题导航:同义词、本行确认过的候选原因与区分证据、相关条目摘要
     topic --list             专题清单(slug、名称、条目数)
     show <ID> [--brief]      L2 一条条目的全文(--brief 只到摘要);一次只取一条
-    evidence <ID>            L3 这条条目的原始证据:原文片段、照片 / 日志的位置
+                             官方文档的长条目先给摘要与小节清单,--section / --grep 再展开,--full 全文
+    evidence <ID>            L3 这条条目的原始证据:原文片段、照片 / 日志的位置(官方文档:原页)
+    doc [<代号> [章节]]      L1 官方文档集的目录导航(按原书目录下钻;--topic 只看某专题)
     template <类型>          新条目的骨架(frontmatter + 小节),导入时照着写
 
 每条命令的输出都有上限(L0 3000 字、L1 6000 字、show / evidence 8000 字),超出写明截断。
@@ -22,6 +24,10 @@ import yaml
 
 from common.kb import catalog as kbcat
 from common.kb import config as kbconfig
+from common.kb import docindex as kbdocindex
+from common.kb import docnav as kbdocnav
+from common.kb import docset as kbdocset
+from common.kb import docsplit as kbdocsplit
 from common.kb import graphfiles as gf
 from common.kb import layers as kblayers
 from common.kb import topics as kbtopics
@@ -30,6 +36,7 @@ from common.kb import versions as kbversions
 
 SHOW_LIMIT = 8000
 EVIDENCE_LIMIT = 8000
+DOC_FULL_UNDER = 3000        # 官方文档条目正文不超过这么多字就直接给全文,超过先给摘要与小节清单
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".heif", ".bmp", ".tif", ".tiff")
 _TEXT_SUFFIXES = (".md", ".txt", ".log", ".csv", ".yaml", ".yml", ".json", ".sql")
 
@@ -130,6 +137,8 @@ def cmd_show(args: argparse.Namespace) -> int:
         head.append(f"> `{args.id}` 是旧 ID,已改为 `{e.id}`(引用写新 ID)")
     if e.archived:
         head.append("> ⚠ **已废止条款**,仅供追溯,不得用于判定")
+    if e.meta.get("docset"):
+        return _show_docset(kb, e, args, head)
     if args.alias and e.type not in (kbtypes.CASE, "profile"):
         prof = kbcat.profile_for_alias(cat, args.alias)
         if e.type == "defect":
@@ -149,6 +158,85 @@ def cmd_show(args: argparse.Namespace) -> int:
     n_ev = len(e.evidence) + (1 if e.source else 0)
     foot = f"\n(原始证据 {n_ev} 处:kb.py evidence {e.id})\n" if n_ev else ""
     print(_cap("\n".join(head) + "\n\n" + body.rstrip() + "\n" + foot, SHOW_LIMIT, f"kb.py evidence {e.id} 看原文"), end="")
+    return 0
+
+
+def _docset_applies(kb: pathlib.Path, e: kbcat.Entry, alias: str) -> str:
+    try:
+        cfg = kbconfig.load(kb)
+    except kbconfig.KbConfigError:
+        cfg = None
+    if cfg is not None and cfg.docset_applicability_unknown:
+        return "未知(测试开关:官方文档适用性按未知处理)"
+    if not alias:
+        return ""
+    prof = kbcat.profile_for_alias(kbcat.load(kb, with_docsets=False), alias)
+    v = kbversions.judge(e.meta, prof.meta if prof else None)
+    return v.state + (f"({v.reason})" if v.reason else "")
+
+
+def _show_docset(kb: pathlib.Path, e: kbcat.Entry, args: argparse.Namespace, head: List[str]) -> int:
+    """官方文档条目:短的给全文;长的先给摘要与小节清单(p99 一页 3.7 万字,整页进上下文会挤掉推理空间)。"""
+    path = kb / e.file
+    try:
+        meta, secs = kbdocindex.parse_item(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ReadCmdError(f"{e.file} 读不了:{exc}")
+    head[1] += f" · 文档集 {e.meta.get('docset')} · {e.meta.get('product', '')} {e.meta.get('versions', '')}"
+    head.append(f"> 目录:{' › '.join(meta.get('doc_path') or [])}")
+    applies = _docset_applies(kb, e, getattr(args, "alias", "") or "")
+    if applies:
+        head.append(f"> 适用性:{applies}")
+    if meta.get("summary_by") == "model":
+        head.append("> 摘要由模型依据原页撰写(脚本已核对其中的参数名、数值都出自原页);细节以下面原文为准")
+    body_secs = {k: v for k, v in secs.items() if k != "摘要"}
+    total = sum(len(v) for v in body_secs.values())
+    out = head + ["", "## 摘要", secs.get("摘要", "")]
+    if getattr(args, "grep", None):
+        if meta.get("kind") == kbdocsplit.KIND_ERRCODE:
+            found = kbdocsplit.find_errcode("\n".join(body_secs.values()), args.grep)
+        else:
+            found = [ln for v in body_secs.values() for ln in v.splitlines() if args.grep.lower() in ln.lower()]
+        out += ["", f"## 含「{args.grep}」的内容({len(found)} 处)"] + (found[:30] or ["(没找到)"])
+    elif getattr(args, "section", None):
+        name = next((k for k in body_secs if k == args.section), None) or \
+            next((k for k in body_secs if args.section in k), None)
+        if name is None:
+            raise ReadCmdError(f"{e.id} 没有小节「{args.section}」;有:{'、'.join(body_secs)}")
+        out += ["", f"## {name}", body_secs[name]]
+    elif args.brief:
+        pass
+    elif getattr(args, "full", False) or total <= DOC_FULL_UNDER:
+        for k, v in body_secs.items():
+            out += ["", f"## {k}", v]
+    else:
+        out += ["", f"## 小节(全文 {total} 字,按需展开)"]
+        out += [f"- {k}({len(v)} 字):`kb.py show {e.id} --section \"{k}\"`" for k, v in body_secs.items()]
+        hint = "--grep <错误码号或报错原文>" if meta.get("kind") == kbdocsplit.KIND_ERRCODE else "--grep <关键词>"
+        out += ["", f"(只看相关行:`kb.py show {e.id} {hint}`;确需全文:`--full`)"]
+    out += ["", f"(原页:kb.py evidence {e.id})"]
+    print(_cap("\n".join(out) + "\n", SHOW_LIMIT, f"用 --section 分节看,或 kb.py evidence {e.id}"), end="")
+    return 0
+
+
+def cmd_doc(args: argparse.Namespace) -> int:
+    kb = _kb(args)
+    sets = kbdocset.installed(kb)
+    if not args.code:
+        if not sets:
+            print("(没有装官方文档集)")
+            return 0
+        print("| 代号 | 文档 | 产品与版本 | 条目 |\n|---|---|---|---|")
+        for ds in sets:
+            m = ds.manifest
+            print(f"| {ds.code} | {m.get('title', '')} | {m.get('product', '')} {m.get('versions', '')} | {m.get('items', 0)} |")
+        print("\n用法:kb.py doc <代号> [章节] [--topic <专题>]")
+        return 0
+    if args.code not in {d.code for d in sets}:
+        raise ReadCmdError(f"没有文档集 {args.code}(已装:{'、'.join(d.code for d in sets) or '无'})")
+    cat = kbcat.load(kb)
+    print(kbdocnav.render_nav(cat, args.code, chapter=args.chapter or "", topic=args.topic or "",
+                              show_all=args.all), end="")
     return 0
 
 
@@ -216,6 +304,8 @@ def cmd_evidence(args: argparse.Namespace) -> int:
     e = cat.find(args.id)
     if e is None:
         raise ReadCmdError(f"知识库里没有 `{args.id}`")
+    if e.meta.get("docset"):
+        return _evidence_docset(kb, e)
     refs = list(e.evidence) + ([e.source] if e.source and e.source not in e.evidence else [])
     out = [f"# {e.cite} 的原始证据(L3)", ""]
     if not refs:
@@ -237,6 +327,27 @@ def cmd_evidence(args: argparse.Namespace) -> int:
         snippet = _excerpt(text, loc, quote)
         out += [f"## {label}", "```text", snippet[:2500] or "(定位没找到,下面是开头)\n" + text[:1500], "```", ""]
     print(_cap("\n".join(out) + "\n", EVIDENCE_LIMIT, "证据太长,按定位逐条看"), end="")
+    return 0
+
+
+def _evidence_docset(kb: pathlib.Path, e: kbcat.Entry) -> int:
+    meta, _secs = kbdocindex.parse_item((kb / e.file).read_text(encoding="utf-8"))
+    page = kb / kbdocset.DOCSETS_DIR / str(e.meta.get("docset")) / str(meta.get("page") or "")
+    out = [f"# {e.cite} 的原始证据(L3)", "", f"出处:{meta.get('source', '')}"]
+    if not page.is_file():
+        out.append("⚠ 原页不在知识库里(文档集不完整),只能按条目引用")
+    else:
+        text = page.read_text(encoding="utf-8")
+        name = str(meta.get("doc_key") or "").partition("#")[2]
+        if name and f"### {name}" in text:                 # GUC 参数:给本参数那一段
+            i = text.index(f"### {name}")
+            nxt = text.find("\n### ", i + 4)
+            text = text[i:nxt if nxt > 0 else len(text)]
+            out.append(f"原页:{page.relative_to(kb)}(以下是本参数一段;同页其余参数 `kb.py show` 对应条目)")
+        else:
+            out.append(f"原页:{page.relative_to(kb)}")
+        out += ["", "```text", text[:6000], "```"]
+    print(_cap("\n".join(out) + "\n", EVIDENCE_LIMIT, "原页太长,用 kb.py show <ID> --grep 定位"), end="")
     return 0
 
 
@@ -325,7 +436,17 @@ def add_subcommands(sub: "argparse._SubParsersAction") -> None:
     p.add_argument("--kb")
     p.add_argument("--brief", action="store_true", help="只看元数据与摘要")
     p.add_argument("--alias", help="当前连接别名:顺带判断这条对本实例适不适用")
+    p.add_argument("--section", help="官方文档条目:只看这一小节")
+    p.add_argument("--grep", help="官方文档条目:只看含这个词的行(错误码页按码号或报错原文)")
+    p.add_argument("--full", action="store_true", help="官方文档条目:给全文(长条目默认只给摘要与小节清单)")
     p.set_defaults(func=cmd_show)
+    p = sub.add_parser("doc", help="L1 官方文档集的目录导航(按原书目录下钻)")
+    p.add_argument("code", nargs="?", help="文档集代号,如 G25132C;不给就列已装的文档集")
+    p.add_argument("chapter", nargs="?", help="章节名(目录里任意一级),如 锁管理")
+    p.add_argument("--topic", help="只看某专题下的条目")
+    p.add_argument("--all", action="store_true", help="不截断,全部列出")
+    p.add_argument("--kb")
+    p.set_defaults(func=cmd_doc)
     p = sub.add_parser("evidence", help="L3 一条条目的原始证据(核对细节或处理冲突时)")
     p.add_argument("id")
     p.add_argument("--kb")

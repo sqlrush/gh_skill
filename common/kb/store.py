@@ -49,6 +49,7 @@ class ChunkRow:
     tokens: Sequence[str]
     signal_tokens: Sequence[str] = ()       # 复发标志等,BM25 里按 SIGNAL_WEIGHT 加权
     embedding: Optional[Sequence[float]] = None
+    novec: bool = False                     # 只建关键词、不算向量(官方文档的错误码块:按码号 / 报错原文精确命中)
 
 
 @dataclass(frozen=True)

@@ -255,7 +255,20 @@ def health_dict(kb: pathlib.Path, status, file_warnings: list, readonly: bool) -
         "pending": _pending(kb),
         "misses": [{"code": code, "n": n} for code, n in _misses_top(kb)],
         "types": kbcat.coverage(kb),
+        "docsets": _docsets_summary(kb),
     }
+
+
+def _docsets_summary(kb: pathlib.Path) -> list:
+    from common.kb import docset as kbdocset
+    out = []
+    for ds in kbdocset.installed(kb):
+        m, idx = ds.manifest, ds.manifest.get("index") or {}
+        out.append({"code": ds.code, "title": m.get("title", ""), "product": m.get("product", ""),
+                    "versions": str(m.get("versions", "")), "items": m.get("items", 0),
+                    "model_summaries": m.get("model_summaries", 0), "index_complete": bool(idx.get("complete")),
+                    "docs_left": idx.get("docs_left", 0)})
+    return out
 
 
 
@@ -293,6 +306,15 @@ def cmd_health(args: argparse.Namespace) -> int:
             print("知识类型  : " + " · ".join(f"{name} {d['types'].get(k, 0)}" for k, name in kbcat.COVERAGE_ROWS
                                               if k != "guide" or d["types"].get(k)))
             print(f"下一步    : {kbcat.next_step(d['types'])}")
+        for ds in d["docsets"]:
+            state = "完整" if ds["index_complete"] else "未完成(还差 %s 条,跑 kb.py index)" % ds["docs_left"]
+            print(f"官方文档集: {ds['code']} {ds['title']} · {ds['product']} {ds['versions']} · {ds['items']} 条 · 索引{state}")
+        try:
+            if d["docsets"] and kbconfig.load(kb).docset_applicability_unknown:
+                print("[warn ] 测试开关开着:官方文档集对所有实例按「适用性未知」处理——只许在测试环境;正式环境关掉"
+                      "(kb.yaml test_switches.docset_applicability_unknown)")
+        except kbconfig.KbConfigError:
+            pass
         print("待处理    : " + ("; ".join(d["pending"]) if d["pending"] else "无"))
         if d["misses"]:
             print("缺口清单  : 近期查不到条款/案例的发现 Top —— " +

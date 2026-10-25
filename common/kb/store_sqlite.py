@@ -37,7 +37,7 @@ _SCHEMA = (
     "version TEXT, meta TEXT, content_hash TEXT)",
     "CREATE TABLE IF NOT EXISTS kb_chunks (rid INTEGER PRIMARY KEY, id TEXT UNIQUE NOT NULL, doc_id TEXT NOT NULL, "
     "seq INTEGER NOT NULL, section TEXT, content TEXT NOT NULL, content_hash TEXT, ntok REAL NOT NULL DEFAULT 0, "
-    "embedding BLOB)",
+    "embedding BLOB, novec INTEGER NOT NULL DEFAULT 0)",
     "CREATE INDEX IF NOT EXISTS kb_chunks_doc_idx ON kb_chunks (doc_id, seq)",
     "CREATE TABLE IF NOT EXISTS kb_chunk_terms (term TEXT NOT NULL, rid INTEGER NOT NULL, tf REAL NOT NULL)",
     "CREATE INDEX IF NOT EXISTS kb_chunk_terms_term_idx ON kb_chunk_terms (term)",
@@ -193,6 +193,16 @@ class SqliteStore:
                 pass
             raise StoreError(str(exc)) from exc
 
+    def _has_novec(self) -> bool:
+        """旧索引文件(只读打开、没法补列)里没有 novec:覆盖率与补向量按「全都要向量」算,与以前一致。"""
+        if not hasattr(self, "_novec_col"):
+            try:
+                cols = [r[1] for r in self._query("PRAGMA table_info(kb_chunks)")]
+            except StoreError:
+                cols = []
+            self._novec_col = "novec" in cols
+        return self._novec_col
+
     def _has_table(self, name: str) -> bool:
         return bool(self._query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)))
 
@@ -212,6 +222,8 @@ class SqliteStore:
         if self._has_table("kb_meta") and self._meta_get("schema_version") not in (None, SCHEMA_VERSION):
             self._drop_all()
         self._transaction([(sql, ()) for sql in _SCHEMA])
+        if not self._has_novec():                 # 2026-10-25 前建的库没有 novec 列:补上(默认 0,行为不变)
+            self._transaction([("ALTER TABLE kb_chunks ADD COLUMN novec INTEGER NOT NULL DEFAULT 0", ())])
         caps = self.capabilities()
         self._meta_set("schema_version", SCHEMA_VERSION)
         self._meta_set("engine", ENGINE)
@@ -286,10 +298,10 @@ class SqliteStore:
         for ch in chunks:
             tf, length = bm25.term_freqs(list(ch.tokens), list(ch.signal_tokens))
             stmts.append((
-                "INSERT INTO kb_chunks (id, doc_id, seq, section, content, content_hash, ntok, embedding) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO kb_chunks (id, doc_id, seq, section, content, content_hash, ntok, embedding, novec) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (ch.id, ch.doc_id, int(ch.seq), ch.section, ch.content, ch.content_hash, length,
-                 self._embedding(ch.embedding))))
+                 None if ch.novec else self._embedding(ch.embedding), 1 if ch.novec else 0)))
             stmts += [("INSERT INTO kb_chunk_terms (term, rid, tf) "
                        "VALUES (?, (SELECT rid FROM kb_chunks WHERE id = ?), ?)", (t, ch.id, f))
                       for t, f in tf.items()]
@@ -426,8 +438,20 @@ class SqliteStore:
         """(chunk_id, content) —— 还没向量的块;向量不可用时返回空。"""
         if not self._vector:
             return []
+        novec = " AND novec = 0" if self._has_novec() else ""
         return [(r[0], r[1]) for r in self._query(
-            "SELECT id, content FROM kb_chunks WHERE embedding IS NULL ORDER BY doc_id, seq LIMIT ?", (int(limit),))]
+            f"SELECT id, content FROM kb_chunks WHERE embedding IS NULL{novec} ORDER BY doc_id, seq LIMIT ?", (int(limit),))]
+
+    def lexical_only_count(self) -> int:
+        if not self._has_novec():
+            return 0
+        return int(self._query("SELECT count(*) FROM kb_chunks WHERE novec = 1")[0][0])
+
+    def missing_count(self) -> int:
+        if not self._vector:
+            return 0
+        novec = " AND novec = 0" if self._has_novec() else ""
+        return int(self._query(f"SELECT count(*) FROM kb_chunks WHERE embedding IS NULL{novec}")[0][0])
 
     def missing_node_embeddings(self, limit: int = 500) -> List[Tuple[str, str]]:
         if not self._vector:
@@ -436,8 +460,9 @@ class SqliteStore:
             "SELECT node_id, name FROM kb_node_vectors WHERE embedding IS NULL ORDER BY node_id LIMIT ?", (int(limit),))]
 
     def coverage(self) -> Tuple[int, int]:
-        """(切块总数, 有向量的块数)。向量不可用时第二项恒 0。"""
-        total = int(self._query("SELECT count(*) FROM kb_chunks")[0][0])
+        """(要向量的切块总数, 有向量的块数)。只建关键词的块(novec)不计入。向量不可用时第二项恒 0。"""
+        novec = " WHERE novec = 0" if self._has_novec() else ""
+        total = int(self._query(f"SELECT count(*) FROM kb_chunks{novec}")[0][0])
         if not self._vector:
             return total, 0
         return total, int(self._query("SELECT count(*) FROM kb_chunks WHERE embedding IS NOT NULL")[0][0])

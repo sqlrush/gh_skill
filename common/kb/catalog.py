@@ -81,6 +81,13 @@ class Catalog:
     def profiles(self) -> List[Entry]:
         return self.of_type("profile")
 
+    def customer(self) -> List[Entry]:
+        """客户知识库自己的条目(不含官方文档集)。"""
+        return [e for e in self.entries if not e.meta.get("docset")]
+
+    def from_docset(self, code: str = "") -> List[Entry]:
+        return [e for e in self.entries if e.meta.get("docset") and (not code or e.meta.get("docset") == code)]
+
 
 def first_sentence(text: str, limit: int = 120) -> str:
     flat = " ".join(str(text or "").split())
@@ -182,10 +189,31 @@ def _typed_entries(kb: pathlib.Path) -> List[Entry]:
         meta={**i.meta, "sections": dict(i.sections)}) for i in items]
 
 
-def load(kb: pathlib.Path) -> Catalog:
+def _docset_entries(kb: pathlib.Path) -> List[Entry]:
+    """官方文档集:只读各套的 catalog.json(几千条不逐个解析文件);条目的产品系列与版本取自该套的 manifest。"""
+    from . import docset as kbdocset
+    out: List[Entry] = []
+    for ds in kbdocset.installed(kb):
+        m = ds.manifest
+        base = {"docset": ds.code, "product": m.get("product", ""), "versions": str(m.get("versions", "")),
+                "deployment": m.get("deployment", "")}
+        for c in ds.catalog():
+            out.append(Entry(
+                id=str(c.get("id")), type=kbtypes.TYPED["product"].code, title=str(c.get("title", "")),
+                summary=str(c.get("summary", "")), file=f"{kbdocset.DOCSETS_DIR}/{ds.code}/items/{c.get('id')}.md",
+                topics=tuple(c.get("topics") or ()), source=f"{m.get('source_file') or ds.title}",
+                as_of=str(m.get("as_of") or ""),
+                meta={**base, "kind": c.get("kind", ""), "doc_path": list(c.get("path") or []),
+                      "doc_key": c.get("doc_key", ""), "summary_by": c.get("summary_by", "script"),
+                      "section_names": list(c.get("sections") or []), "chars": c.get("chars", 0)}))
+    return out
+
+
+def load(kb: pathlib.Path, with_docsets: bool = True) -> Catalog:
     topics, warns = kbtopics.load_taxonomy(kb)
     entries = (_rule_entries(kb, "rules", topics) + _rule_entries(kb, "archive", topics)
-               + _errata_and_guides(kb, topics) + _case_entries(kb, topics) + _typed_entries(kb))
+               + _errata_and_guides(kb, topics) + _case_entries(kb, topics) + _typed_entries(kb)
+               + (_docset_entries(kb) if with_docsets else []))
     order = {t: i for i, t in enumerate(kbtypes.DISPLAY_ORDER)}
     entries.sort(key=lambda e: (order.get(e.type, 99), e.archived, e.id))
     return Catalog(entries=tuple(entries), topics=tuple(topics), warnings=tuple(warns))
