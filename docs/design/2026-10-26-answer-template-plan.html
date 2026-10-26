@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>回答模板化:实现方案(待确认 2026-10-26)</title>
+<style>
+:root{--ink:#1b2430;--ink2:#4a5566;--mute:#7a8596;--line:#d9dfe8;--bg:#f6f8fb;--card:#fff;
+  --blue:#2f6fdb;--blue-l:#e7effc;--navy:#123a73;--amber:#b7791f;--amber-l:#fbf1dc;--gray-l:#eef1f5;
+  --green:#1f8a5b;--green-l:#e3f4ec;--red:#c0392b;--red-l:#fbe7e5;--violet:#6b4fd8;--violet-l:#efebfd;--teal:#0f7c86;--teal-l:#e0f3f4}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.75 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1160px;margin:0 auto;padding:32px 28px 80px}
+header{background:linear-gradient(120deg,#0f2f5f,#2f6fdb 62%,#5b8def);color:#fff;border-radius:16px;padding:32px 36px;margin-bottom:24px}
+header h1{margin:0 0 8px;font-size:29px;letter-spacing:.4px}
+header .sub{opacity:.93;font-size:15.5px}
+header .meta{margin-top:14px;font-size:13px;opacity:.85}
+nav{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 22px;margin-bottom:22px;font-size:14px}
+nav a{color:var(--blue);text-decoration:none;margin-right:16px;white-space:nowrap;line-height:2}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:26px 32px;margin-bottom:22px}
+h2{margin:0 0 14px;font-size:22px;border-left:5px solid var(--blue);padding-left:12px}
+h3{margin:24px 0 10px;font-size:17px;color:var(--navy)}
+p{margin:8px 0}
+ul,ol{margin:8px 0;padding-left:22px} li{margin:4px 0}
+table{border-collapse:collapse;width:100%;margin:12px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:8px 10px;vertical-align:top;text-align:left}
+th{background:#f0f4fa;font-weight:600}
+code{background:#f0f3f7;border-radius:4px;padding:1px 5px;font-size:13px;font-family:Menlo,Consolas,monospace}
+pre{background:#0f1b2d;color:#dce6f5;border-radius:10px;padding:14px 16px;font-size:12.5px;line-height:1.65;overflow:auto;font-family:Menlo,Consolas,monospace;margin:10px 0;white-space:pre-wrap}
+pre .c{color:#7f93b0} pre .k{color:#8fc1ff} pre .y{color:#f3cf7a} pre .g{color:#8fe0b0} pre .r{color:#ff9d92}
+.callout{border-radius:10px;padding:12px 16px;margin:12px 0;font-size:14.5px}
+.callout.blue{background:var(--blue-l);border:1px solid #c9daf6}
+.callout.amber{background:var(--amber-l);border:1px solid #efd9a8}
+.callout.green{background:var(--green-l);border:1px solid #bfe3d1}
+.callout.red{background:var(--red-l);border:1px solid #f0c4be}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:14px 0}
+.kpi{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.kpi .v{font-size:26px;font-weight:700;color:var(--navy)} .kpi .v small{font-size:14px;font-weight:600;margin-left:3px}
+.kpi .l{font-size:13px;color:var(--ink2)}
+figure{margin:16px 0 8px}
+figure svg{width:100%;height:auto;display:block;background:#fbfcfe;border:1px solid var(--line);border-radius:12px}
+figcaption{font-size:13px;color:var(--mute);margin-top:6px;text-align:center}
+.chip{display:inline-block;font-size:12px;padding:0 8px;border-radius:9px;white-space:nowrap;vertical-align:1px;font-weight:600}
+.chip.new{background:var(--green-l);color:var(--green)} .chip.chg{background:var(--amber-l);color:var(--amber)} .chip.keep{background:var(--gray-l);color:var(--ink2)}
+.chip.ask{background:var(--red-l);color:var(--red)} .chip.sug{background:var(--teal-l);color:var(--teal)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.tpl{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:14px 0}
+.tcard{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#fff}
+.tcard .th{padding:10px 14px;color:#fff;font-weight:700}
+.tcard .th small{display:block;font-weight:500;opacity:.9;font-size:12px}
+.tcard ol{margin:10px 0 12px;padding-left:34px;font-size:14px}
+.tcard .who{font-size:12.5px;color:var(--mute);padding:0 14px 12px}
+.bar{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+.bar span{flex:1;min-width:150px;background:var(--blue-l);border:1px solid #c9daf6;border-radius:9px;padding:8px 10px;font-size:13.5px}
+.bar span b{display:block;color:var(--navy)}
+.chat{border:1px solid var(--line);border-radius:14px;padding:16px 20px;background:#fff;font-size:14.5px;margin:12px 0}
+.chat .q{background:#eef3fb;border-radius:12px;padding:10px 14px;margin-bottom:12px}
+.chat h4{margin:14px 0 4px;font-size:15px;color:var(--navy)}
+.chat .band{background:#fff7e6;border:1px solid #f1d9a6;border-radius:8px;padding:6px 12px;font-size:14px}
+.chat .lead{background:#f3f6fb;border-radius:8px;padding:8px 12px;margin:8px 0}
+.chat .lay{font-size:12px;font-weight:700;color:var(--mute);margin-right:6px}
+.kb{color:#2f6fdb} .off{color:#0f7c86}
+.src{font-size:13.5px;color:var(--ink2)}
+.ph{color:var(--mute);font-style:italic}
+.note{font-size:13px;color:var(--mute)}
+details{border:1px solid var(--line);border-radius:10px;padding:8px 14px;margin:10px 0;background:#fbfcfe}
+details summary{cursor:pointer;font-weight:600;color:var(--navy)}
+@media (max-width:980px){.kpis,.tpl{grid-template-columns:repeat(2,1fr)}.two{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>回答模板化:实现方案</h1>
+  <div class="sub">把健康检查、故障排查、SQL 优化、知识问答四类回答的结构固定下来,同时照顾开发人员与数据库工程师两种读者</div>
+  <div class="meta">方案 · 2026-10-26 · 已确认并实现(实现时的调整见需求记录第七节「实现记录」) · 需求原文与逐条答复见同目录 <code>2026-10-26-answer-template-requirements.md</code>(R1–R6、D1–D16)</div>
+</header>
+
+<nav>
+  <a href="#s0">0 一页结论</a><a href="#s1">1 需求回顾</a><a href="#s2">2 模板总览</a><a href="#s3">3 示意回答</a>
+  <a href="#s4">4 怎么实现</a><a href="#s5">5 改动清单</a><a href="#s6">6 测试与验收</a><a href="#s7">7 交付影响</a>
+  <a href="#s8">8 排期</a><a href="#s9">9 风险与要你定的事</a><a href="#sa">附 A 关联现象清单</a><a href="#sb">附 B 引用写法对照</a>
+</nav>
+
+<!-- ================================================================ 0 -->
+<section id="s0">
+<h2>0 · 一页结论</h2>
+<div class="callout blue"><b>做法:一份模板正文,注入到每个技能;能用脚本算的都放进脚本;回答格式用检查工具验收。</b>
+模板规则写一份(<code>common/answer_templates/</code>),照「安全红线」现成的做法注入到各技能的 SKILL.md 和 AGENTS.md,
+守卫测试保证各份副本逐字一致 —— 不会出现这个技能改了、那个技能没改。SQL 的耗时趋势、突然变慢的时间点、执行计划有没有变,
+由脚本算好交给模型转述,不让模型自己拿数字去推。</div>
+<div class="kpis">
+  <div class="kpi"><div class="v">4<small>类模板</small></div><div class="l">健康检查 · 故障排查 · SQL 优化 · 知识问答;共用一个开头与结尾</div></div>
+  <div class="kpi"><div class="v">13<small>个技能</small></div><div class="l">「报告」一节按模板改写;其余 6 个(登录、取 SQL 文本、导入等)不动</div></div>
+  <div class="kpi"><div class="v">3<small>条脚本</small></div><div class="l">新增白名单只读脚本(SQL 现状、按小时趋势、逐次执行与计划指纹),客户要登记</div></div>
+  <div class="kpi"><div class="v">约 8.5<small>个工作日</small></div><div class="l">含测试环境实测与一份前后对比的评审报告</div></div>
+</div>
+<p>用户看到的变化:</p>
+<ul>
+  <li>每类问题的回答顺序固定:先总体状态和一段短结论,再按固定的几段展开,最后给 1–3 条「需要就 xxx 展开说明吗?」。</li>
+  <li>每一段先用应用的话说清影响,再接着讲数据库机制,开发人员和数据库工程师各取所需。</li>
+  <li>排查类回答里,出自知识库的句子上色,句后括号写「(引用自 xxx 库 编号)」,不再单列一节「客户知识库参照」;
+      知识问答在第一行写「解答来源」。客户知识蓝色,官方文档青色。</li>
+  <li>SQL 优化多了「现状与趋势」:平均 / 最大耗时、近 7 天按小时的变化、哪个时间点突然变慢、那时执行计划变没变。</li>
+  <li>WDR 解读有专门的版式(R7,第 2.3 节):先回答「这段时间库忙不忙、时间花在哪」,再逐条讲问题和引发它的语句;全景数据表挪到附录。版式由脚本渲染,不靠提示词。</li>
+</ul>
+<div class="callout amber"><b>要你定的 4 件事</b>(详见第 9 节):① 客户 AGENTS.md 里原有的输出格式、引用格式与兜底说法和新模板冲突,怎么处理;
+② 需求里没有覆盖的几类回答(WDR、Top SQL 榜单、参数体检、存储过程调优)按我的建议套用;③ 3 条新增白名单脚本客户登记之前,SQL 优化第 ① 段怎么降级;④ WDR「两段对比」解读要不要这次一起做。</div>
+</section>
+
+<!-- ================================================================ 1 -->
+<section id="s1">
+<h2>1 · 需求回顾</h2>
+<table>
+<tr><th style="width:70px">编号</th><th style="width:230px">需求</th><th>要点(含后续答复)</th></tr>
+<tr><td>R1</td><td>健康检查四段式</td><td>① 现象(多维度)② 根因和证据链(逐个现象)③ 解决方案(按优先级,带详细方案)④ 总结和结论(可向用户提需求)。此刻巡检与时段体检都用;开头总体状态不变 + 一段短结论。</td></tr>
+<tr><td>R2</td><td>两种读者</td><td>所有回答;每段先「应用视角」再「数据库机制」,分两段但不割裂(第二段接着同一件事、同一批对象往下讲);底线是开发人员能看懂。</td></tr>
+<tr><td>R3</td><td>故障排查四段式</td><td>① 现象:从用户报的那一个出发,把关联现象也分析出来 ② 根因(证据链)③ 解决方案 ④ 总结。按问题分类,不按技能;关联现象按清单查,最多加跑 3 个技能。</td></tr>
+<tr><td>R4</td><td>SQL 优化</td><td>① 现状(平均 / 最大耗时、趋势、突然变慢的时段、那时计划变没变)② 文本和执行计划解读,慢在哪 ③ 怎么改,前后的文本、计划、cost、耗时对比 ④ 总结。优化后耗时拿不到实测就写「需实测」,不拿 cost 倍数换算。</td></tr>
+<tr><td>R5</td><td>排查类的知识引用</td><td>不特意声明「来源于知识库」、不单列一节;句子上色,句后「(引用自 xxx 库 编号)」;客户知识与官方文档分色。</td></tr>
+<tr><td>R7</td><td>WDR 解读 <span class="chip sug">建议</span></td><td>记录人建议(用户 2026-10-26 要求补充):负载画像 → 问题与元凶 → 解决方案 → 总结,全景数据进附录;版式由 wdr.py render 渲染。见 2.3。</td></tr>
+<tr><td>R6</td><td>知识问答三段式</td><td>第一行「解答来源」→ ① 解答正文 ② 举例说明(应用场景、关联影响和效果,优先用本行案例)③ 引申和拓展 + 反问。</td></tr>
+</table>
+</section>
+
+<!-- ================================================================ 2 -->
+<section id="s2">
+<h2>2 · 模板总览</h2>
+<h3>2.1 共用的开头与结尾</h3>
+<div class="bar">
+  <span><b>① 评估时段</b>只在问某段时间时:要的是哪段、实际评估的是哪段、为什么(现行规矩)</span>
+  <span><b>② 总体状态带</b>级别(以脚本为准)+ 驱动一句 + 判断校验(不变)</span>
+  <span><b>③ 短结论</b>2–4 句,开发人员也看得懂</span>
+  <span><b>④ 正文</b>按问题类型分段,见下</span>
+  <span><b>⑤ 展开提议</b>1–3 条「需要就 xxx 展开说明吗?」</span>
+</div>
+<p class="note">知识问答没有严重级别,不放 ② 总体状态带;正文第一句就是直接答案,起短结论的作用。SQL 优化的总体状态带写「验证状态」(已验证收益 / 未找到已验证方案)。</p>
+
+<h3>2.2 四类正文</h3>
+<div class="tpl">
+  <div class="tcard"><div class="th" style="background:#123a73">健康检查 R1<small>要巡检 / 体检(此刻或某段时间)</small></div>
+    <ol><li>现象(多维度)</li><li>根因和证据链</li><li>解决方案(P0 / P1 / P2)</li><li>总结和结论</li></ol>
+    <div class="who">gaussdb-health;建议参数体检同用 <span class="chip sug">建议</span>;WDR 用 R7</div></div>
+  <div class="tcard"><div class="th" style="background:#2f6fdb">故障排查 R3<small>描述一个现象或告警</small></div>
+    <ol><li>现象(报的 + 关联的)</li><li>根因(证据链)</li><li>解决方案(P0 / P1 / P2)</li><li>总结</li></ol>
+    <div class="who">锁等待、等待事件、vacuum、内存、慢 SQL,以及跨技能的现象提问</div></div>
+  <div class="tcard"><div class="th" style="background:#1f8a5b">SQL 优化 R4<small>优化某条 SQL / 它为什么慢</small></div>
+    <ol><li>现状与趋势</li><li>文本和执行计划解读</li><li>怎么优化(前后对比)</li><li>总结</li></ol>
+    <div class="who">gaussdb-sqltune;只看计划(explain)只写 ②;存储过程调优用 ②③④ <span class="chip sug">建议</span></div></div>
+  <div class="tcard"><div class="th" style="background:#6b4fd8">知识问答 R6<small>问规范、参数、错误码、做法</small></div>
+    <ol><li>解答正文(第一行先写来源)</li><li>举例说明(场景、关联影响)</li><li>引申和拓展 + 反问</li></ol>
+    <div class="who">gaussdb-kb 的问答;不查实例</div></div>
+</div>
+<p>归类的先后:点名要健康检查的按 R1;点名优化某条 SQL 的按 R4;问知识本身、不查实例的按 R6;其余描述现象或告警的按 R3。
+问题里既要查实例又要结合知识的(「og5 现在有没有锁等待,结合知识库给建议」)按 R3。</p>
+
+<h3>2.3 WDR 解读(R7,建议)</h3>
+<p>WDR 和健康检查都是「某段时间的整体分析」,但用户看 WDR 最想知道的是<b>这段时间库忙不忙、时间花在哪、是哪几条语句造成的</b>。
+所以在 R1 四段的基础上按 WDR 的特点改了每段的内容:</p>
+<table>
+<tr><th style="width:150px">位置</th><th>内容</th><th style="width:300px">与现在的区别</th></tr>
+<tr><td>开头</td><td>评估窗口(快照 A → B、时长,和所问时段差多少)→ 总体状态带 → 短结论(≤3 句)</td><td>短结论从「模型在渲染结果前面自己加的 3 行」改成 interp.json 里的字段,由脚本排版</td></tr>
+<tr><td>① 负载画像</td><td>这段时间库在忙什么:数据库时间多少、构成(CPU / IO / 锁 / 其它等待);事务数、逻辑读 / 物理读、落盘量;有贵行基线的并列给出</td><td>现在散在「维度概览」和「全景分析」里,改成一段先回答「忙不忙、忙在哪」</td></tr>
+<tr><td>② 问题与元凶</td><td>逐条高风险发现:现象 → 证据 → 根因 → <b>引发它的语句</b>;Top SQL 多维表与「各维度元凶」行放在这里,作为找元凶的证据</td><td>现在「高风险发现」在全景表后面;Top SQL 多维表照旧原样保留(这是之前定的硬要求)</td></tr>
+<tr><td>③ 解决方案</td><td>按 P0 / P1 / P2:每条元凶语句怎么优化(只放 sqltune 验证过的,带真实倍数);锁类给事务与并发层面的改法;风险、需人工执行</td><td>现在建议挂在每条发现下面,没有排优先级</td></tr>
+<tr><td>④ 总结和结论</td><td>总结 + 建议 + 需要用户配合的事;原生 WDR 报告与大盘链接;展开提议(例如「需要就 sql_id … 做调优吗?」)</td><td>新增</td></tr>
+<tr><td>附录</td><td>其余全景数据(Checkpoint、Cache、File IO 等,每张一句判读)、图示、SQL 附录(原文与真实执行计划)、本报告没覆盖的、校验区(模型遗漏 / 未锚定 / 未验证建议)</td><td>从正文中间挪到最后</td></tr>
+</table>
+<ul>
+  <li><b>两种读者</b>:interp.json 的每条发现多两个字段 —— 应用视角(业务感受到什么、哪类写法引起的)、数据库机制;脚本排成两段。</li>
+  <li><b>知识引用</b>:interp.json 里写引用的编号和那句话,由脚本统一上色、加「(引用自 … 编号)」,渲染时就核对编号在不在库里 —— 比靠模型手写标签更稳。</li>
+  <li><b>WDR 特有的几条规矩照旧</b>:窗口几乎空闲时不判比例;Top SQL 与原生 WDR 报告交叉核对,榜单不全以原生报告为准并说明;
+      <b>各维度的元凶分开归因</b>(10-21 那一轮,落盘占 86% 的语句不在按耗时排的前 10 名里);数据库时间自洽检查。</li>
+</ul>
+
+<h3>2.4 两种读者怎么写(R2)</h3>
+<div class="two">
+<div class="chat" style="margin:0">
+  <p><span class="lay">应用视角</span>18:32 起,更新账户余额的那条语句平均要等约 90 秒才返回 —— 对业务来说就是转账类交易超时。
+  不是语句本身慢,而是它在<b>排队等别的交易放锁</b>:前面有交易改了同一批账户还没提交。</p>
+  <p><span class="lay">数据库机制</span>还是这批会话:它们都在等同一行上的 <code>transactionid</code> 锁(ShareLock),
+  阻塞链 5 层,根会话持有行锁未提交;等锁期间 CPU 几乎为 0,所以按 CPU 找元凶会扑空,要按锁等待找根会话。</p>
+</div>
+<div>
+  <ul>
+    <li>第二段<b>接着第一段的同一件事</b>(同一条语句、同一批会话)往下讲,不另起话题 —— 这是「不割裂」。</li>
+    <li>应用视角用业务能感知的词:交易超时、接口变慢、批量跑不完;尽量说「应用里哪类写法会导致它」。</li>
+    <li>机制段可以用术语,但每个结论仍要落到这次采到的数字上;讲机制不等于可以没有证据就提内核参数调整。</li>
+    <li class="note">示意,数字取自 10-21 演练第一轮(锁等待约占 90%,UPDATE 平均约 90 秒)。</li>
+  </ul>
+</div>
+</div>
+
+<h3>2.5 知识引用怎么写(R5 排查类 / R6 知识问答)</h3>
+<div class="two">
+<div class="chat" style="margin:0">
+  <p class="src"><b>排查类(R5)</b>:不说「根据知识库」,句子上色,句后括号写出处</p>
+  <p><span class="kb">DDL 变更时,会话级的锁等待上限不超过 30 秒</span>(引用自贵行规范库 GS-CHG-003)。
+  <span class="kb">本行出现过同一现象:多个会话插同一主键排队,根会话是 active 而不是空闲事务</span>(引用自本行案例库 S3-20260416-FPAYS-…)。
+  <span class="off">lockwait_timeout 的默认值是 20 分钟</span>(引用自 GaussDB 官方文档库 PD-G25132C-<span class="ph">编号</span>)。</p>
+</div>
+<div class="chat" style="margin:0">
+  <p class="src"><b>知识问答(R6)</b>:第一行先写解答来源</p>
+  <p><b>解答来源:</b>GaussDB 官方文档库 PD-G25132C-<span class="ph">编号</span>;贵行规范库 GS-CHG-003(两者不一致,以贵行规范为准)</p>
+  <p><span class="off">lockwait_timeout 默认 1200000 毫秒(20 分钟)</span>[1];<span class="kb">贵行要求 DDL 变更时会话级设置不超过 30 秒</span>[2]。</p>
+  <p class="note">用到多条时句后只写编号 [1][2],对应第一行的来源;只用到一条时不逐句标。</p>
+</div>
+</div>
+<ul>
+  <li>颜色:客户知识沿用现在的蓝色 <code>#2f6fdb</code>;官方文档换青色 <code>#0f7c86</code>(都用对话界面已支持的 <code>&lt;font color=…&gt;</code> 标签)。括号不上色。</li>
+  <li>括号里保留编号:用户能拿编号去知识库大盘查原文;cite-check 也靠编号核对引用是不是编的。各类知识的库名对照见附 B。</li>
+  <li>模型自己的分析与通用经验不上色;知识库里没有时,统一一种说法:「知识库中未找到相关内容,以下为通用知识,仅供参考」
+      (替换现在 AGENTS.md 与引用契约里两种不同的兜底说法)。</li>
+</ul>
+</section>
+
+<!-- ================================================================ 3 -->
+<section id="s3">
+<h2>3 · 示意回答(每类一份,看结构,不看具体数字)</h2>
+<p class="note">数字取自 10-21 / 10-24 两轮演练或用「…」占位,只为说明结构。实现后在测试环境用真题重跑,第 6 节的评审报告里给真实的前后对比。</p>
+
+<details open><summary>健康检查(R1)· 「对 og5 做 10 月 21 日 18:32 到 18:52 的时段健康检查」</summary>
+<div class="chat">
+  <p class="note">评估时段:要的是 10-21 18:32–18:52,实际评估快照 3073 → 3079(18:31–18:52),起点早一分钟,覆盖整段。</p>
+  <div class="band">总体状态 <b>告警</b> · 驱动:锁等待约占数据库时间的 90%,窗口内 26 次死锁 · 判断校验 ✓ 已锚定(…条发现全覆盖、无夸大、无遗漏)</div>
+  <div class="lead"><b>短结论:</b>这 20 分钟里库不是忙不过来,而是大量交易在互相等锁;同时有一条报表语句大量落盘。先处理锁(P0),再处理落盘(P1)。</div>
+  <h4>① 现象</h4><p>维度概览表:锁、等待事件、死锁、临时文件、长事务……每维一行,级别 + 关键数字。</p>
+  <h4>② 根因和证据链</h4><p>逐个现象:<b>现象 → 证据(数字)→ 根因</b>,每个现象先应用视角、再数据库机制;阻塞链、等待 Top 等原始表作为链上的证据。</p>
+  <h4>③ 解决方案</h4><p>P0 / P1 / P2,每条:改什么、为什么、怎么做、风险级、需人工执行;用到规范 / 手册的就地引用并上色。</p>
+  <h4>④ 总结和结论</h4><p>两三句总结 + 下一步建议;要用户配合的写明(例如「死锁明细在数据库日志里,请 DBA 提供 18:32–18:52 的日志段」)。</p>
+  <p>需要就死锁的发生过程展开说明吗?需要就落盘语句做一次调优吗?</p>
+</div></details>
+
+<details><summary>故障排查(R3)· 「og5 在 10 月 24 日 18:20 到 18:40 之间交易超时,是什么原因?」</summary>
+<div class="chat">
+  <div class="band">总体状态 <b>告警</b> · 驱动:…(以脚本判定为准)</div>
+  <div class="lead"><b>短结论:</b>交易超时的直接原因是…;同时还看到…和…两个关联现象,它们是同一个根因的不同表现。</div>
+  <h4>① 现象</h4>
+  <p>用户报的:交易超时。按清单一并查了(附 A「交易超时」一行):等待事件分布、锁等待与阻塞链、长事务 / 空闲事务、Top SQL 变化、连接数。
+  查到的列数字;<b>没采到的写「未采集」</b>;事后看不到的(当时的阻塞链)写「回看不了」,不拿现在的状态冒充当时。</p>
+  <h4>② 根因(证据链)</h4><p>把几个现象串成一条链:谁是源头、谁是后果;同一现象本行有过多种根因时,按区分证据说明为什么是这一种。</p>
+  <h4>③ 解决方案</h4><p>P0 / P1 / P2;规范 / 手册 / 案例的处置就地引用,例如 <span class="kb">应急时先取消 DDL 会话,不要去杀后面排队的查询</span>(引用自处置手册库 RB-LCK-<span class="ph">编号</span>)。</p>
+  <h4>④ 总结</h4><p>需要就阻塞链的根会话展开说明吗?</p>
+</div></details>
+
+<details><summary>SQL 优化(R4)· 「对 sql_id 4198238080 做调优,把执行计划贴出来」</summary>
+<div class="chat">
+  <div class="band">验证状态 <b>已找到已验证方案</b> · 驱动:orders 全表扫描,按客户编码过滤后只剩少量行</div>
+  <div class="lead"><b>短结论:</b>这条查询近 7 天平均 <span class="ph">…</span> 毫秒、最慢 <span class="ph">…</span> 毫秒,<span class="ph">…</span> 起明显变慢;
+  慢在对 orders 的全表扫描。建议在 orders(cust_code) 上建索引(验证:cost <span class="ph">X → Y</span>),上线前需在测试环境实测耗时。</div>
+  <h4>① 现状与趋势</h4>
+<pre><span class="c">脚本给出(新增 ## Current Stats / ## Trend / ## Plan Changes 三节):</span>
+执行 <span class="y">…</span> 次 · 平均 <span class="y">…</span> ms · 最大 <span class="y">…</span> ms · 最小 <span class="y">…</span> ms     <span class="c">← dbe_perf.statement(累计)</span>
+近 7 天按小时:平均耗时 ▁▁▁▁▂▁▁▁▁▇█▇▁▁  <span class="c">← WDR 快照(snap_summary_statement)逐小时相减</span>
+突然变慢:10-21 18:00–19:00 这一小时平均是前 24 小时的 <span class="y">N</span> 倍     <span class="c">← 拐点由脚本判定</span>
+执行计划:这段时间与之前<span class="g">相同</span>(计划指纹一致) / <span class="r">变过</span>(变化前后各一棵)   <span class="c">← statement_history.query_plan</span></pre>
+  <h4>② SQL 文本和执行计划解读</h4><p>SQL 原文 → 计划树(瓶颈节点标 [P1]…)→ 计划走查 → 根因 → 证据链摘要(「慢在哪里」)。</p>
+  <h4>③ 怎么优化</h4>
+<pre><span class="c">每个已验证方案:改动 · 为什么 · 证据 · 风险,外加前后对比:</span>
+<span class="c">若方案是改写,另有文本差异(示意另一条 SQL):</span>
+<span class="r">- WHERE to_char(o.created_at,'YYYYMMDD') = '20261021'</span>
+<span class="g">+ WHERE o.created_at &gt;= '2026-10-21' AND o.created_at &lt; '2026-10-22'</span>
+计划:Seq Scan on orders  →  Index Scan using …           <span class="c">← 前后两棵计划树并排</span>
+cost:<span class="y">X → Y(N×)</span>                                    <span class="c">← 照抄验证结果,不自己算</span>
+耗时:优化前平均 <span class="y">…</span> ms(实测) → 优化后 <span class="y">需实测</span>          <span class="c">← 不拿 cost 倍数换算耗时</span></pre>
+  <p>没通过验证的单独列「未验证想法」,不和已验证的放在一起。</p>
+  <h4>④ 总结</h4><p>需要我给出在测试环境实测的步骤吗?实测后把耗时贴回来,我再做前后对比。</p>
+</div></details>
+
+<details><summary>WDR 解读(R7)· 「对 10 月 21 日 18:32 到 18:52 这段时间做一次 WDR 分析」</summary>
+<div class="chat">
+  <p class="note">评估窗口:快照 3073 → 3079(18:31–18:52,21 分钟),起点比所问时段早一分钟。</p>
+  <div class="band">总体状态 <b>告警</b> · 驱动:锁等待约占数据库时间的 90%,窗口内 26 次死锁 · 判断校验 ✓ 已锚定</div>
+  <div class="lead"><b>短结论:</b>这段时间库不缺 CPU(只占 11.5%),时间几乎都花在等锁上;另有一条报表语句落盘 3587 MiB。先解决锁,再调这条报表。</div>
+  <h4>① 负载画像</h4>
+  <p><span class="lay">应用视角</span>21 分钟里数据库一共「忙」了 30819 秒(并发会话的时间加在一起),但绝大部分时间交易在排队等别的交易放锁,真正在算的时间很少 —— 业务感受到的是交易慢、超时,而不是库算不过来。</p>
+  <p><span class="lay">数据库机制</span>DB time 30819 秒中 CPU 占 11.5%,锁等待约 90%;临时文件溢出 6395 MiB……</p>
+  <h4>② 问题与元凶</h4>
+  <p>Top SQL 多维表 + 各维度元凶(原样)。<b>锁</b>:UPDATE fl.acct 是被锁住的(CPU 0%);<b>真在干活</b>:3091214944、4198238080(CPU 分别占 56%、59%);
+  <b>落盘</b>:2858996927 落盘 3587 MiB,占语句级落盘的 86%,<b>不在按耗时排的前 10 名里</b> —— 按耗时找元凶会漏掉它。</p>
+  <h4>③ 解决方案</h4><p>P0 锁:事务按主键顺序加锁、缩短持锁时间;P1 落盘:2858996927 调优(只放验证过的方案);P2 ……</p>
+  <h4>④ 总结和结论</h4><p>[打开原生 WDR 报告] [打开大盘] · 需要就 2858996927 做一次调优吗?需要就死锁过程展开说明吗(请 DBA 提供这段时间的日志)?</p>
+  <h4>附录</h4><p class="note">Checkpoint、Cache、File IO 等全景表(每张一句判读)、图示、SQL 附录、本报告没覆盖的、校验区。</p>
+  <p class="note">示意,数字取自 10-21 演练第一轮的实测。</p>
+</div></details>
+
+<details><summary>知识问答(R6)· 「lockwait_timeout 默认是多少?我们行里 DDL 变更时应该设成多少?」</summary>
+<div class="chat">
+  <p><b>解答来源:</b>GaussDB 官方文档库 PD-G25132C-<span class="ph">编号</span>;贵行规范库 GS-CHG-003(两者不一致,以贵行规范为准)</p>
+  <h4>① 解答正文</h4>
+  <p><span class="off">lockwait_timeout 默认 1200000 毫秒,也就是 20 分钟</span>[1];<span class="kb">贵行要求 DDL 变更时会话级设置不超过 30 秒</span>[2]。
+  机制上,它控制的是单个锁等待的最长时间,超时后报错回滚本条语句……</p>
+  <h4>② 举例说明</h4>
+  <p><span class="kb">本行出现过白天执行 DDL 导致锁队列放大、柜面交易超时</span>(引用自本行案例库 S…)—— 不设上限时,一条 DDL 排在长事务后面,
+  它身后的所有普通查询都跟着排队……没有本行案例时用通用场景,写明「通用场景」,不上色、不编造「本行出现过」。</p>
+  <h4>③ 引申和拓展</h4>
+  <p>它和 deadlock_timeout 管的不是一件事……需要了解这两个参数的区别吗?需要看贵行变更规范里关于 DDL 的其余要求吗?</p>
+</div></details>
+</section>
+
+<!-- ================================================================ 4 -->
+<section id="s4">
+<h2>4 · 怎么实现</h2>
+
+<h3>4.1 一份模板正文,注入到每个技能</h3>
+<figure>
+<svg viewBox="0 0 1100 250" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,PingFang SC,Microsoft YaHei,sans-serif">
+  <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#8a97ab"/></marker></defs>
+  <rect x="24" y="78" width="230" height="92" rx="12" fill="#e7effc" stroke="#c9daf6"/>
+  <text x="139" y="110" text-anchor="middle" font-size="15" font-weight="700" fill="#123a73">common/answer_templates/</text>
+  <text x="139" y="134" text-anchor="middle" font-size="12.5" fill="#4a5566">四类模板 + 共用骨架 + 两种读者</text>
+  <text x="139" y="154" text-anchor="middle" font-size="12.5" fill="#4a5566">唯一正文,只改这里</text>
+  <rect x="330" y="92" width="210" height="64" rx="12" fill="#fff" stroke="#9fd2b9" stroke-width="2"/>
+  <text x="435" y="119" text-anchor="middle" font-size="14" font-weight="700" fill="#1f8a5b">tools/inject_answer_templates.py</text>
+  <text x="435" y="141" text-anchor="middle" font-size="12" fill="#4a5566">按技能所属类型注入对应段落</text>
+  <line x1="254" y1="124" x2="326" y2="124" stroke="#8a97ab" stroke-width="2" marker-end="url(#ar)"/>
+  <rect x="620" y="24" width="210" height="52" rx="10" fill="#fff" stroke="#d9dfe8"/>
+  <text x="725" y="48" text-anchor="middle" font-size="13.5" font-weight="700" fill="#123a73">13 个 SKILL.md</text>
+  <text x="725" y="66" text-anchor="middle" font-size="12" fill="#4a5566">标记块 ANSWER-TEMPLATE</text>
+  <rect x="620" y="98" width="210" height="52" rx="10" fill="#fff" stroke="#d9dfe8"/>
+  <text x="725" y="122" text-anchor="middle" font-size="13.5" font-weight="700" fill="#123a73">AGENTS.md</text>
+  <text x="725" y="140" text-anchor="middle" font-size="12" fill="#4a5566">归类规则 + 知识问答 + 跨技能排查</text>
+  <rect x="620" y="172" width="210" height="52" rx="10" fill="#fff" stroke="#d9dfe8"/>
+  <text x="725" y="196" text-anchor="middle" font-size="13.5" font-weight="700" fill="#123a73">kb-contract.md</text>
+  <text x="725" y="214" text-anchor="middle" font-size="12" fill="#4a5566">引用写法(R5 / R6),9 个技能</text>
+  <line x1="540" y1="112" x2="616" y2="52" stroke="#8a97ab" stroke-width="2" marker-end="url(#ar)"/>
+  <line x1="540" y1="124" x2="616" y2="124" stroke="#8a97ab" stroke-width="2" marker-end="url(#ar)"/>
+  <rect x="900" y="78" width="180" height="92" rx="12" fill="#efebfd" stroke="#d8cff8"/>
+  <text x="990" y="110" text-anchor="middle" font-size="14" font-weight="700" fill="#6b4fd8">守卫测试</text>
+  <text x="990" y="134" text-anchor="middle" font-size="12" fill="#4a5566">各份副本与正文逐字一致</text>
+  <text x="990" y="154" text-anchor="middle" font-size="12" fill="#4a5566">改了正文忘了注入就变红</text>
+  <line x1="830" y1="50" x2="896" y2="108" stroke="#c4b8f0" stroke-width="2" stroke-dasharray="5 4"/>
+  <line x1="830" y1="124" x2="896" y2="124" stroke="#c4b8f0" stroke-width="2" stroke-dasharray="5 4"/>
+  <line x1="830" y1="198" x2="896" y2="140" stroke="#c4b8f0" stroke-width="2" stroke-dasharray="5 4"/>
+</svg>
+<figcaption>与现有两套机制同一做法:安全红线(common/red_lines.md + tools/inject_red_lines.py)、知识引用契约(kb-contract.md + kb.py contract)</figcaption>
+</figure>
+<p>为什么要注入到每个 SKILL.md、而不是只写在 AGENTS.md:客户换技能目录时不一定换 AGENTS.md(2026-09-10 安全红线那次就是这样丢的);
+而模型执行某个技能时最先照着读的是那个技能的 SKILL.md。AGENTS.md 里放跨技能的部分:归类规则、知识问答、跨技能的故障排查。</p>
+
+<h3>4.2 各技能的「报告」一节按模板改写</h3>
+<table>
+<tr><th style="width:170px">技能</th><th style="width:110px">模板</th><th>主要改动</th></tr>
+<tr><td>gaussdb-health</td><td>R1</td><td>第 6 步「报告」重排:总体状态带(不变)→ 短结论 → ① 维度概览 → ② 每个发现的证据链(原始表并入)→ ③ P0/P1/P2 → ④ 总结;「客户知识库参照」不再照搬成一节。</td></tr>
+<tr><td>gaussdb-wdr</td><td>R7 <span class="chip sug">建议</span></td><td>改的是渲染脚本(见 4.6):报告顺序重排、interp.json 加短结论 / 两种视角 / 优先级 / 知识引用字段;SKILL.md 第 7 步同步。</td></tr>
+<tr><td>gaussdb-config</td><td>R1 <span class="chip sug">建议</span></td><td>参数体检是巡检性质,与健康检查同一结构。</td></tr>
+<tr><td>gaussdb-lockwait、waitevent、vacuum、memanalyze、slowsql</td><td>R3</td><td>报告改四段;第 ① 段按附 A 的清单补查关联现象(最多加跑 3 个技能,问某段时间时优先跑一次时段体检)。</td></tr>
+<tr><td>gaussdb-sqltune</td><td>R4</td><td>第 8 步「报告」重排为 ①–④;新增现状与趋势(4.5);已验证推荐补「前后对比」;证据链摘要放 ② 末尾,未验证想法放 ③ 末尾,风险写在每条方案下。</td></tr>
+<tr><td>gaussdb-proctune</td><td>R4 ②③④ <span class="chip sug">建议</span></td><td>存储过程没有按条的耗时趋势数据,只套用解读、优化、总结三段。</td></tr>
+<tr><td>gaussdb-explain</td><td>R4 ②</td><td>只看计划、不要优化时只写解读那一段(D13)。</td></tr>
+<tr><td>gaussdb-kb(问答)</td><td>R6</td><td>纯问答的回答格式:解答来源 → 三段;兜底说法统一。</td></tr>
+<tr><td>gaussdb-topsql</td><td>榜单 <span class="chip sug">建议</span></td><td>短结论(谁第一、占多少)→ 榜单 → 前几名各一句「为什么排上来」→ 建议优化哪条(接 R4)。</td></tr>
+<tr><td colspan="3" class="note">不动:login、sqlfetch、kb-init(导入流程)、procinfo、topproc、sqlreview(SQL 审查有客户自己的输出要求)。两种读者(R2)对所有回答生效,写在共用骨架里。</td></tr>
+</table>
+
+<h3>4.3 知识引用写法(R5 / R6)</h3>
+<ul>
+  <li><b>引用契约</b> <code>skills/gaussdb-kb/references/kb-contract.md</code> 改写「出自知识库的内容用蓝色标出」那一段:
+    排查类句子上色 + 句后括号(库名 + 编号)、不写「根据知识库」、不单列一节;客户知识蓝色、官方文档青色;兜底说法统一。
+    改完 <code>kb.py contract --apply</code> 同步到 9 个诊断技能(现有机制,有守卫)。</li>
+  <li><b>知识问答</b>写进 gaussdb-kb 的 SKILL.md 与 AGENTS.md 标记块:第一行「解答来源」,多条时句后 [1][2]。</li>
+  <li><b>各技能脚本输出里的「## 客户知识库参照」小节保留</b>:它是给模型读的输入(L0 画像、候选原因、条目摘要),不是回答的版式;
+    模板里写明「读它,但不要在回答里照搬成一节」。</li>
+  <li><b>cite-check</b>(<code>kb.py cite-check</code>)补认新写法:括号里的编号、[1][2] 对应第一行来源;官方文档编号核对不变。</li>
+  <li><b>AGENTS.md</b> 现行「可追溯」一条、「引用规范」(<code>&gt; 依据《文档名称》…</code>)、「兜底策略」与新写法冲突 —— 怎么处理见第 9 节 ①。</li>
+</ul>
+
+<h3>4.4 故障排查:关联现象清单与路由(R3)</h3>
+<ul>
+  <li>清单正文 <code>common/related_symptoms.md</code>:每类「用户报的现象」→ 必查的关联现象 → 用哪个技能 / 哪个维度取。初稿见附 A,<b>请你审</b>。</li>
+  <li>注入到 AGENTS.md(跨技能提问时用)和 R3 那 5 个技能的 SKILL.md(从某个技能进来时用)。</li>
+  <li>取数规则:问的是某段时间 → 先跑一次<b>时段体检</b>(一次拿到锁、等待、长事务、膨胀、临时文件等多个维度,比逐个技能跑快);
+      问的是此刻 → 主技能 + 清单里最多 3 个相关技能。清单里查不了的(例如死锁明细在日志里)写进第 ④ 段向用户要。</li>
+</ul>
+
+<h3>4.5 SQL 优化:现状与趋势(R4 第 ① 段)</h3>
+<p>og5 上核对过数据来源都在(openGauss 5.0.3;WDR 快照每小时一个,保留 8 天):</p>
+<table>
+<tr><th style="width:250px">新增白名单脚本(sqltune 域,只读)</th><th style="width:300px">取什么</th><th>脚本怎么用</th></tr>
+<tr><td><code>sqltune.stat_now</code></td><td>dbe_perf.statement:执行次数、平均 / 最大 / 最小耗时、CPU 与数据 IO 时间</td><td>第 ① 段的「现在」;耗时是实测</td></tr>
+<tr><td><code>sqltune.stat_trend</code></td><td>snapshot.snap_summary_statement × snapshot:近 7 天每个快照这条 SQL 的累计值</td><td>相邻快照相减得到每小时的次数与平均耗时;计数器被重置的那一段丢弃并注明;<b>拐点由脚本判定</b>(某小时平均耗时 ≥ 前 24 小时中位数的 3 倍且绝对值 ≥ 100 ms,阈值写进 references,可调)</td></tr>
+<tr><td><code>sqltune.exec_history</code></td><td>statement_history:最近 200 次执行的开始时间、耗时、计划指纹(去掉 actual 数字后取 md5,在库里算好,不搬整棵计划)</td><td>判定计划变没变、在哪个时间点变;变过的再按指纹各取一棵计划(复用现有 <code>explain.plan_from_history</code> 的取法,新开 sqltune 域的同名逻辑)</td></tr>
+</table>
+<ul>
+  <li>证据包新增 <code>## Current Stats</code>、<code>## Trend</code>、<code>## Plan Changes</code> 三节,模型只转述,不自己拿数去推。</li>
+  <li>超出保留期写明:「趋势只覆盖最近 8 天(WDR 快照保留期)」「逐次执行记录只保留到 …,更早的计划无法核对」。</li>
+  <li><b>前后对比</b>(第 ③ 段):SQL 文本差异由脚本按原 SQL 与验证通过的改写生成;改写方案的前后计划来自 verify,两棵并排;
+    只建索引、又没有假设索引的环境里拿不到「建索引后的计划」,如实写明;cost 照抄验证结果;优化后耗时写「需实测」。</li>
+  <li>客户登记这 3 条之前:第 ① 段写「现状数据暂不可得(白名单脚本未登记)」,其余三段照常(见第 9 节 ③)。</li>
+</ul>
+
+<h3>4.6 WDR:版式由脚本渲染(R7)</h3>
+<ul>
+  <li><code>skills/gaussdb-wdr/scripts/finalreport.py</code> 的报告顺序改成 2.3 的样子:开头(窗口、状态带、短结论)→ ① 负载画像 → ② 问题与元凶(含 Top SQL 多维表)→ ③ 解决方案(P0/P1/P2)→ ④ 总结 → 附录。markdown 与 ansi 两种输出一起改。</li>
+  <li><code>interp.py</code>:interp.json 加字段 —— <code>summary</code>(短结论,≤3 句)、每条发现的 <code>app_view</code> / <code>mechanism</code> / <code>priority</code>、<code>kb_refs</code>(编号 + 那句话)。
+      旧格式的 interp.json 照样能渲染(缺的段写「本次未给出」),不让旧会话里的报告重渲染失败。</li>
+  <li>渲染时核对:引用编号不在库里的剔除并列进校验区;优先级缺失的按严重度排;短结论里不许出现比总体状态更轻的定性(与「级别不下调」同一条规矩)。</li>
+  <li>SKILL.md 第 7 步:说明新字段怎么写;「最终报告 = render 原样输出」这条不变,但不再需要模型在前面自己加摘要。</li>
+</ul>
+
+<h3>4.7 回答格式检查(评估用,不进客户环境)</h3>
+<p>新写 <code>tools/answer_check.py</code>:读一份回答(从 opencode 会话导出),按问题类型检查 ——
+各段标题和顺序、开头有没有总体状态与短结论、结尾有没有展开提议;上色的句子后面有没有「(引用自 … 编号)」;
+排查类回答里有没有「根据知识库」「知识库显示」这类说法;知识问答第一行是不是「解答来源」;编号再交给 cite-check 核对。
+只用在我们的回归评估里:模型交稿前不额外多跑一步,不拖慢回答。</p>
+</section>
+
+<!-- ================================================================ 5 -->
+<section id="s5">
+<h2>5 · 改动清单</h2>
+<table>
+<tr><th style="width:90px">类别</th><th style="width:360px">文件</th><th>改动</th></tr>
+<tr><td><span class="chip new">新增</span></td><td><code>common/answer_templates/</code></td><td>模板唯一正文(共用骨架、四类正文、两种读者、知识引用写法)</td></tr>
+<tr><td><span class="chip new">新增</span></td><td><code>common/related_symptoms.md</code></td><td>关联现象清单(附 A 审定后)</td></tr>
+<tr><td><span class="chip new">新增</span></td><td><code>tools/inject_answer_templates.py</code> + <code>tests/test_answer_templates_units.py</code></td><td>注入工具与逐字一致守卫(照 inject_red_lines 的做法)</td></tr>
+<tr><td><span class="chip new">新增</span></td><td><code>scripts/registry/sqltune/{stat_now,stat_trend,exec_history}.yaml</code></td><td>3 条只读白名单脚本;<code>docs/delivery/whitelist.md</code>、<code>scripts.sql</code> 同步</td></tr>
+<tr><td><span class="chip new">新增</span></td><td><code>skills/gaussdb-sqltune/scripts/trend.py</code> + 测试</td><td>现状、趋势相减、拐点、计划指纹比对、SQL 文本差异</td></tr>
+<tr><td><span class="chip new">新增</span></td><td><code>tools/answer_check.py</code> + 测试</td><td>回答格式检查(评估用)</td></tr>
+<tr><td><span class="chip chg">修改</span></td><td>13 个 <code>skills/*/SKILL.md</code></td><td>「报告」一节按模板改写 + 注入标记块</td></tr>
+<tr><td><span class="chip chg">修改</span></td><td><code>skills/gaussdb-kb/references/kb-contract.md</code></td><td>R5 / R6 引用写法、分色、兜底说法;同步到 9 个技能</td></tr>
+<tr><td><span class="chip chg">修改</span></td><td><code>skills/gaussdb-kb/scripts/kb_cite.py</code></td><td>认括号与 [n] 写法</td></tr>
+<tr><td><span class="chip chg">修改</span></td><td><code>skills/gaussdb-wdr/scripts/{finalreport,interp}.py</code> + 测试</td><td>WDR 报告重排、interp.json 新字段、渲染时核对引用编号</td></tr>
+<tr><td><span class="chip chg">修改</span></td><td><code>skills/gaussdb-sqltune/scripts/{sqltune,evidence,render}.py</code></td><td>证据包加三节;报告附前后对比</td></tr>
+<tr><td><span class="chip chg">修改</span></td><td><code>AGENTS.md</code></td><td>新增标记块(归类、知识问答、跨技能排查);与新模板冲突的旧条目按第 9 节 ① 处理</td></tr>
+<tr><td><span class="chip chg">修改</span></td><td><code>grmp_middleware</code>(模拟中间件)</td><td>登记 3 条新脚本,测试环境才能跑通</td></tr>
+<tr><td><span class="chip keep">另一仓库</span></td><td>gh_agent_k8s:技能随镜像发布;gh_gs_k8s_agent:《前端对接接口说明》</td><td>镜像重建;接口说明第 v1.1 版写明新颜色与引用写法(客户前端照它渲染)</td></tr>
+</table>
+</section>
+
+<!-- ================================================================ 6 -->
+<section id="s6">
+<h2>6 · 测试与验收</h2>
+<h3>6.1 单元测试</h3>
+<ul>
+  <li>注入守卫:13 个 SKILL.md、AGENTS.md 的标记块与正文逐字一致;每个技能注入的是它所属类型的那一段。</li>
+  <li>引用契约同步守卫(现有)照常通过;cite-check 认新写法(括号、[n]、官方文档编号),编造的编号仍判「未找到」。</li>
+  <li>trend.py:快照相减、计数器重置、拐点判定(表驱动用例:平稳 / 突增 / 逐渐变慢 / 数据不足)、计划指纹去掉 actual 数字后一致、SQL 文本差异。</li>
+  <li>白名单脚本:现有的注册表守卫(只读、参数类型、逻辑名分域)覆盖新增的 3 条。</li>
+  <li>WDR 渲染:新旧两种 interp.json 都能渲染;段落顺序、Top SQL 多维表原样保留、各维度元凶行在 ② 里;编造的引用编号被剔除进校验区;短结论不下调级别。</li>
+  <li>answer_check.py:五类模板各一份合格与不合格的样例。</li>
+</ul>
+<h3>6.2 测试环境实测(og5,10-21 与 10-24 两轮演练数据)</h3>
+<table>
+<tr><th style="width:110px">类型</th><th>题目</th></tr>
+<tr><td>健康检查</td><td>此刻巡检一次;10-24 18:20–18:40 时段体检一次</td></tr>
+<tr><td>故障排查</td><td>「18:20–18:40 交易超时是什么原因」(只报一个现象,看关联现象);锁等待;临时文件落盘</td></tr>
+<tr><td>SQL 优化</td><td>sql_id 4198238080 做调优并贴计划;「这条 SQL 为什么慢」(看现状、趋势、计划变化)</td></tr>
+<tr><td>知识问答</td><td>lockwait_timeout 默认值与本行要求;某个错误码是什么意思;Plan Hint 怎么写</td></tr>
+<tr><td>WDR</td><td>10-21 18:32–18:52 的 WDR 分析</td></tr>
+</table>
+<p>每题:改造前后各问一次 → 导出回答 → answer_check + cite-check → 在对话界面截图看颜色 → 记录回答长度与耗时。
+出一份评审报告(HTML,前后并排),你看过再决定是否发版。</p>
+<div class="callout amber">验收标准:11 题格式检查全过;引用编号零「未找到」;严重级别与脚本判定一致;开发人员视角的段落你读得懂;回答耗时增加不超过 30%(故障排查题除外,单独列)。</div>
+</section>
+
+<!-- ================================================================ 7 -->
+<section id="s7">
+<h2>7 · 交付影响</h2>
+<table>
+<tr><th style="width:190px">对象</th><th>影响</th></tr>
+<tr><td>技能包</td><td>13 个技能版本号上调;新的交付手册写明增量</td></tr>
+<tr><td>客户白名单</td><td>新增 3 条 sqltune 域只读脚本,客户在中间件登记;不改客户数据库</td></tr>
+<tr><td>客户 AGENTS.md</td><td>给一段新增标记块;旧条目的处理见第 9 节 ①</td></tr>
+<tr><td>镜像(gh_agent_k8s)</td><td>runtime / kb-import 镜像随技能重建;网关、前端不动</td></tr>
+<tr><td>联合仓库(gh_gs_k8s_agent)</td><td>同步技能代码;《前端对接接口说明》改为 v1.1:青色标记官方文档、引用写法变化,客户前端若自己渲染颜色要跟着改</td></tr>
+<tr><td>大盘</td><td>不受影响(大盘不解析回答正文)</td></tr>
+</table>
+</section>
+
+<!-- ================================================================ 8 -->
+<section id="s8">
+<h2>8 · 排期(约 8.5 个工作日)</h2>
+<table>
+<tr><th style="width:80px">天</th><th>内容</th><th style="width:260px">完成标志</th></tr>
+<tr><td>第 1 天</td><td>模板正文、注入工具与守卫;AGENTS.md 标记块</td><td>守卫测试绿</td></tr>
+<tr><td>第 2 天</td><td>健康检查、WDR、参数体检、5 个故障排查技能的「报告」改写;关联现象清单(按你审定的版本)</td><td>注入后全量单测绿</td></tr>
+<tr><td>第 3 天</td><td>引用契约 R5 / R6、cite-check 新写法、知识问答格式、兜底说法统一</td><td>契约同步到 9 个技能</td></tr>
+<tr><td>第 4–5 天</td><td>SQL 优化:3 条白名单脚本、trend.py、证据包三节、前后对比、sqltune 报告改写;模拟中间件登记</td><td>og5 上取得真实趋势与计划比对</td></tr>
+<tr><td>第 6–7 天上午</td><td>WDR:finalreport 重排、interp.json 新字段、渲染时核对、SKILL.md 第 7 步</td><td>新旧 interp 都能渲染,单测绿</td></tr>
+<tr><td>第 7 天下午</td><td>answer_check;镜像构建,部署测试环境</td><td>测试环境跑新版本</td></tr>
+<tr><td>第 8 天</td><td>11 题前后对比实测,出评审报告</td><td>报告在浏览器打开给你看</td></tr>
+</table>
+</section>
+
+<!-- ================================================================ 9 -->
+<section id="s9">
+<h2>9 · 风险与要你定的事</h2>
+<h3>要你定的 4 件事</h3>
+<table>
+<tr><th style="width:36px">#</th><th style="width:300px">问题</th><th>我的建议</th></tr>
+<tr><td>①</td><td>客户 AGENTS.md 里原有的「可追溯」「引用规范」(<code>&gt; 依据《文档名称》第X篇/X节</code>)、「兜底策略」「输出格式要求」与新模板冲突</td>
+  <td>同一份提示词里两套格式打架,模型会随机挑一套。我们仓库里的 AGENTS.md 直接改成新模板;交付时给客户一段「替换说明」,
+  写明这四处换成新标记块。这四处是客户写的,所以要你点头,必要时和客户确认。</td></tr>
+<tr><td>②</td><td>需求没覆盖的几类回答</td>
+  <td>WDR 用专门的 R7(2.3);参数体检用 R1;存储过程调优用 R4 的 ②③④;Top SQL 榜单用「短结论 → 榜单 → 每条为什么排上来 → 建议优化哪条」;SQL 审查保持客户原有格式。</td></tr>
+<tr><td>③</td><td>3 条新白名单脚本客户登记之前,SQL 优化第 ① 段怎么办</td>
+  <td>写「现状数据暂不可得(白名单脚本未登记)」,其余三段照常;不拿别的数据凑。</td></tr>
+<tr><td>④</td><td>WDR「两段对比」解读(变慢前后、和上周同一时段比)</td>
+  <td>现在的 WDR 只分析一段。用户常问「和平时比变了什么」,建议<b>下一轮</b>再做(约 2 天):① 两段负载对比(变化最大的指标)② 变化的原因(新上榜 / 变慢的语句、等待构成的变化)③ 方案 ④ 总结。这次先不做,不影响本次排期。</td></tr>
+</table>
+<div class="callout green"><b>已定(2026-10-26)</b>:① 改成新模板,交付时给客户替换说明;② 按建议套用;
+③ 3 条脚本本地测试先加进去(模拟中间件登记),发给客户时由客户登记 —— 代码里仍保留「暂不可得」的兜底;④ 两段对比下一轮再做。</div>
+<h3>风险</h3>
+<ul>
+  <li><b>回答变长</b>:四段 + 两种读者会让回答明显变长。靠「短结论在前」兜住快速阅读;评审报告里列出前后长度,超出太多再收紧。</li>
+  <li><b>模板靠提示词执行,不是 100%</b>:模型偶尔会漏段、合并段。answer_check 在回归评估里抓;反复出现的漏段再加到 SKILL.md 的「常见错误」里。</li>
+  <li><b>故障排查变慢</b>:多查关联现象要多跑技能。限定最多加跑 3 个、问某段时间先用时段体检;实测耗时单独列出。</li>
+  <li><b>趋势受保留期限制</b>:WDR 快照保留 8 天、逐次执行记录的保留期由客户参数决定;超出范围如实写明。</li>
+  <li><b>颜色依赖前端渲染</b>:我们的对话界面已支持 <code>&lt;font color&gt;</code>;客户若接自己的前端,要按 v1.1 接口说明支持青色。</li>
+</ul>
+</section>
+
+<!-- ================================================================ A -->
+<section id="sa">
+<h2>附 A · 关联现象清单(初稿,请你审)</h2>
+<p class="note">用法:用户报的是左列的某个现象时,第 ① 段要把中间列的关联现象都查一遍;查不了的写「未采集」或在第 ④ 段向用户要。问的是某段时间时,能用时段体检一次拿到的,就不逐个技能跑。</p>
+<table>
+<tr><th style="width:170px">用户报的现象</th><th>必查的关联现象</th><th style="width:250px">用哪个技能 / 维度</th></tr>
+<tr><td>交易超时、接口变慢、整体变慢</td><td>数据库时间花在哪(CPU / IO / 锁 / 其它等待);锁等待与阻塞链;长事务、空闲事务;Top SQL 有没有新上榜或变慢;连接数与活跃会话</td><td>waitevent、lockwait、health(xact、conn)、topsql</td></tr>
+<tr><td>锁等待多、被阻塞</td><td>根会话在干什么(执行中 / 事务里空闲);长事务;DDL 排在锁队列里;死锁次数;被卡住的 vacuum(死元组涨)</td><td>lockwait、health(xact)、vacuum</td></tr>
+<tr><td>死锁</td><td>死锁次数与时间分布;同时段的锁等待;涉及哪些语句(明细在数据库日志里,向 DBA 要日志段)</td><td>health / wdr、lockwait;日志在第 ④ 段向用户要</td></tr>
+<tr><td>某条 SQL 变慢</td><td>转 SQL 优化模板;另看这条 SQL 是被锁住还是真在干活(等待占比)、执行计划变没变、统计信息是否陈旧</td><td>sqltune(R4)、topsql</td></tr>
+<tr><td>CPU 高</td><td>按 CPU 排的 Top SQL;数据库时间里 CPU 的占比;活跃会话数;有没有计划变差的语句</td><td>topsql(按 CPU)、waitevent</td></tr>
+<tr><td>IO 高、临时文件落盘</td><td>落盘最多的语句;大排序 / 哈希;checkpoint 与 WAL;表膨胀</td><td>wdr、topsql、health(logs)、vacuum</td></tr>
+<tr><td>连接数满、连不上</td><td>事务里空闲的会话;会话来源分布;锁等待导致会话堆积;长事务</td><td>health(conn、xact)、lockwait</td></tr>
+<tr><td>表膨胀、空间涨得快</td><td>长事务与 xmin 持有;复制槽;未提交的两阶段事务;autovacuum 跟不跟得上</td><td>vacuum、health(xact、repl、storage)</td></tr>
+<tr><td>内存高</td><td>内存上下文分布;会话数;大排序 / 哈希;存储过程</td><td>memanalyze、health(conn)</td></tr>
+<tr><td>WAL 多、主备延迟</td><td>WAL 生成量;大事务;checkpoint;复制槽</td><td>health(logs、repl)</td></tr>
+</table>
+</section>
+
+<!-- ================================================================ B -->
+<section id="sb">
+<h2>附 B · 引用写法对照</h2>
+<table>
+<tr><th style="width:180px">知识类型(编号前缀)</th><th style="width:270px">括号里写</th><th style="width:90px">颜色</th><th>附带标签</th></tr>
+<tr><td>规范 GS-</td><td>(引用自贵行规范库 GS-…)</td><td><span class="kb">蓝</span></td><td>—</td></tr>
+<tr><td>修正</td><td>(引用自贵行规范库 修正 …)</td><td><span class="kb">蓝</span></td><td>优先于原条款</td></tr>
+<tr><td>案例 S1– / S4-</td><td>(引用自本行案例库 S…)</td><td><span class="kb">蓝</span></td><td>结论是「推测 / 待验证」的要带上</td></tr>
+<tr><td>手册 RB-</td><td>(引用自处置手册库 RB-…)</td><td><span class="kb">蓝</span></td><td>「未经演练验证」的要带上</td></tr>
+<tr><td>缺陷 KD-</td><td>(引用自已知缺陷库 KD-…)</td><td><span class="kb">蓝</span></td><td>本环境受影响 / 不受影响</td></tr>
+<tr><td>基线 BL-</td><td>(引用自贵行基线库 BL-…)</td><td><span class="kb">蓝</span></td><td>只说明平时是多少,不改级别</td></tr>
+<tr><td>画像 EP-</td><td>(引用自环境画像库 EP-…)</td><td><span class="kb">蓝</span></td><td>—</td></tr>
+<tr><td>Wiki WK-</td><td>(引用自 Wiki 经验库 WK-…)</td><td><span class="kb">蓝</span></td><td>「未验证 / 已过时」要带上</td></tr>
+<tr><td>产品文档 PD-(客户导入)</td><td>(引用自产品文档库 PD-…)</td><td><span class="off">青</span></td><td>不适用本环境的不作依据;实测后改为青色:它也是「产品官方说法」</td></tr>
+<tr><td>官方文档集 PD-G25132C-</td><td>(引用自 GaussDB 官方文档库 PD-G25132C-…)</td><td><span class="off">青</span></td><td>适用性未知时说明;与贵行规范不一致以贵行为准</td></tr>
+</table>
+<p class="note">「贵行 / 本行」沿用现行措辞。不适用本环境的条目照旧不作依据,也就不会出现在括号里。</p>
+</section>
+
+</div>
+</body>
+</html>
