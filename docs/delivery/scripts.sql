@@ -1162,3 +1162,48 @@ INSERT INTO grmp.script_config (id, script_type, script_name, database_type, ref
      AND client_port IS NOT NULL) AS oldest_xact_s
 FROM pg_stat_database;
 ', '[]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'sqltune.stat_now', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT sum(n_calls) AS calls,
+       round(sum(total_elapse_time) / 1000.0, 1) AS total_ms,
+       round(sum(total_elapse_time) / 1000.0 / nullif(sum(n_calls), 0), 1) AS avg_ms,
+       round(max(max_elapse_time) / 1000.0, 1) AS max_ms,
+       round(min(nullif(min_elapse_time, 0)) / 1000.0, 1) AS min_ms,
+       round(sum(cpu_time) / 1000.0, 1) AS cpu_ms,
+       round(sum(data_io_time) / 1000.0, 1) AS io_ms,
+       sum(n_returned_rows) AS returned_rows
+  FROM dbe_perf.statement
+ WHERE unique_sql_id = {{sid}};
+', '[{"key":"sid","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'sqltune.stat_trend', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT s.snapshot_id,
+       to_char(s.start_ts, ''YYYY-MM-DD HH24:MI:SS'') AS snap_ts,
+       sum(t.snap_n_calls) AS calls,
+       sum(t.snap_total_elapse_time) AS total_us
+  FROM snapshot.snap_summary_statement t
+  JOIN snapshot.snapshot s ON s.snapshot_id = t.snapshot_id
+ WHERE t.snap_unique_sql_id = {{sid}}
+   AND s.start_ts >= now() - {{days}} * INTERVAL ''1 day''
+ GROUP BY s.snapshot_id, s.start_ts
+ ORDER BY s.snapshot_id;
+', '[{"key":"sid","value":"","type":"INTEGER","autoAcquire":false},{"key":"days","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
+INSERT INTO grmp.script_config (id, script_type, script_name, database_type, refered_appbusiness, kernel_version, region, deployment_form, execute_node_type, cluster_deployment_mode, script_content, parameter_config, scene, is_valid, create_user, create_time, last_modify_user, last_modify_time, is_asyn, "extend", compliance_mode, uuid) VALUES (grmp.script_config_seq.nextval, 'SQL', 'sqltune.exec_history', 'postgres', 1, 'ALL', NULL, NULL, NULL, 'centralization', 'SELECT hour, runs, avg_ms, max_ms, plan_sig,
+       CASE WHEN prev_sig IS NULL OR prev_sig <> plan_sig THEN query_plan END AS query_plan
+  FROM (SELECT hour, runs, avg_ms, max_ms, plan_sig, query_plan,
+               lag(plan_sig) OVER (ORDER BY hour) AS prev_sig
+          FROM (SELECT to_char(hour, ''YYYY-MM-DD HH24:MI'') AS hour, runs,
+                       round(avg_us / 1000.0, 1) AS avg_ms,
+                       round(max_us / 1000.0, 1) AS max_ms,
+                       CASE WHEN coalesce(query_plan, '''') = '''' THEN NULL
+                            ELSE md5(regexp_replace(regexp_replace(query_plan, ''\((cost|actual)[^)]*\)'', '''', ''g''),
+                                                    ''[0-9]'', '''', ''g'')) END AS plan_sig,
+                       query_plan
+                  FROM (SELECT date_trunc(''hour'', start_time) AS hour, query_plan,
+                               row_number() OVER (PARTITION BY date_trunc(''hour'', start_time)
+                                                  ORDER BY (coalesce(query_plan, '''') = ''''), start_time DESC) AS rn,
+                               count(*) OVER (PARTITION BY date_trunc(''hour'', start_time)) AS runs,
+                               avg(db_time) OVER (PARTITION BY date_trunc(''hour'', start_time)) AS avg_us,
+                               max(db_time) OVER (PARTITION BY date_trunc(''hour'', start_time)) AS max_us
+                          FROM dbe_perf.statement_history
+                         WHERE unique_query_id = {{sid}}
+                           AND start_time >= now() - {{days}} * INTERVAL ''1 day'') r
+                 WHERE rn = 1) a) b
+ ORDER BY hour;
+', '[{"key":"sid","value":"","type":"INTEGER","autoAcquire":false},{"key":"days","value":"","type":"INTEGER","autoAcquire":false}]', 'AGENT', 1, '999999999', now(), '999999999', NULL, 0, NULL, 'ALL', uuid());
