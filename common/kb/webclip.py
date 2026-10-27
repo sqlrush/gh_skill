@@ -575,6 +575,61 @@ def latest(kb: pathlib.Path, user_id: str = "") -> pathlib.Path:
     raise ClipError("还没有剪藏批次:先在要导入的网页上点书签「导入知识库」")
 
 
+FILE_SUFFIXES = (".mhtml", ".mht", ".html", ".htm")
+
+
+def _file_origin(name: str, raw: bytes) -> Tuple[str, str]:
+    """浏览器「另存为」的网页文件 → (原网页地址, 标题),尽力而为;内容与后缀不符就拒(与剪藏接收同一规则)。"""
+    head = raw[:65536]
+    if name.endswith((".mhtml", ".mht")):
+        if not re.search(rb"(?im)^(mime-version:|content-type:\s*multipart/related)", head[:8192]):
+            raise ClipError("%s 不是「网页,单个文件」格式(.mhtml):请用浏览器「另存为 → 网页,单个文件」重新保存" % name)
+        hdr = email.message_from_bytes(head, policy=email.policy.default)
+        return str(hdr.get("Snapshot-Content-Location") or "").strip(), str(hdr.get("Subject") or "").strip()
+    if not head.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"<"):
+        raise ClipError("%s 不是网页文件" % name)
+    m = re.search(rb"<!--\s*saved from url=\(\d+\)(\S+?)\s*-->", head[:4096], re.I)
+    return (m.group(1).decode("ascii", "ignore") if m else ""), ""
+
+
+def add_file(kb: pathlib.Path, src: pathlib.Path, user_id: str = "", url: str = "") -> pathlib.Path:
+    """本地的 .mhtml / .html → 剪藏批次(之后照常 clip ingest)。
+
+    给没有剪藏页的环境(单机版)与书签用不了的时候:管理员在浏览器里「另存为 → 网页,单个文件」,传到收件目录再加进来。
+    批次的样子与剪藏接收落的一样(meta.json + <批次>.mhtml),先写临时目录再整体改名,不会出现写了一半的批次。
+    """
+    src = pathlib.Path(src)
+    name = src.name.lower()
+    suffix = pathlib.Path(name).suffix
+    if suffix not in FILE_SUFFIXES:
+        raise ClipError("只收 .mhtml / .mht / .html / .htm(浏览器「另存为 → 网页,单个文件」):%s" % src.name)
+    try:
+        raw = src.read_bytes()
+    except OSError as exc:
+        raise ClipError("读不了 %s:%s" % (src, exc)) from exc
+    if not raw:
+        raise ClipError("%s 是空文件" % src.name)
+    found, title = _file_origin(name, raw)
+    now = _dt.datetime.now().astimezone()
+    batch = "clip-%s-%s" % (now.strftime("%Y%m%d-%H%M%S"), hashlib.sha256(raw + str(now).encode()).hexdigest()[:4])
+    root = clips_dir(kb)
+    tmp = root / ".incoming" / batch
+    tmp.mkdir(parents=True)
+    meta = {"batch": batch, "kind": "file", "source": "file", "user_id": user_id, "file_name": src.name,
+            "url": url or found, "title": title, "fetched_at": now.isoformat(timespec="seconds"),
+            "received_at": now.isoformat(timespec="seconds"), "snapshot": batch + suffix, "bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(), "images": [], "skipped": []}
+    try:
+        (tmp / (batch + suffix)).write_bytes(raw)
+        (tmp / META).write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp.rename(root / batch)
+    except OSError:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    return root / batch
+
+
 def _snapshot(batch: pathlib.Path) -> pathlib.Path:
     for suffix in (".html", ".htm", ".mhtml", ".mht"):
         p = batch / (batch.name + suffix)

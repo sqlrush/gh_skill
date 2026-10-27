@@ -70,6 +70,66 @@ def test_ingest_converts_the_latest_own_batch_and_names_the_next_steps(tmp_path,
     assert "kb.py attach %s" % (b / (b.name + ".html")) in out and "kb.py clip clean %s" % b.name in out
 
 
+def test_a_cross_site_image_is_counted_once_as_not_retrieved(tmp_path, capsys):
+    """书签跳过的跨站图片既在 meta 的跳过清单里,也是正文里指不到本地的图片 —— 只算一张(端到端里报成了 2 张)。"""
+    d = _kbdir(tmp_path)
+    b = _clip(d, html=PAGE.replace("</article>", '<p><img src="https://cdn.other/x.png" alt="示意"></p></article>'))
+    meta = json.loads((b / "meta.json").read_text(encoding="utf-8"))
+    meta["skipped"] = [{"src": "https://cdn.other/x.png", "reason": "跨站图片,读不到"}]
+    (b / "meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    assert kb.main(["clip", "ingest", b.name, "--kb", str(d)]) == 0
+    assert "另有 1 张没取回" in capsys.readouterr().out
+
+
+MHTML = ("From: <Saved by Blink>\r\nSnapshot-Content-Location: https://wiki.corp/display/OPS/backup\r\n"
+         "Subject: =?utf-8?B?5aSH5Lu95oGi5aSN5omL5YaM?=\r\nMIME-Version: 1.0\r\n"
+         "Content-Type: multipart/related; type=\"text/html\"; boundary=\"B\"\r\n\r\n--B\r\nContent-Type: text/html\r\n"
+         "Content-Location: https://wiki.corp/display/OPS/backup\r\n\r\n" + PAGE + "\r\n--B--\r\n")
+
+
+def test_clip_add_turns_a_saved_mhtml_into_a_batch_that_ingests(tmp_path, capsys, monkeypatch):
+    """没有剪藏页的环境:浏览器另存的 .mhtml 上传到收件目录,clip add 成批次,之后照常 ingest。"""
+    d = _kbdir(tmp_path)
+    f = tmp_path / "备份恢复手册.mhtml"
+    f.write_text(MHTML, encoding="utf-8")
+    monkeypatch.setenv("GSDB_USER_ID", "u0001")
+    assert kb.main(["clip", "add", str(f), "--kb", str(d)]) == 0
+    out = capsys.readouterr().out
+    assert "https://wiki.corp/display/OPS/backup" in out and "clip ingest clip-" in out
+    batch = next((d / "inbox" / "clips").glob("clip-*"))
+    meta = json.loads((batch / "meta.json").read_text(encoding="utf-8"))
+    assert meta["title"] == "备份恢复手册" and meta["user_id"] == "u0001" and (batch / (batch.name + ".mhtml")).is_file()
+    assert kb.main(["clip", "ingest", batch.name, "--kb", str(d)]) == 0
+    assert "全量备份每周日凌晨执行" in (batch / "page.md").read_text(encoding="utf-8")
+
+
+def test_clip_add_rejects_what_is_not_a_saved_web_page(tmp_path, capsys):
+    d = _kbdir(tmp_path)
+    bad = tmp_path / "x.mhtml"
+    bad.write_text("<html>其实不是 mhtml</html>", encoding="utf-8")
+    pdf = tmp_path / "x.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    assert kb.main(["clip", "add", str(bad), "--kb", str(d)]) != 0
+    assert kb.main(["clip", "add", str(pdf), "--kb", str(d)]) != 0
+    assert kb.main(["clip", "add", str(tmp_path / "nope.mhtml"), "--kb", str(d)]) != 0
+    out = capsys.readouterr()
+    text = out.out + out.err
+    assert "网页,单个文件" in text and "只收 .mhtml" in text and "文件不存在" in text
+    assert not list((d / "inbox" / "clips").glob("clip-*")) if (d / "inbox" / "clips").exists() else True
+
+
+def test_clip_add_takes_the_url_from_a_saved_html_or_from_the_option(tmp_path, capsys):
+    d = _kbdir(tmp_path)
+    f = tmp_path / "p.html"
+    f.write_text("<!-- saved from url=(0024)https://wiki.corp/p/77 -->\n" + PAGE, encoding="utf-8")
+    assert kb.main(["clip", "add", str(f), "--kb", str(d)]) == 0
+    g = tmp_path / "q.htm"
+    g.write_text(PAGE, encoding="utf-8")
+    assert kb.main(["clip", "add", str(g), "--kb", str(d), "--url", "https://wiki.corp/p/88"]) == 0
+    urls = sorted(json.loads((b / "meta.json").read_text(encoding="utf-8"))["url"] for b in (d / "inbox" / "clips").glob("clip-*"))
+    assert urls == ["https://wiki.corp/p/77", "https://wiki.corp/p/88"]
+
+
 def test_ingest_of_a_login_page_fails_with_the_reason(tmp_path, capsys):
     d = _kbdir(tmp_path)
     _clip(d, html="<html><head><title>登录</title></head><body><form><input type=password></form></body></html>")

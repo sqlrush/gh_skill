@@ -3,6 +3,7 @@
     clip status [--url <链接>] [--json]   剪藏开没开、允许哪些网站、安装页链接、本人剪藏过没有、某链接在不在名单里
     clip list                             剪藏批次(最近的在前)
     clip ingest [<批次>]                  批次 → page.md(找正文、去噪、保留结构);不给批次 = 本人最近一次
+    clip add <文件> [--url <原网页地址>]  浏览器另存的 .mhtml / .html → 剪藏批次(没有剪藏页、或书签用不了时)
     clip clean <批次>... [--discard]      处理完后删掉批次目录(还没导入的要加 --discard)
 
 分工:浏览器负责「读得到」(书签在已登录的页面里取 DOM 与图片),导入环境的接收服务落盘,
@@ -125,7 +126,8 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         raise ClipCmdError(str(exc)) from exc
     print("剪藏批次    : %s(%s)" % (batch.name, batch))
     print("来源        : 「%s」 %s(抓取 %s)" % (res.title or "无标题", res.url or meta.get("file_name") or "", _when(meta)))
-    miss = len(res.images_missing) + len(res.skipped)
+    # 书签没取回的跨站图片既在跳过清单里,也是正文里指不到本地的图片:按地址去重,不要数两遍
+    miss = len(set(res.images_missing) | {str(x.get("src") or "") for x in res.skipped if isinstance(x, dict)})
     print("正文        : %d 字 · %d 个小节 · %d 张表 · 图片 %d 张%s" % (
         res.chars, res.headings, res.tables, res.images_used,
         ("(另有 %d 张没取回:跨站或受限的图片读不到,需要时请用户截图上传)" % miss) if miss else ""))
@@ -143,6 +145,23 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     print("  - 手册 / 已知缺陷 / 基线 / 画像 / 产品文档 / Wiki → kb.py template <类型>,写草稿后 kb.py add")
     print("  入库后:kb.py attach %s --to <条目 ID>(原始网页存为 L3 证据);kb.py index;处理完 kb.py clip clean %s"
           % (res.snapshot, batch.name))
+    return 0
+
+
+def cmd_add(args: argparse.Namespace) -> int:
+    kb = _kb(args)
+    src = pathlib.Path(args.file).expanduser()
+    if not src.is_file():
+        raise ClipCmdError("文件不存在:%s(用户电脑上的文件要先通过对话界面上传到收件目录,再用沙箱内路径)" % src)
+    try:
+        batch = webclip.add_file(kb, src, os.environ.get("GSDB_USER_ID", ""), args.url or "")
+    except webclip.ClipError as exc:
+        raise ClipCmdError(str(exc)) from exc
+    meta = webclip.load_meta(batch)
+    print("剪藏批次    : %s(%s)" % (batch.name, batch))
+    print("来源        : %s" % (meta.get("url") or "文件里没写原网页地址 —— 入库时出处请向用户问清,或重新加上 --url"))
+    print()
+    print("Next: python3 %s clip ingest %s" % (pathlib.Path(__file__).with_name("kb.py"), batch.name))
     return 0
 
 
@@ -184,6 +203,11 @@ def add_subcommands(sub: "argparse._SubParsersAction") -> None:
     q.add_argument("batch", nargs="?")
     q.add_argument("--kb")
     q.set_defaults(func=cmd_ingest)
+    q = csub.add_parser("add", help="浏览器另存的 .mhtml / .html → 剪藏批次(没有剪藏页、或书签用不了时)")
+    q.add_argument("file")
+    q.add_argument("--url", help="原网页地址(文件里没记时补上,入库后作为出处)")
+    q.add_argument("--kb")
+    q.set_defaults(func=cmd_add)
     q = csub.add_parser("clean", help="删掉处理完的剪藏批次")
     q.add_argument("batches", nargs="+")
     q.add_argument("--discard", action="store_true", help="还没导入的也删(这次剪错了)")
