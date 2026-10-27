@@ -104,6 +104,36 @@ def _template() -> Dict:
     return tpl
 
 
+def _clip_origin(src: pathlib.Path) -> str:
+    """网页剪藏转出的 page.md(frontmatter kind: web-clip)→「来源 URL(网页剪藏,抓取于 …)」,其余返回空串。
+
+    出处写成原网页而不是 page.md:剪藏批次处理完就清掉了,page.md 指不回去;URL 随标准化文件进 sources/ 快照,
+    条目的出处顺着快照就能追到原网页(2026-10-27 端到端发现:入库的案例只剩 page.md,原网页地址丢了)。
+    """
+    if src.suffix.lower() != ".md":
+        return ""
+    try:
+        head = src.read_text(encoding="utf-8", errors="replace")[:4096]
+    except OSError:
+        return ""
+    if not head.startswith("---\nkind: web-clip\n"):
+        return ""
+    meta = {}
+    for line in head.split("\n---", 1)[0].splitlines()[1:]:
+        key, sep, value = line.partition(":")
+        if sep:
+            meta[key.strip()] = value.strip()
+    url = meta.get("source_url", "")
+    try:
+        url = json.loads(url) if url.startswith('"') else url
+    except ValueError:
+        pass
+    if not url:
+        return ""
+    when = meta.get("fetched_at", "")
+    return "%s(网页剪藏%s)" % (url, ",抓取于 %s" % when if when else "")
+
+
 def _table_work(path: pathlib.Path, snapshot_name: str) -> List[Dict]:
     """csv/xlsx:一行一单,列名能对上的字段先填好(仍由模型确认)。"""
     if path.suffix.lower() in (".xlsx", ".xls"):
@@ -179,7 +209,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
                 manifest["files"].append(entry)
                 continue
             else:
-                order = {"source": src.name, "text": text, "known": {}, "suggest": {}}
+                order = {"source": _clip_origin(src) or src.name, "text": text, "known": {}, "suggest": {}}
                 if src.suffix.lower() == ".pptx":
                     try:
                         media = kbextract.pptx_media(src, batch / "sources" / (src.stem + "-media"))

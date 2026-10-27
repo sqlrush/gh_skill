@@ -67,7 +67,7 @@ python3 {baseDir}/scripts/kb_init.py scan <文件或目录> [--batch 批次名]
 
 输出末尾会点名「需要你看图的」和「没能处理的」。**没能处理的不算导入**,要如实转告用户。
 老格式 `.xls` / `.rtf` / `.ppt`(以及 WPS 的 `.et` / `.wps` / `.dps`)读不了,输出里写明另存成什么(`.xlsx` / `.docx` / `.pptx`),照说即可。
-内网网页由 `gaussdb-kb` 的剪藏转成 `page.md` 后交到这里(`scan <page.md>`),按普通 md 处理;页内截图在同一批次的 `images/` 下。
+内网网页由 `gaussdb-kb` 的剪藏转成 `page.md` 后交到这里(`scan <page.md>`),按普通 md 处理;页内截图在同一批次的 `images/` 下。工作单的 `source` 已经是原网页地址(剪藏批次处理完会被清掉,出处不能写 page.md),草稿里不要改它。
 
 用户给的是自己电脑上的路径(`D:\…`、`~/Desktop/…`)时,skill 在沙箱里读不到:把收件目录告诉他
 (`$GSDB_KB_INBOX`,默认 `<kb>/inbox/uploads`),让他先通过对话界面上传,再用沙箱内路径重试。

@@ -140,6 +140,22 @@ def test_plain_text_orders_carry_no_images(tmp_path):
     assert w["image_paths"] == [] and w["image_path"] is None
 
 
+def test_a_web_clip_page_keeps_the_original_url_as_its_source(tmp_path):
+    """剪藏转出的 page.md 处理完就随批次清掉:出处要写原网页地址,否则入库的案例指回一个已经不在的 page.md。"""
+    kb = _kb(tmp_path)
+    src = tmp_path / "clip"
+    src.mkdir()
+    (src / "page.md").write_text('---\nkind: web-clip\nbatch: clip-20261027-103000-ab12\ntitle: "锁等待复盘"\n'
+                                 'source_url: "https://wiki.corp/display/OPS/lock"\nfetched_at: 2026-10-27T10:30:00+08:00\n'
+                                 'extracted_by: script\n---\n# 锁等待复盘\n\n现场:日终批量卡住,大量会话等 transactionid。\n',
+                                 encoding="utf-8")
+    (src / "plain.md").write_text("# 普通文档\n\n" + "现场描述。" * 10, encoding="utf-8")
+    kb_init.main(["scan", str(src), "--kb", str(kb)])
+    work = _work(kb, "clip")
+    assert work["page.md"]["source"] == "https://wiki.corp/display/OPS/lock(网页剪藏,抓取于 2026-10-27T10:30:00+08:00)"
+    assert work["plain.md"]["source"] == "plain.md"
+
+
 @pytest.mark.parametrize("name,want", [("台账.xls", ".xlsx"), ("说明.rtf", ".docx"), ("讲稿.ppt", ".pptx")])
 def test_old_formats_say_what_to_resave_as(tmp_path, capsys, name, want):
     kb = _kb(tmp_path)
