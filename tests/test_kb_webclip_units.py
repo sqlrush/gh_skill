@@ -165,6 +165,15 @@ def test_gb2312_page_is_decoded_by_its_declared_charset(tmp_path):
     assert "全量备份每周日凌晨执行" in (d / "page.md").read_text(encoding="utf-8")
 
 
+def test_bookmarklet_clip_is_utf8_even_when_the_page_declared_gbk(tmp_path):
+    """书签交来的是 JS 字符串(接收服务存 utf-8,meta.encoding=utf-8):页面里 <meta charset=gbk> 已经不作数。"""
+    kb = tmp_path / "kb"
+    html = ('<html><head><meta charset="gbk"><title>备份规范</title></head><body><article><h1>备份规范</h1><p>'
+            + "全量备份每周日凌晨执行,增量备份每天执行,备份保留三十天。" * 5 + "</p></article></body></html>")
+    d = _batch(kb, html=html.encode("utf-8"), meta={"encoding": "utf-8"})
+    w.convert(d, kb)
+    assert "全量备份每周日凌晨执行" in (d / "page.md").read_text(encoding="utf-8")
+
 def test_same_url_with_changed_content_points_at_the_earlier_batch(tmp_path):
     kb = tmp_path / "kb"
     old = _batch(kb, name="clip-20261020-090000-aaaa", meta={"sha256": "0" * 64})

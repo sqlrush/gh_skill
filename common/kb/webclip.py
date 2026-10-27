@@ -622,6 +622,10 @@ def convert(batch: pathlib.Path, kb: Optional[pathlib.Path] = None) -> Converted
             name = "img-%03d%s" % (k, ext)
             (batch / "images" / name).write_bytes(data)
             images[loc] = "images/%s" % name
+    elif meta.get("encoding") == "utf-8":
+        # 书签交来的是浏览器里的 JS 字符串,接收服务按 utf-8 存:页面里 <meta charset=gbk> 的声明已经不作数,
+        # 按声明解码会把每个汉字都解错
+        html = raw.decode("utf-8", "replace")
     else:
         html = htmldoc.decode(raw)
     md, stats = html_to_markdown(html, url, images, str(meta.get("title") or ""))
