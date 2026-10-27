@@ -30,7 +30,7 @@ from grmp_middleware.grmp_mock.server import App  # noqa: E402
 from common.grmp.settings import Settings  # noqa: E402
 from common.grmp.placeholder import ParamDef  # noqa: E402
 
-INVOKE_PATH = "/icbc/paas/aiops/grmp/diagnostic/agent/common-operations/invoke"
+INVOKE_PATH = "/example/grmp/diagnostic/agent/common-operations/invoke"
 TOKEN = "0123456789abcdef0123456789abcdef"
 DATA_IP = "10.0.0.9"
 

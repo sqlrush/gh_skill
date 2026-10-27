@@ -279,8 +279,8 @@ skill 侧的调用方，纯标准库 `urllib.request`。
 ### 5.1 路由与传输
 
 ```
-POST {base}/icbc/paas/aiops/grmp/diagnostic/agent/common-operations
-POST {base}/icbc/paas/aiops/grmp/diagnostic/agent/common-operations/invoke
+POST {base}/example/grmp/diagnostic/agent/common-operations
+POST {base}/example/grmp/diagnostic/agent/common-operations/invoke
 ```
 
 - 路径中**不含** `/dataip/{dataip}`（接口文档示例是错的，以客户实际调用为准）

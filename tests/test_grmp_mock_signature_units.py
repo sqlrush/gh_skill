@@ -15,7 +15,7 @@ from common.grmp.client import GrmpClient, GrmpError  # noqa: E402
 from common.grmp.settings import Settings  # noqa: E402
 from grmp_middleware.grmp_mock import instances as inst, server, signature, store as st  # noqa: E402
 
-LIST_PATH = "/icbc/paas/aiops/grmp/diagnostic/agent/common-operations"
+LIST_PATH = "/example/grmp/diagnostic/agent/common-operations"
 TOKEN = "0123456789abcdef0123456789abcdef"
 DATA_IP = "10.0.0.9"
 D = sm2.generate_private_key()

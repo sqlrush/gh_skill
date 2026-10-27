@@ -154,6 +154,9 @@ YAML"
     say "      echo \"export $TOK_ENV='<令牌>'\" >> $GHOME/grmp.env && chmod 600 $GHOME/grmp.env"
     say "      export $HOST_ENV='<HOST>'"
     say "      echo \"export $HOST_ENV='<HOST>'\" >> $GHOME/grmp.env && chmod 600 $GHOME/grmp.env"
+    warn "还要设置中间件接口路径前缀（中间件团队提供，以 / 开头，只写路径）："
+    say "      export GRMP_PATH_PREFIX='<路径前缀>'"
+    say "      echo \"export GRMP_PATH_PREFIX='<路径前缀>'\" >> $GHOME/grmp.env"
   else
     ask "应用分组名" "app1"; APP="$REPLY_VAL"
     ask "连接名" "og-prod"; CNAME="$REPLY_VAL"
@@ -262,6 +265,14 @@ from common import config
 e = config.api_endpoint()
 assert e.host and e.port, '端点 host/port 不完整'
 print('端点 %s:%s' % (e.host, e.port))"
+
+  check "中间件接口路径前缀已配置（GRMP_PATH_PREFIX）" python3 -c "
+import sys; sys.path.insert(0, '$DEST')
+from common.grmp import paths
+try:
+    print('路径前缀 %s' % paths.require())
+except paths.PrefixError as exc:
+    raise SystemExit(str(exc))"
 
   check "令牌可读取（${TOK_ENV}）" python3 -c "
 import sys; sys.path.insert(0, '$DEST')

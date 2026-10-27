@@ -204,6 +204,15 @@ def test_api_token_present_passes(box):
     assert "t0ken-for-test" not in proc.stdout, "令牌被打印出来了"
 
 
+def test_api_missing_path_prefix_is_reported_as_failure(box, monkeypatch):
+    """中间件接口路径前缀是部署配置(GRMP_PATH_PREFIX),没配必须判失败并说清缺什么 —— 不拿猜的前缀去请求。"""
+    monkeypatch.delenv("GRMP_PATH_PREFIX", raising=False)
+    proc = _run(box["tmp"], _api_answers(box["dest"], box["ghome"], box["rc"]),
+                env_extra={"GRMP_AUTH_TOKEN": "t0ken-for-test"})
+    assert "项失败" in proc.stdout and "GRMP_PATH_PREFIX" in proc.stdout, proc.stdout
+    assert "全部通过" not in proc.stdout
+
+
 # --- 保留已有配置 -------------------------------------------------------------
 
 def test_keeping_an_existing_api_config_still_tests_api(box):

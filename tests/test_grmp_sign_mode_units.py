@@ -1,8 +1,7 @@
 """过渡期:只带 Appkey + Timestamp,先不带 Signature(客户 2026-09-20)。
 
-客户原话:「考虑到 10 月研发周期较短,申请密钥审批周期也比较紧张……先帮忙安排调用 api 时
-请求头增加 Appkey 和 Timestamp 字段。Appkey 默认 F-GAUSS-AGENT,Timestamp 使用系统时间戳,
-单位秒,例如:1758431954」。
+客户的要求:密钥审批周期紧,先在调用 api 时请求头增加 Appkey 和 Timestamp 字段;Appkey 用中间件给的值,
+Timestamp 用系统时间戳,单位秒,例如 1758431954。
 
 原先只有两档——没配 Appkey 就什么都不发,配了 Appkey 就**必须**有 SM2 私钥,拿不到直接报错。
 中间没有档位,而客户要的正好是中间那一档。
@@ -27,7 +26,7 @@ from grmp_middleware.grmp_mock import signature as mocksig  # noqa: E402
 D = sm2.generate_private_key()
 D_HEX = "%064x" % D
 PUB = sm2.public_key(D)
-APPKEY = "F-GAUSS-AGENT"          # 客户给的默认值
+APPKEY = "EXAMPLE-AGENT"          # 样例;实际值由中间件给
 
 
 def _boom(name):

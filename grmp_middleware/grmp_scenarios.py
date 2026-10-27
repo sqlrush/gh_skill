@@ -38,7 +38,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 TOKEN = "0123456789abcdef0123456789abcdef"
 DATA_IP = "10.0.0.9"
 CONN = "og"
-PREFIX = "/icbc/paas/aiops/grmp/diagnostic/agent"
+from common.grmp import paths as grmp_paths                             # noqa: E402
+
+# 演示:没配就用样例前缀 —— 客户端与模拟中间件读的是同一个变量,两边一致
+os.environ.setdefault(grmp_paths.PREFIX_ENV, grmp_paths.EXAMPLE_PREFIX)
+PREFIX = grmp_paths.from_env()
 LIST_PATH = PREFIX + "/common-operations"
 INVOKE_PATH = LIST_PATH + "/invoke"
 RAW = os.environ.get("RAW") == "1"

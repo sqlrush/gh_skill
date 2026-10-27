@@ -18,7 +18,7 @@ from dataclasses import replace
 from typing import Any, Optional
 
 from .config import ConfigError, Connection, api_endpoint_if_configured, find, resolve
-from .grmp import proxy, signing, userid
+from .grmp import paths as grmp_paths, proxy, signing, userid
 from .grmp.client import GrmpClient, GrmpRunner
 from .grmp.errors import QueryError
 from .grmp.registry import Registry
@@ -242,6 +242,11 @@ def runner_for(
             raise AccessError(
                 "连接 %s 使用 grmp 驱动，但未配置 data_ip。" % conn.name
             )
+        # 接口路径前缀是部署配置(GRMP_PATH_PREFIX):没配就在这里报清楚,不拖到请求时表现成中间件 404
+        try:
+            grmp_paths.require()
+        except grmp_paths.PrefixError as exc:
+            raise AccessError("连接 %s 使用 grmp 驱动，%s" % (conn.name, exc)) from exc
         sock = proxy.socket_path()
         if sock:
             # 凭据代理(容器部署):本进程里没有令牌与私钥,中间件地址、签名、工号都由代理定,这里只管报文

@@ -20,7 +20,7 @@ from grmp_middleware.grmp_mock.executor import (  # noqa: E402
     DEFAULT_STATEMENT_TIMEOUT_SECONDS,
 )
 from grmp_middleware.grmp_mock.http_server import BIND_HOST, serve  # noqa: E402
-from grmp_middleware.grmp_mock.server import LIST_PATH, App  # noqa: E402
+from grmp_middleware.grmp_mock.server import App  # noqa: E402
 from common.grmp.settings import Settings  # noqa: E402
 from grmp_middleware.grmp_mock.store import ScriptStore  # noqa: E402
 
@@ -30,7 +30,7 @@ DEFAULT_INSTANCES = "~/.gdaa/grmp/instances.yaml"
 
 
 def banner(app_settings: Settings, store: ScriptStore, imap: inst.InstanceMap,
-           port: int, max_rows: int, timeout: int) -> str:
+           port: int, max_rows: int, timeout: int, list_path: str) -> str:
     lines = [
         "=" * 74,
         "grmp-mock —— GRMP 协议兼容中间件（测试替身）",
@@ -39,7 +39,7 @@ def banner(app_settings: Settings, store: ScriptStore, imap: inst.InstanceMap,
         "    本进程对 {{}} 采用文本替换而非绑定变量 —— 这是为复现客户行为",
         "    而刻意保留的注入面，对外暴露等于把它挂到网上。",
         "",
-        "监听      http://%s:%d%s" % (BIND_HOST, port, LIST_PATH),
+        "监听      http://%s:%d%s(路径前缀取 GRMP_PATH_PREFIX,没设用样例前缀)" % (BIND_HOST, port, list_path),
         "脚本      %d 条（is_valid=1）" % len(store.list_all()),
         "实例映射  %d 条" % imap.count(),
     ]
@@ -151,7 +151,7 @@ def main(argv: Sequence[str] = None) -> int:
     print(
         banner(
             settings, store, imap, args.port,
-            args.max_result_rows, args.statement_timeout,
+            args.max_result_rows, args.statement_timeout, app.list_path,
         ),
         file=sys.stderr,
         flush=True,

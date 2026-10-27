@@ -20,7 +20,9 @@ DB=/tmp/grmp_demo.db
 INST=$HOME/.gdaa/grmp/instances.yaml
 # 默认 8769：与 ~/.gdaa/config.yaml 里 og-grmp 的端口一致，场景 10 才能直接跑
 PORT=${GRMP_DEMO_PORT:-8769}
-BASE="http://127.0.0.1:$PORT/icbc/paas/aiops/grmp/diagnostic/agent/common-operations"
+# 接口路径前缀:与客户端、模拟中间件同一个变量;没设就用样例前缀
+export GRMP_PATH_PREFIX="${GRMP_PATH_PREFIX:-/example/grmp/diagnostic/agent}"
+BASE="http://127.0.0.1:$PORT$GRMP_PATH_PREFIX/common-operations"
 INVOKE="$BASE/invoke"
 Q="'"                                   # 单引号，避免多层转义
 

@@ -69,19 +69,20 @@ def test_requests_through_the_proxy_carry_no_credentials_and_no_user_id(fake_pro
     c = gc.GrmpClient(base_url="http://credproxy", token="", data_ip="10.0.0.9", proxy_socket=path)
     assert c.list_operations() == []
     url, headers, payload = seen[0]
-    assert url == gc.LIST_PATH and payload == {"dataIp": "10.0.0.9", "offset": 1, "limit": gc.LIST_PAGE_SIZE}
+    assert url == c.list_path == "/example/grmp/diagnostic/agent/common-operations"
+    assert payload == {"dataIp": "10.0.0.9", "offset": 1, "limit": gc.LIST_PAGE_SIZE}
     for h in ("auth", "appkey", "timestamp", "signature", "x-user-id"):
         assert h not in headers, h
 
 
 def test_proxy_errors_come_back_with_the_reason(fake_proxy):
     path, _seen, replies = fake_proxy
-    replies[gc.INVOKE_PATH] = (403, {"msg": "槽位不在用"})
-    replies[gc.LIST_PATH] = (200, {"code": "0", "result": {"list": [{"cmdName": "a.b", "id": "7"}],
-                                                          "hasNextPage": False}})
     c = gc.GrmpClient(base_url="http://credproxy", token="", data_ip="10.0.0.9", proxy_socket=path)
+    replies[c.invoke_path] = (403, {"msg": "槽位不在用"})
+    replies[c.list_path] = (200, {"code": "0", "result": {"list": [{"cmdName": "a.b", "id": "7"}],
+                                                         "hasNextPage": False}})
     with pytest.raises(gc.GrmpError) as exc:
-        c._post(gc.INVOKE_PATH, {"id": "7"})
+        c._post(c.invoke_path, {"id": "7"})
     assert "403" in str(exc.value) and "槽位不在用" in str(exc.value) and "凭据代理" in str(exc.value)
 
 
@@ -111,3 +112,20 @@ def test_access_goes_through_the_proxy_without_any_token(fake_proxy, monkeypatch
 def test_socket_path_reads_the_env():
     assert proxy.socket_path({proxy.ENV_SOCKET: " /run/credproxy/grmp.sock "}) == "/run/credproxy/grmp.sock"
     assert proxy.socket_path({}) == ""
+
+
+def test_the_path_prefix_is_deploy_config_not_code(monkeypatch):
+    """接口路径前缀部署时配置(GRMP_PATH_PREFIX):代码里没有默认值,没配就报清楚;配了就按它拼两个接口的路径。"""
+    monkeypatch.delenv("GRMP_PATH_PREFIX", raising=False)
+    with pytest.raises(gc.GrmpError) as exc:
+        gc.GrmpClient(base_url="http://h", token="t", data_ip="10.0.0.9")
+    assert "GRMP_PATH_PREFIX" in str(exc.value)
+    monkeypatch.setenv("GRMP_PATH_PREFIX", " /corp/x/grmp/diagnostic/agent/ ")
+    c = gc.GrmpClient(base_url="http://h", token="t", data_ip="10.0.0.9")
+    assert c.list_path == "/corp/x/grmp/diagnostic/agent/common-operations"
+    assert c.invoke_path == "/corp/x/grmp/diagnostic/agent/common-operations/invoke"
+    assert gc.GrmpClient(base_url="http://h", token="t", data_ip="1", path_prefix="/p").invoke_path == \
+        "/p/common-operations/invoke"
+    monkeypatch.setenv("GRMP_PATH_PREFIX", "corp/no-leading-slash")
+    with pytest.raises(gc.GrmpError):
+        gc.GrmpClient(base_url="http://h", token="t", data_ip="10.0.0.9")

@@ -19,16 +19,12 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Mapping, Optional
 
-from . import proxy, userid
+from . import paths, proxy, userid
 from .errors import QueryError
 from .hints import with_hint
 from .params import to_param_value
 
 _ERROR_BODY_MAX = 4000   # 4xx/5xx 响应体最多读这么多字节:够装一条 JDBC 报错,不够装一个页面
-
-PATH_PREFIX = "/icbc/paas/aiops/grmp/diagnostic/agent"
-LIST_PATH = PATH_PREFIX + "/common-operations"
-INVOKE_PATH = LIST_PATH + "/invoke"
 
 DEFAULT_TIMEOUT = 120
 LIST_PAGE_SIZE = 1000  # 协议上限；脚本数不多，一次拉完
@@ -80,10 +76,20 @@ class GrmpClient:
         signer: Optional[Any] = None,
         user_id: Optional[Any] = None,
         proxy_socket: str = "",
+        path_prefix: Optional[str] = None,
     ):
         # 经凭据代理时本进程里没有令牌:令牌、签名、工号都由代理加(common/grmp/proxy.py)
         if not token and not proxy_socket:
             raise GrmpError("缺少 auth 令牌")
+        # 接口路径前缀部署时配置(common/grmp/paths.py);不给就读环境变量 GRMP_PATH_PREFIX,都没有就报清楚
+        try:
+            prefix = paths.normalize(path_prefix) if path_prefix is not None else paths.require()
+        except paths.PrefixError as exc:
+            raise GrmpError(str(exc)) from None
+        if not prefix:
+            raise GrmpError("中间件接口路径前缀为空(%s)" % paths.PREFIX_ENV)
+        self.list_path = paths.list_path(prefix)
+        self.invoke_path = paths.invoke_path(prefix)
         self._proxy = proxy_socket
         self.base_url = base_url.rstrip("/")
         self.data_ip = data_ip
@@ -173,7 +179,7 @@ class GrmpClient:
         page = 1
         while True:
             body = self._post(
-                LIST_PATH,
+                self.list_path,
                 {"dataIp": self.data_ip, "offset": page, "limit": LIST_PAGE_SIZE},
             )
             # 接口一判成功只能看 code —— 业务错误也是 HTTP 200
@@ -225,7 +231,7 @@ class GrmpClient:
                 for key, val in values.items()
             ]
 
-        body = self._post(INVOKE_PATH, payload)
+        body = self._post(self.invoke_path, payload)
 
         # 两者缺一即按失败处理。只取 result.data 会把执行失败读成
         # 「查询结果为空」——「慢 SQL 返回 0 条」被读成「当前没有慢 SQL」。

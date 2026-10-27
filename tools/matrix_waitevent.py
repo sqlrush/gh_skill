@@ -27,10 +27,10 @@
 **运行本工具前必须先部署**（把仓库当前代码同步到 `GDAA_SKILLS_DIR` 指向
 的目录），否则测的是上一次部署时的旧代码：
 
-    ssh sqlrush@192.168.128.1 \\
+    ssh <用户>@<测试机> \\
       "cd ~/gh_skill && bash opencode_skill-main-v2-0729/install-opencode.sh \\
          --dest ~/.config/opencode/skills-dev"
-    ssh sqlrush@192.168.128.1 \\
+    ssh <用户>@<测试机> \\
       "cd /tmp && python3 ~/gh_skill/opencode_skill-main-v2-0729/tools/matrix_waitevent.py"
 
 **部署目标只认 skills-dev，绝不是 skills**：后者是用户在别的工具里正在用

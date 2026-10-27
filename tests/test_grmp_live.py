@@ -26,8 +26,8 @@ pytestmark = pytest.mark.live
 CONN = "og"
 TOKEN = "0123456789abcdef0123456789abcdef"
 DATA_IP = "10.0.0.9"
-INVOKE_PATH = "/icbc/paas/aiops/grmp/diagnostic/agent/common-operations/invoke"
-LIST_PATH = "/icbc/paas/aiops/grmp/diagnostic/agent/common-operations"
+INVOKE_PATH = "/example/grmp/diagnostic/agent/common-operations/invoke"
+LIST_PATH = "/example/grmp/diagnostic/agent/common-operations"
 
 REGISTRY = _ROOT / "scripts" / "registry"
 

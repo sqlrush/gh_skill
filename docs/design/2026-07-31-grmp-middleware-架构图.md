@@ -25,7 +25,7 @@
    ┌─────────────────────────┐            ┌─────────────────────────┐
    │  GRMP 平台               │            │  grmp-mock              │
    │  <客户接入地址>           │◄─ 协议一致 ─►│  127.0.0.1:18080        │
-   │  /icbc/paas/aiops/grmp   │            │  /icbc/paas/aiops/grmp  │
+   │  /example/grmp           │            │  /example/grmp          │
    └───────────┬─────────────┘            └───────────┬─────────────┘
                │                                      │
        ┌───────┴────────┐                     ┌───────┴────────┐
@@ -246,7 +246,7 @@ skill          grmp_client        grmp-mock       script_config      og5
 │
 ▼
 ┌─ ③ HTTP 报文（这一层完全是客户协议）
-│   POST http://127.0.0.1:18080/icbc/paas/aiops/grmp
+│   POST http://127.0.0.1:18080/example/grmp
 │        /diagnostic/agent/common-operations/invoke
 │   auth: <令牌，从 GRMP_AUTH_TOKEN 环境变量读取>
 │   Content-Type: application/json

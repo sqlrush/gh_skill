@@ -253,6 +253,20 @@ def test_grmp_driver_selects_the_middleware_runner(tmp_path, monkeypatch):
     assert runner.data_ip == "10.0.0.9"
 
 
+def test_middleware_runner_requires_the_path_prefix_at_construction(tmp_path, monkeypatch):
+    """中间件接口路径前缀是部署配置(GRMP_PATH_PREFIX):没配就在造 runner 时报清楚,经凭据代理也一样。"""
+    monkeypatch.setenv("GRMP_REGISTRY", str(_registry(tmp_path)))
+    monkeypatch.setenv("GRMP_AUTH_TOKEN", "x" * 32)
+    monkeypatch.delenv("GRMP_PATH_PREFIX", raising=False)
+    with pytest.raises(access.AccessError) as exc:
+        access.runner_for(_conn(driver="grmp", data_ip="10.0.0.9"))
+    assert "GRMP_PATH_PREFIX" in str(exc.value)
+    monkeypatch.setenv("GRMP_PROXY_SOCKET", "/tmp/nope.sock")
+    with pytest.raises(access.AccessError) as exc:
+        access.runner_for(_conn(driver="grmp", data_ip="10.0.0.9"))
+    assert "GRMP_PATH_PREFIX" in str(exc.value)
+
+
 def test_middleware_runner_requires_the_token_at_construction(tmp_path, monkeypatch):
     """令牌只从环境变量读；缺失即报错，不等到第一次请求才失败。"""
     monkeypatch.setenv("GRMP_REGISTRY", str(_registry(tmp_path)))

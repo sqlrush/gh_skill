@@ -46,8 +46,8 @@ def _check(headers, path, settings=None):
 
 def test_headers_carry_appkey_millisecond_timestamp_and_verifiable_signature():
     signer = signing.RequestSigner(_settings(), clock=lambda: 1726650000.123)
-    headers = signer.headers("/icbc/paas/aiops/grmp/diagnostic/agent/common-operations/invoke")
-    ts = _check(headers, "/icbc/paas/aiops/grmp/diagnostic/agent/common-operations/invoke")
+    headers = signer.headers("/example/grmp/diagnostic/agent/common-operations/invoke")
+    ts = _check(headers, "/example/grmp/diagnostic/agent/common-operations/invoke")
     assert ts == "1726650000123"
 
 
@@ -158,7 +158,7 @@ def test_client_sends_auth_plus_three_signature_headers(monkeypatch):
     req = sent[0]
     assert req.get_header("Auth") == "tok"
     got = {k: v for k, v in req.header_items() if k in ("Appkey", "Timestamp", "Signature")}
-    _check(got, "/icbc/paas/aiops/grmp/diagnostic/agent/common-operations")
+    _check(got, "/example/grmp/diagnostic/agent/common-operations")
 
 
 def test_client_without_signer_sends_only_auth(monkeypatch):

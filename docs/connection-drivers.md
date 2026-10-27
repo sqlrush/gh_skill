@@ -49,6 +49,8 @@ api_connection:
       # payload: "{path}+{timestamp}"   签名原文,只认这两个占位符;path 是请求路径(上下文根)
 ```
 
+**中间件接口路径前缀(必填,2026-10-26 起)**:环境变量 `GRMP_PATH_PREFIX`,由中间件团队提供,以 `/` 开头、只写路径、末尾不带 `/`(形如 `/xxx/grmp/diagnostic/agent`);技能请求 `<前缀>/common-operations` 与 `<前缀>/common-operations/invoke`。代码里没有默认值,没配时登录直接报「GRMP_PATH_PREFIX 没配」。本地模拟中间件读同一个变量,没设时用样例前缀 `/example/grmp/diagnostic/agent`。
+
 签名相关的环境变量(都优先于配置文件):`GRMP_APPKEY`、`GRMP_SM2_PRIVATE_KEY`、`GRMP_SIGN_USER_ID`、`GRMP_SIGN_TIMESTAMP`、`GRMP_SIGN_FORMAT`、`GRMP_SIGN_ENCODING`、`GRMP_SIGN_PAYLOAD`。配了 appkey 却拿不到私钥、或某个旋钮的值不认识,**在建连接时就报错**,不会拖到中间件回鉴权失败。本地对照:`grmp_middleware.grmp_mock --appkey <名> --sm2-public-key <hex 或 @pem 文件>`(还有 `--sign-*` 同名旋钮),skill 侧配一样的值,对不上在本地先暴露。
 
 ### api 模式的实例别名（可选）

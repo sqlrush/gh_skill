@@ -21,17 +21,16 @@ from .executor import (
 )
 from .instances import InstanceMap
 from .signature import SignaturePolicy
+from common.grmp import paths as grmp_paths
 from common.grmp.placeholder import ParamError
 from common.grmp.settings import Settings
 from .store import ScriptStore
 
-PATH_PREFIX = "/icbc/paas/aiops/grmp/diagnostic/agent"
-LIST_PATH = PATH_PREFIX + "/common-operations"
-INVOKE_PATH = LIST_PATH + "/invoke"
-
-# 接口文档的示例 URL 多了一段 /dataip/{dataip}，客户实际调用没有。
-# 一并接受这种写法：照着文档写的客户端若拿到 404，排查方向会被带偏。
-_DATAIP_SEGMENT_RE = re.compile(r"^%s/dataip/[^/]+(?P<rest>/.*)$" % re.escape(PATH_PREFIX))
+# 接口路径前缀:与客户端同一个变量 GRMP_PATH_PREFIX(common/grmp/paths.py);没设就用样例前缀。
+# 下面两个常量是**默认前缀**下的路径,给单测与启动横幅用;App 实际用的是自己的 list_path / invoke_path。
+DEFAULT_PATH_PREFIX = grmp_paths.EXAMPLE_PREFIX
+LIST_PATH = grmp_paths.list_path(DEFAULT_PATH_PREFIX)
+INVOKE_PATH = grmp_paths.invoke_path(DEFAULT_PATH_PREFIX)
 
 DEFAULT_OFFSET = 1
 DEFAULT_LIMIT = 10
@@ -73,7 +72,15 @@ class App:
         statement_timeout: int = DEFAULT_STATEMENT_TIMEOUT_SECONDS,
         standby: bool = False,
         signature: Optional[SignaturePolicy] = None,
+        path_prefix: Optional[str] = None,
     ):
+        prefix = grmp_paths.normalize(path_prefix) if path_prefix is not None else grmp_paths.from_env()
+        self.path_prefix = prefix or DEFAULT_PATH_PREFIX
+        self.list_path = grmp_paths.list_path(self.path_prefix)
+        self.invoke_path = grmp_paths.invoke_path(self.path_prefix)
+        # 接口文档的示例 URL 多了一段 /dataip/{dataip}，客户实际调用没有。
+        # 一并接受这种写法：照着文档写的客户端若拿到 404，排查方向会被带偏。
+        self._dataip_re = re.compile(r"^%s/dataip/[^/]+(?P<rest>/.*)$" % re.escape(self.path_prefix))
         self._store = store
         self._instances = instances
         self._token = token
@@ -96,8 +103,8 @@ class App:
         headers: Mapping[str, str],
         body: bytes,
     ) -> Tuple[int, Dict[str, Any]]:
-        route = _normalise_path(path)
-        if route not in (LIST_PATH, INVOKE_PATH):
+        route = self._normalise_path(path)
+        if route not in (self.list_path, self.invoke_path):
             return 404, {"error": "no such route: %s" % path}
         if method.upper() != "POST":
             return 405, {"error": "method not allowed: %s" % method}
@@ -111,10 +118,18 @@ class App:
                 return 200, envelope.error(
                     "签名校验失败：%s（本实现约定：客户环境此场景的响应形态未知）" % reason)
 
-        if route == INVOKE_PATH:
+        if route == self.invoke_path:
             return self._invoke_operation(body)
 
         return self._list_operations(body)
+
+    def _normalise_path(self, path: str) -> str:
+        """去掉查询串，并把 /dataip/{ip}/ 这一段折叠掉（body 里的 dataIp 才作数）。"""
+        path = path.split("?", 1)[0].rstrip("/") or "/"
+        match = self._dataip_re.match(path)
+        if match:
+            return self.path_prefix + match.group("rest")
+        return path
 
     # -- 鉴权 -------------------------------------------------------------
 
@@ -309,15 +324,6 @@ def _parse_operation_values(raw: Any) -> Tuple[Dict[str, str], Optional[str]]:
             return {}, "参数 %s 重复传入" % name
         values[name] = value
     return values, None
-
-
-def _normalise_path(path: str) -> str:
-    """去掉查询串，并把 /dataip/{ip}/ 这一段折叠掉（body 里的 dataIp 才作数）。"""
-    path = path.split("?", 1)[0].rstrip("/") or "/"
-    match = _DATAIP_SEGMENT_RE.match(path)
-    if match:
-        return PATH_PREFIX + match.group("rest")
-    return path
 
 
 def _parse_json_object(

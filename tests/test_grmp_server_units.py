@@ -18,7 +18,7 @@ from grmp_middleware.grmp_mock.server import App  # noqa: E402
 from common.grmp.settings import Settings  # noqa: E402
 from common.grmp.placeholder import ParamDef  # noqa: E402
 
-LIST_PATH = "/icbc/paas/aiops/grmp/diagnostic/agent/common-operations"
+LIST_PATH = "/example/grmp/diagnostic/agent/common-operations"
 INVOKE_PATH = LIST_PATH + "/invoke"
 
 TOKEN = "0123456789abcdef0123456789abcdef"
@@ -154,7 +154,7 @@ def test_dataip_path_variant_is_accepted_with_body_taking_precedence(app):
     客户端会拿到 404，排查方向会被带偏）；冲突时以 body 为准。
     """
     path = (
-        "/icbc/paas/aiops/grmp/diagnostic/agent/dataip/%s/common-operations"
+        "/example/grmp/diagnostic/agent/dataip/%s/common-operations"
         % UNKNOWN_IP
     )
     status, body = app.handle(
