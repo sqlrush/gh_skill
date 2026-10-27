@@ -42,6 +42,7 @@ def test_status_when_clipping_is_not_enabled_says_who_must_configure_it(tmp_path
     assert kb.main(["clip", "status", "--kb", str(_kbdir(tmp_path))]) == 0
     out = capsys.readouterr().out
     assert "未开启" in out and "KB_CLIP_ORIGINS" in out and "/kb-import/clip/install" in out
+    assert "kb.py clip add" in out, "没有剪藏页时要告诉模型另一条路"
 
 
 def test_status_reports_origins_url_check_and_the_users_last_clip(tmp_path, capsys, monkeypatch):

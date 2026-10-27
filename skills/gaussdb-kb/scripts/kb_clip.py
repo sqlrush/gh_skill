@@ -85,7 +85,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     else:
         print("剪藏        : **未开启** —— 平台要在 agent-config 里配 KB_CLIP_ORIGINS(允许剪藏的内网网站,"
               "如 https://wiki.内网),改完重启网关与导入环境")
-    print("接收服务    : %s" % ("在运行" if info["receiver"] else "没有(导入环境的版本不带剪藏接收,请平台升级)"))
+    print("接收服务    : %s" % ("在运行" if info["receiver"] else "没有(单机版没有剪藏页;容器版是导入镜像太旧,请平台升级)"))
+    if not (info["enabled"] and info["receiver"]):
+        print("另一条路    : 浏览器「另存为 → 网页,单个文件(.mhtml)」,上传到收件目录后 kb.py clip add <文件>,再 clip ingest")
     print("安装书签    : [打开安装页](%s)(把页面上的「导入知识库」拖到书签栏)" % info["install_url"])
     if info["latest"]:
         lt = info["latest"]
