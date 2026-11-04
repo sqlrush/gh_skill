@@ -333,4 +333,4 @@ def test_kb_health_gives_the_dashboard_link_when_archived(kb, capsys, monkeypatc
     monkeypatch.setenv("GSDB_REPORTS_DIR", str(tmp_path / "reports"))
     rc, out = run(capsys, "health", "--kb", str(kb))
     assert (tmp_path / "reports" / "kb" / "health.json").is_file()
-    assert "[打开知识库大盘](/dash/kb)" in out, "health 存档后要给大盘知识库页的直达链接"
+    assert "已存入报告存档" in out and "/dash/kb" not in out, "报告由行方前端调用,回答里不给大盘链接"

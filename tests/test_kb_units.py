@@ -323,7 +323,7 @@ def test_contract_tells_the_model_to_mark_kb_content_blue():
     text = _template()
     assert KB_MARK in text and OFFICIAL_MARK in text
     assert "不上色" in text, "要写明哪些不上色:诊断结果、你自己的分析、通用经验"
-    assert "(引用自" in text and "贵行规范库" in text and "GaussDB 官方文档库" in text, "句后括号写出处,库名按类型"
+    assert "(引用自" in text and "本行规范库" in text and "GaussDB 官方文档库" in text, "句后括号写出处,库名按类型"
     assert "知识库中未找到相关内容,以下为通用知识,仅供参考" in text, "兜底说法统一成这一种"
     assert "代码块里不放标签" in text, "代码块里的标签不变色,还会原样露出来"
     assert "不加引号" in text and "加粗" in text, "引号被写成中文引号、标签里加粗,都会让蓝色失效(测试环境实测)"
