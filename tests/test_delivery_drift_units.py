@@ -1,12 +1,12 @@
 """交付物与 registry 的防漂移闸。
 
-`docs/delivery/scripts*.sql` 是要发给客户、逐条灌进生产库 script_config 的
+`docs/delivery/scripts*.sql` 是要发给行方、逐条灌进生产库 script_config 的
 DML。它们由 registry 生成，但**生成之后就是两份独立的文件** —— 改了 registry
 不重新生成，两边就悄悄分家：
 
-  · 新增脚本没进 DML   → 客户环境缺脚本，表现成某个 skill 突然报「脚本不存在」
-  · 改了 SQL 没进 DML  → 客户跑的还是旧 SQL，而本地测试全绿
-  · 删了脚本没进 DML   → 客户库里留着没人维护的死 SQL
+  · 新增脚本没进 DML   → 现场环境缺脚本，表现成某个 skill 突然报「脚本不存在」
+  · 改了 SQL 没进 DML  → 行方跑的还是旧 SQL，而本地测试全绿
+  · 删了脚本没进 DML   → 行方库里留着没人维护的死 SQL
 
 三种都不会让任何测试变红，这正是要在这里钉死的原因。
 
@@ -51,7 +51,7 @@ _INSERT_NAME = re.compile(
 def _shipped_names(text):
     """DML 里实际带出的脚本逻辑名。
 
-    直接数 INSERT 行，不看头部注释。scripts.sql 已改成客户真实的 DML 形态
+    直接数 INSERT 行，不看头部注释。scripts.sql 已改成行方真实的 DML 形态
     （手工维护，没有生成器写的 `-- name -> id=` 清单）——之前只读注释，
     对这一份读出来是空集合，「缺了/多了/正文变了」三道闸全部空转、全绿。
     """
@@ -91,21 +91,21 @@ def test_shipped_script_names_match_registry(filename, exclude_unused):
     missing, extra = want - have, have - want
     assert not missing, (
         "%s 里缺了 %d 条脚本：%s\n改了 registry 之后没重新生成交付物 —— "
-        "客户环境会缺这些脚本。重新生成：\n%s"
+        "现场环境会缺这些脚本。重新生成：\n%s"
         % (filename, len(missing), "、".join(sorted(missing)),
            _REGEN % ("--exclude-unused" if exclude_unused else "--include-unused",
                      filename)))
     assert not extra, (
         "%s 里多了 %d 条 registry 里已经没有的脚本：%s\n"
-        "它们会被灌进客户生产库却没人维护。"
+        "它们会被灌进生产库却没人维护。"
         % (filename, len(extra), "、".join(sorted(extra))))
 
 
 @pytest.mark.parametrize("filename,exclude_unused", sorted(_ARTIFACTS.items()))
 def test_shipped_sql_bodies_match_registry(filename, exclude_unused):
-    """名单对得上还不够 —— SQL 正文改了没重新生成，客户跑的是旧 SQL。
+    """名单对得上还不够 —— SQL 正文改了没重新生成，行方跑的是旧 SQL。
 
-    这种漂移最难发现：名单一致、条数一致、报告一切正常，只有客户那边的
+    这种漂移最难发现：名单一致、条数一致、报告一切正常，只有行方那边的
     行为跟测试环境不一样。
     """
     text = _delivery_text(filename)
@@ -120,7 +120,7 @@ def test_shipped_sql_bodies_match_registry(filename, exclude_unused):
             drifted.append(name)
     assert not drifted, (
         "%s 里这 %d 条脚本的 SQL 正文与 registry 不一致：%s\n"
-        "名单和条数都对得上，只有正文变了 —— 客户跑的会是旧 SQL，"
+        "名单和条数都对得上，只有正文变了 —— 行方跑的会是旧 SQL，"
         "而本地测试全绿。重新生成：\n%s"
         % (filename, len(drifted), "、".join(drifted),
            _REGEN % ("--exclude-unused" if exclude_unused else "--include-unused",
@@ -130,7 +130,7 @@ def test_shipped_sql_bodies_match_registry(filename, exclude_unused):
 def test_delivery_doc_states_the_current_count():
     """08-初始化白名单.md 里写的条数要跟实际 DML 对得上。
 
-    那个数字是给客户做变更评审用的 —— 对不上时，评审按文档批了 74 条，
+    那个数字是给行方做变更评审用的 —— 对不上时，评审按文档批了 74 条，
     实际灌进去 77 条，差额没有任何人看过。
     """
     doc = _DELIVERY / "08-初始化白名单.md"
@@ -140,7 +140,7 @@ def test_delivery_doc_states_the_current_count():
                             re.MULTILINE))
     assert str(actual) in doc.read_text(encoding="utf-8"), (
         "文档里找不到实际条数 %d —— 交付 DML 变了，说明书没跟着改。"
-        "客户会按文档里的旧数字做变更评审。" % actual)
+        "行方会按文档里的旧数字做变更评审。" % actual)
 
 
 def test_dry_run_refuses_to_pretend_it_exported():
@@ -158,10 +158,10 @@ def test_dry_run_refuses_to_pretend_it_exported():
 #
 # **这道闸是 2026-10-18 的事故补的。** 那天我给 registry 加了新脚本后，用
 # `grmp_register --dml-out docs/delivery/scripts.sql` 重新生成了交付物 ——
-# 而 scripts.sql 是**手工维护成客户真实 DML 形态**的（见文件头那几行注释），
+# 而 scripts.sql 是**手工维护成行方真实 DML 形态**的（见文件头那几行注释），
 # 生成器的默认形态和它差六处：
 #
-#   | 项           | 客户真实形态                     | 生成器默认      |
+#   | 项           | 行方真实形态                     | 生成器默认      |
 #   |--------------|----------------------------------|-----------------|
 #   | 表名         | grmp.script_config               | grmp.grmp.script_config |
 #   | id           | grmp.script_config_seq.nextval   | 硬编码 '130'    |
@@ -171,8 +171,8 @@ def test_dry_run_refuses_to_pretend_it_exported():
 #   | uuid 列      | 有，值 uuid()                    | **整列缺失**    |
 #
 # 上面那三道闸（脚本名集合 / SQL 正文 / 条数）**全部通过** —— 它们只比
-# 脚本名和 script_content，不看 DML 外壳。于是一份客户导不进去的文件
-# 一路绿灯走到了「发给客户」那一步。
+# 脚本名和 script_content，不看 DML 外壳。于是一份行方导不进去的文件
+# 一路绿灯走到了「发给行方」那一步。
 #
 # scripts-full.sql 不在这道闸的范围内：它本来就是生成器形态，只供本地复现。
 
@@ -184,15 +184,15 @@ def _shipped_text():
 
 
 def test_the_table_name_is_not_double_schema_qualified():
-    """`grmp.grmp.script_config` 是生成器的默认形态，客户库里没有这个对象。"""
+    """`grmp.grmp.script_config` 是生成器的默认形态，行方库里没有这个对象。"""
     text = _shipped_text()
     assert "grmp.grmp.script_config" not in text, \
-        "scripts.sql 被生成器覆盖过了：表名多了一层 schema，客户导入会直接报对象不存在"
+        "scripts.sql 被生成器覆盖过了：表名多了一层 schema，本行导入会直接报对象不存在"
     assert "INSERT INTO grmp.script_config (" in text
 
 
 def test_ids_come_from_the_sequence_not_hardcoded():
-    """硬编码 id 会和客户库里已有记录冲突 —— 而且冲突是在客户那边才暴露。"""
+    """硬编码 id 会和行方库里已有记录冲突 —— 而且冲突是在行方那边才暴露。"""
     assert "grmp.script_config_seq.nextval" in _shipped_text()
     bad = re.findall(r"VALUES \('(\d+)', 'SQL'", _shipped_text())
     assert not bad, "有 %d 条硬编码了 id：%s" % (len(bad), bad[:5])
@@ -209,9 +209,9 @@ def test_the_uuid_column_is_present_in_every_insert():
 
 
 @pytest.mark.parametrize("token,why", [
-    ("'appbusiness'", "database_type 客户用 appbusiness，生成器默认 postgres"),
-    ("'999999999'", "create_user 客户用 999999999，生成器默认 grmp-register"),
-    ("now()", "create_time 客户用 now()，生成器写死时间戳"),
+    ("'appbusiness'", "database_type 行方用 appbusiness，生成器默认 postgres"),
+    ("'999999999'", "create_user 行方用 999999999，生成器默认 grmp-register"),
+    ("now()", "create_time 行方用 now()，生成器写死时间戳"),
 ])
 def test_the_customer_envelope_fields_are_kept(token, why):
     assert token in _shipped_text(), why

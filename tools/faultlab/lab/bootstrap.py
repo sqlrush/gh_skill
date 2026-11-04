@@ -8,7 +8,7 @@
 
 **为什么要 SYSADMIN:** 实验要读别人的会话(`pg_locks` / `pg_thread_wait_status` 全库视图)、
 建复制槽、做 VACUUM FULL、打 WDR 快照。og5 是一次性测试容器,给够权限比在场景里
-到处绕权限简单得多;客户环境永远不会跑这套东西(指纹核对会拦住)。
+到处绕权限简单得多;现场环境永远不会跑这套东西(指纹核对会拦住)。
 """
 from __future__ import annotations
 

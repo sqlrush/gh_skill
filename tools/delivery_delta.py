@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""生成白名单的**增量导入包** —— 相对客户已导入的那一版,只含新增与变更。
+"""生成白名单的**增量导入包** —— 相对行方已导入的那一版,只含新增与变更。
 
     python3 tools/delivery_delta.py --base origin/main --out docs/delivery/scripts-delta-YYYYMMDD.sql
 
@@ -8,13 +8,13 @@
 文件在报告里完全不存在。手写清单靠记忆,而记忆恰恰会漏掉「顺手改过的那几条」。
 
 所以清单一律**自动算**:拿 `--base` 那个 git 版本里的 docs/delivery/scripts.sql
-(= 客户在用的那份)对比当前的 docs/delivery/scripts.sql(= 交付集),逐条比脚本名
+(= 行方在用的那份)对比当前的 docs/delivery/scripts.sql(= 交付集),逐条比脚本名
 与 SQL 正文。说明文字从 docs/delivery/delta-notes.yaml 读;**任何一条新增或变更
 在那里没有说明,直接报错退出** —— 不许静默地出一个缺条目的包。
 
-输出的 DML 用**客户真实形态**(与 scripts.sql 一致:表 grmp.script_config、
+输出的 DML 用**行方真实形态**(与 scripts.sql 一致:表 grmp.script_config、
 id 走 seq.nextval、uuid()、now()…),不是 grmp_register 的生成器形态 ——
-后者客户导不进去(同一天踩过,见 tests/test_delivery_drift_units.py 末尾那段)。
+后者行方导不进去(同一天踩过,见 tests/test_delivery_drift_units.py 末尾那段)。
 """
 from __future__ import annotations
 
@@ -98,7 +98,7 @@ def diff(base_ref: str):
 
 
 def params_changed(base_ref: str, names, base: str = "", reg: dict = None) -> set:
-    """参数定义变了的脚本。**只改正文不改参数,客户的中间件不认新参数** —— 2026-10-24 health.stale_stats
+    """参数定义变了的脚本。**只改正文不改参数,行方的中间件不认新参数** —— 2026-10-24 health.stale_stats
     加了 min_pages,第一版增量包只 UPDATE 了 script_content,导进去之后健康检查一调就会被拒。"""
     pb = params(base or _base_dml(base_ref))
     reg = reg or registry()
@@ -194,7 +194,7 @@ def render(added, changed, notes, n_base, n_now, date, pchanged=frozenset()) -> 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--base", default="origin/main",
-                    help="客户在用的那一版所在的 git 版本(默认 origin/main)")
+                    help="行方在用的那一版所在的 git 版本(默认 origin/main)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--date", required=True, help="写进文件头的日期,如 2026-10-18")
     a = ap.parse_args(argv)
@@ -208,9 +208,9 @@ def main(argv=None) -> int:
               "不许出一个缺条目的包:\n  %s" % (NOTES.name, "\n  ".join(miss)), file=sys.stderr)
         return 2
     if gone:
-        # 删除脚本需要客户手工处置(DELETE 有风险,不自动生成),但必须让人看见
-        print("warning: 这些脚本在客户那版里有、现在没了,增量包**不**生成 DELETE,"
-              "请人工确认是否要客户删除:\n  %s" % "\n  ".join(gone), file=sys.stderr)
+        # 删除脚本需要行方手工处置(DELETE 有风险,不自动生成),但必须让人看见
+        print("warning: 这些脚本在行方那版里有、现在没了,增量包**不**生成 DELETE,"
+              "请人工确认是否要行方删除:\n  %s" % "\n  ".join(gone), file=sys.stderr)
     pchanged = params_changed(a.base, changed) if changed else set()
     pathlib.Path(a.out).write_text(render(added, changed, notes, nb, nn, a.date, pchanged), encoding="utf-8")
     print("写出 %s:新增 %d、更新 %d(其中参数定义也变了 %d:%s)(基线 %s,%d → %d 条)"

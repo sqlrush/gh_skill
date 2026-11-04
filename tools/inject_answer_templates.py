@@ -5,7 +5,7 @@
 
 做法与公共安全红线(tools/inject_red_lines.py)相同:正文只有一份,按技能所属类型拼好后注入,
 tests/test_answer_templates_units.py 保证每份副本与正文逐字一致 —— 改了正文忘了注入、或哪份被手工改坏,都在那里变红。
-为什么不只写在 AGENTS.md:客户换技能目录时不一定换 AGENTS.md,而模型执行某个技能时最先照着读的是那个技能的 SKILL.md。
+为什么不只写在 AGENTS.md:行方换技能目录时不一定换 AGENTS.md,而模型执行某个技能时最先照着读的是那个技能的 SKILL.md。
 
 用法:
     python3 tools/inject_answer_templates.py            # 注入 / 刷新
@@ -44,7 +44,7 @@ SKILL_PARTS: Dict[str, Tuple[str, ...]] = {
     "gaussdb-kb": ("common", "qa", "cite"),
 }
 # 刻意不套模板的:登录、取 SQL 文本、导入流程是操作而不是分析;存储过程源码查看与耗时排名是取数;
-# SQL 审查按客户原有的「SQL 审查输出」格式(2026-10-26 定)。gaussdb-kb-import 只在容器线(gh_agent_k8s)有,
+# SQL 审查按行方原有的「SQL 审查输出」格式(2026-10-26 定)。gaussdb-kb-import 只在容器线(gh_agent_k8s)有,
 # 是管理员的导入环境,与 gaussdb-kb-init 一样是操作流程。本文件两个仓库同一份。
 UNTEMPLATED = ("gaussdb-login", "gaussdb-sqlfetch", "gaussdb-kb-init", "gaussdb-kb-import", "gaussdb-procinfo",
                "gaussdb-topproc", "gaussdb-sqlreview")

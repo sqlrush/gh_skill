@@ -252,7 +252,7 @@ def assert_expected_instance(c: Conn) -> Dict[str, Any]:
     """核对实例指纹。
 
     **为什么要有这一关:** 这套脚本会关表级 autovacuum、建复制槽、做 VACUUM FULL、
-    留孤儿两阶段事务。跑在客户库或别人的测试库上就是事故,而连错库在命令行上
+    留孤儿两阶段事务。跑在行方库或别人的测试库上就是事故,而连错库在命令行上
     看不出任何异样 —— 所以宁可多一道核对。
     """
     fp = fingerprint(c)

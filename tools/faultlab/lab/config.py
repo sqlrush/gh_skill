@@ -37,7 +37,7 @@ DEFAULT_CONN = {
 }
 
 # 实例指纹:prepare / run 前核对,对不上就拒绝动手。
-# 防的是「以为连的是 og5、其实连到客户库上」—— 这套脚本会关 autovacuum、建复制槽、
+# 防的是「以为连的是 og5、其实连到行方库上」—— 这套脚本会关 autovacuum、建复制槽、
 # 做 VACUUM FULL,跑错库是事故。
 EXPECT_FINGERPRINT = {
     "port": 5432,               # 容器内端口
@@ -91,7 +91,7 @@ class Table(NamedTuple):
 
 
 TABLES: Tuple[Table, ...] = (
-    Table("customers", 200_000, "客户维表,其中 1 个大客户占 30% 订单 —— 数据倾斜的来源"),
+    Table("customers", 200_000, "行方维表,其中 1 个大行方占 30% 订单 —— 数据倾斜的来源"),
     Table("products", 50_000, "商品维表"),
     Table("orders", 1_000_000, "订单主表,慢 SQL 的驱动表"),
     Table("order_items", 3_000_000, "订单明细,慢 SQL 里最大的那张表"),
@@ -121,7 +121,7 @@ TABLES: Tuple[Table, ...] = (
 RUNTIME_TABLES = ("xact_tick", "subx_log", "maint_hist", "dl_child")
 DL_CHILD_ROWS = next(t.rows for t in TABLES if t.name == "dl_child")
 
-BIG_CUSTOMER_ID = 1            # 占 30% 订单的那个大客户
+BIG_CUSTOMER_ID = 1            # 占 30% 订单的那个大行方
 PARTITIONS = 1000              # part_log 的分区数
 IMPORT_ROWS = 500_000          # V7 一次导入的行数
 

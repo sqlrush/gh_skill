@@ -2,7 +2,7 @@
 
 **这个工具存在的原因:** 2026-10-18 第一次出增量包时清单是手写的,漏了 4 条正文变更 ——
 其中 wdr.file_io 修的是物理读少报 62%、写得最多的那个文件在报告里完全不存在。
-下面钉住三件事:清单是**算**出来的、缺说明会**报错**、输出是**客户真实形态**。
+下面钉住三件事:清单是**算**出来的、缺说明会**报错**、输出是**行方真实形态**。
 """
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ class _Rec:
 
 def test_a_parameter_change_is_a_change_and_the_update_carries_it(monkeypatch):
     """2026-10-24:health.stale_stats 加了参数 min_pages,第一版增量包只 UPDATE 了正文 ——
-    客户的中间件不认新参数,导进去健康检查一调就被拒。参数定义变了也算变更,UPDATE 要一并带上。"""
+    行方的中间件不认新参数,导进去健康检查一调就被拒。参数定义变了也算变更,UPDATE 要一并带上。"""
     old_p = '[{"key":"limit","value":"","type":"INTEGER","autoAcquire":false}]'
     new_p = ('[{"key":"limit","value":"","type":"INTEGER","autoAcquire":false},'
              '{"key":"min_pages","value":"","type":"INTEGER","autoAcquire":false}]')
@@ -91,7 +91,7 @@ def test_a_missing_note_refuses_to_produce_a_package(monkeypatch, tmp_path, caps
 
 
 def test_removed_scripts_are_warned_about_not_silently_ignored(monkeypatch, tmp_path, capsys):
-    """客户那版里有、现在没了 —— 不自动生成 DELETE(有风险),但必须让人看见。"""
+    """行方那版里有、现在没了 —— 不自动生成 DELETE(有风险),但必须让人看见。"""
     monkeypatch.setattr(DD, "diff", lambda base: ([], [], ["x.gone"], 1, 0))
     monkeypatch.setattr(DD, "render", lambda *a, **k: "")
     notes = tmp_path / "n.yaml"
@@ -104,7 +104,7 @@ def test_removed_scripts_are_warned_about_not_silently_ignored(monkeypatch, tmp_
 @pytest.mark.parametrize("p", sorted((_ROOT / "docs" / "delivery").glob("scripts-delta-*.sql")),
                          ids=lambda p: p.name)
 def test_the_real_package_matches_the_customer_shape(p):
-    """仓库里每一份真实的增量包都必须是客户形态 —— 生成器形态客户导不进去。"""
+    """仓库里每一份真实的增量包都必须是行方形态 —— 生成器形态行方导不进去。"""
     text = p.read_text(encoding="utf-8")
     n_ins = text.count("INSERT INTO grmp.script_config (")
     assert "grmp.grmp.script_config" not in text

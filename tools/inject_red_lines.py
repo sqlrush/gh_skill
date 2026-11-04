@@ -1,7 +1,7 @@
 """把公共安全红线(common/red_lines.md)注入每个 SKILL.md 的「## 安全红线」与 AGENTS.md。
 
 为什么是「每份一个副本」而不是「AGENTS.md 一份」:2026-09-02 把 14 份公共红线抽到 AGENTS.md 去重,而安装脚本不拷 AGENTS.md,
-客户只换了 skill 目录,安全审查 diff SKILL.md 看到红线整段消失(09-10 反馈)。银行客户要的是每个交付文件里看得见。
+行方只换了 skill 目录,安全审查 diff SKILL.md 看到红线整段消失(09-10 反馈)。银行要的是每个交付文件里看得见。
 所以正文只有一份,副本由本工具注入、由 tests/test_red_lines_units.py 保证逐字一致。
 
 用法:
